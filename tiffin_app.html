@@ -8,6 +8,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Chosen Palette: Warm Amber and Slate -->
     <!-- Application Structure Plan: Single page application with distinct operational views: Dashboard (analytics of daily status), Tracker (interactive table with persistent localStorage state, WhatsApp triggers, and payment resolution modals), and Calculator (interactive plan pricing config matching full document rules). This keeps everyday tasks front-and-center while providing pricing utility in one workspace. -->
     <!-- Visualization & Content Choices: 
@@ -22,11 +23,11 @@
                 extend: {
                     colors: {
                         tiffin: {
-                            light: '#fffbeb',
-                            main: '#f59e0b',
-                            dark: '#b45309',
-                            bg: '#faf9f6',
-                            panel: '#ffffff',
+                            light: '#F0F9FF', 
+                            main: '#3B82F6',  
+                            dark: '#1E3A8A',  
+                            accent: '#60A5FA',
+                            white: '#ffffff'
                         }
                     }
                 }
@@ -35,8 +36,8 @@
     </script>
     <style>
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #faf9f6;
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            background-color: #F0F9FF; /* tiffin-light */
         }
         .chart-container {
             position: relative;
@@ -47,9 +48,8 @@
             height: 240px;
         }
         .nav-active {
-            background-color: #fef3c7;
-            color: #b45309;
-            border-left: 4px solid #f59e0b;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #3B82F6;
         }
         .hide { display: none !important; }
         ::-webkit-scrollbar {
@@ -57,71 +57,129 @@
             height: 6px;
         }
         ::-webkit-scrollbar-track {
-            background: #f1f1f1;
+            background: #f9f7f2;
         }
         ::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
+            background: #d4d4d4;
             border-radius: 3px;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8;
+            background: #a3a3a3;
         }
     </style>
+    <script>
+        // UI Toast Engine
+        function showToast(message, iconName = "sparkles") {
+            const toast = document.getElementById('toast');
+            document.getElementById('toastIcon').innerHTML = `<i data-lucide="${iconName}" class="w-4 h-4"></i>`;
+            document.getElementById('toastMessage').innerText = message;
+            lucide.createIcons();
+            toast.classList.remove('translate-y-24', 'opacity-0', 'pointer-events-none');
+            setTimeout(() => {
+                toast.classList.add('translate-y-24', 'opacity-0', 'pointer-events-none');
+            }, 3000);
+        }
+
+        // Custom Confirm Dialogue Box Engine
+        function requestConfirm(title, text, iconName, onConfirm) {
+            const modal = document.getElementById('confirmModal');
+            document.getElementById('confirmModalTitle').innerText = title;
+            document.getElementById('confirmModalText').innerText = text;
+            document.getElementById('confirmModalIcon').innerHTML = `<i data-lucide="${iconName}" class="w-12 h-12 mx-auto text-tiffin-main"></i>`;
+
+            lucide.createIcons();
+            modal.classList.remove('hidden');
+
+            const cleanUp = () => {
+                modal.classList.add('hidden');
+                document.getElementById('confirmOkBtn').onclick = null;
+                document.getElementById('confirmCancelBtn').onclick = null;
+            };
+
+            document.getElementById('confirmCancelBtn').onclick = cleanUp;
+            document.getElementById('confirmOkBtn').onclick = () => {
+                onConfirm();
+                cleanUp();
+            };
+        }
+
+        // Main Navigation Layout Handler
+        function switchView(viewId) {
+            document.querySelectorAll('.view-section').forEach(el => el.classList.add('hide'));
+            document.querySelectorAll('aside button, header button').forEach(el => el.classList.remove('nav-active'));
+
+            document.getElementById(viewId).classList.remove('hide');
+
+            const desktopBtn = document.getElementById('nav-' + viewId);
+            if (desktopBtn) desktopBtn.classList.add('nav-active');
+
+            // Re-render specific components when switching views
+            if (viewId === 'dashboardView') {
+                renderDashboardMetrics();
+            } else if (viewId === 'trackingView') {
+                renderCustomerTable();
+            } else if (viewId === 'historyView') {
+                fetchHistory(null, true); // Reset pagination when switching to history view
+            }
+            lucide.createIcons();
+        }
+    </script>
 </head>
 <body class="text-gray-800 h-screen flex flex-col md:flex-row overflow-hidden">
-
     <!-- Mobile Header -->
-    <header class="md:hidden bg-white border-b border-amber-100 px-4 py-3 flex items-center justify-between z-20 shadow-sm">
+    <header class="md:hidden bg-tiffin-dark border-b border-tiffin-accent/20 px-4 py-3 flex items-center justify-between z-20 shadow-sm">
         <div class="flex items-center space-x-2">
-            <span class="text-2xl">🍱</span>
-            <span class="font-bold text-lg text-tiffin-dark">TiffinBiz Pro</span>
+            <i data-lucide="utensils" class="w-6 h-6 text-tiffin-light"></i>
+            <span class="font-bold text-lg text-tiffin-light">TiffinBiz Pro</span>
         </div>
         <div class="flex space-x-2">
-            <button onclick="switchView('dashboardView')" class="p-2 text-gray-600 hover:text-tiffin-main" title="Dashboard">📊</button>
-            <button onclick="switchView('trackingView')" class="p-2 text-gray-600 hover:text-tiffin-main" title="Deliveries">🚚</button>
-            <button onclick="switchView('pricingView')" class="p-2 text-gray-600 hover:text-tiffin-main" title="Calculator">💰</button>
+            <button onclick="switchView('dashboardView')" class="p-2 text-tiffin-light/60 hover:text-tiffin-main" title="Dashboard"><i data-lucide="layout-dashboard" class="w-5 h-5"></i></button>
+            <button onclick="switchView('trackingView')" class="p-2 text-tiffin-light/60 hover:text-tiffin-main" title="Deliveries"><i data-lucide="truck" class="w-5 h-5"></i></button>
+            <button onclick="switchView('historyView')" class="p-2 text-tiffin-light/60 hover:text-tiffin-main" title="History"><i data-lucide="calendar" class="w-5 h-5"></i></button>
+            <button onclick="switchView('pricingView')" class="p-2 text-tiffin-light/60 hover:text-tiffin-main" title="Calculator"><i data-lucide="calculator" class="w-5 h-5"></i></button>
         </div>
     </header>
 
     <!-- Desktop Sidebar -->
-    <aside class="w-64 bg-white border-r border-amber-100 flex flex-col hidden md:flex h-full z-10">
-        <div class="p-6 border-b border-amber-50 text-center">
-            <span class="text-5xl block mb-2">🍱</span>
-            <h1 class="text-2xl font-bold text-tiffin-dark tracking-tight">TiffinBiz Pro</h1>
-            <p class="text-xs text-gray-400 mt-1 uppercase tracking-wider font-semibold">Local Workspace</p>
+    <aside class="w-64 bg-tiffin-dark border-r border-tiffin-accent flex flex-col hidden md:flex h-full z-10">
+        <div class="p-6 border-b border-tiffin-accent text-center">
+            <i data-lucide="utensils" class="w-12 h-12 mx-auto mb-2 text-tiffin-light"></i>
+            <h1 class="text-2xl font-bold text-tiffin-light tracking-tight">TiffinBiz Pro</h1>
+            <p class="text-xs text-tiffin-light/40 mt-1 uppercase tracking-wider font-semibold">Management Console</p>
         </div>
         <nav class="flex-1 py-6 space-y-1">
-            <button onclick="switchView('dashboardView')" id="nav-dashboardView" class="w-full text-left px-6 py-3 text-gray-600 hover:bg-amber-50/50 flex items-center space-x-3 transition nav-active font-semibold">
-                <span>📊</span> <span>Overview Dashboard</span>
+            <button onclick="switchView('dashboardView')" id="nav-dashboardView" class="w-full text-left px-6 py-3 text-tiffin-light/60 hover:bg-white/5 flex items-center space-x-3 transition font-semibold">
+                <i data-lucide="layout-dashboard" class="w-5 h-5"></i> <span>Overview Dashboard</span>
             </button>
-            <button onclick="switchView('trackingView')" id="nav-trackingView" class="w-full text-left px-6 py-3 text-gray-600 hover:bg-amber-50/50 flex items-center space-x-3 transition font-semibold">
-                <span>🚚</span> <span>Deliveries & Billing</span>
+            <button onclick="switchView('trackingView')" id="nav-trackingView" class="w-full text-left px-6 py-3 text-tiffin-light/60 hover:bg-white/5 flex items-center space-x-3 transition nav-active font-semibold">
+                <i data-lucide="truck" class="w-5 h-5"></i> <span>Deliveries & Billing</span>
             </button>
-            <button onclick="switchView('pricingView')" id="nav-pricingView" class="w-full text-left px-6 py-3 text-gray-600 hover:bg-amber-50/50 flex items-center space-x-3 transition font-semibold">
-                <span>💰</span> <span>Advanced Calculator</span>
+            <button onclick="switchView('historyView')" id="nav-historyView" class="w-full text-left px-6 py-3 text-tiffin-light/60 hover:bg-white/5 flex items-center space-x-3 transition font-semibold">
+                <i data-lucide="calendar" class="w-5 h-5"></i> <span>Service Logs</span>
             </button>
-        </nav>
-        <div class="p-4 border-t border-amber-50">
-            <div class="bg-amber-50 text-tiffin-dark text-xs p-3 rounded-lg border border-amber-200">
-                <strong>Local Storage Active:</strong> Data is saved to this browser. Clear cache to reset.
+            <button onclick="switchView('pricingView')" id="nav-pricingView" class="w-full text-left px-6 py-3 text-tiffin-light/60 hover:bg-white/5 flex items-center space-x-3 transition font-semibold">
+                <i data-lucide="calculator" class="w-5 h-5"></i> <span>Advanced Calculator</span>
+            </button>
+        <div class="p-4 border-t border-tiffin-accent">
+            <div class="bg-white/5 text-tiffin-light/60 text-xs p-3 rounded-lg border border-white/10">
                 <strong>Supabase Active:</strong> Data is now synced to your cloud database.
             </div>
         </div>
     </aside>
 
     <!-- App Content Window -->
-    <main class="flex-1 overflow-y-auto p-4 md:p-8">
+    <main class="flex-1 overflow-y-auto p-4 md:p-8 bg-tiffin-light/30">
 
         <!-- Custom Notification Toast -->
-        <div id="toast" class="fixed bottom-4 right-4 bg-gray-900 text-white px-4 py-3 rounded-lg shadow-xl z-50 flex items-center space-x-2 transition-transform duration-300 translate-y-24 opacity-0 pointer-events-none">
-            <span id="toastIcon">✨</span>
+        <div id="toast" class="fixed bottom-4 right-4 bg-tiffin-dark text-white px-4 py-3 rounded-lg shadow-xl z-50 flex items-center space-x-2 transition-transform duration-300 translate-y-24 opacity-0 pointer-events-none">
+            <span id="toastIcon"></span>
             <span id="toastMessage" class="text-sm font-medium">Notification message</span>
         </div>
 
         <!-- Confirm Modal -->
         <div id="confirmModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
             <div class="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 text-center">
-                <div class="text-4xl mb-2" id="confirmModalIcon">❓</div>
+                <div class="mb-2" id="confirmModalIcon"></div>
                 <h3 class="text-lg font-bold text-gray-800" id="confirmModalTitle">Are you sure?</h3>
                 <p class="text-gray-500 text-sm mt-2" id="confirmModalText">This action cannot be undone.</p>
                 <div class="flex space-x-3 mt-6">
@@ -131,37 +189,147 @@
             </div>
         </div>
 
+        <!-- Payment Modal (Partial Payment) -->
+        <div id="paymentModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
+                <div class="mb-4 flex justify-center text-tiffin-main"><i data-lucide="banknote" class="w-16 h-16"></i></div>
+                <h3 class="text-2xl font-black text-tiffin-dark text-center uppercase tracking-tighter">Log Payment</h3>
+                <p class="text-gray-500 text-sm mt-2 text-center font-medium" id="paymentModalText">Process customer balance update.</p>
+                
+                <div class="mt-10 space-y-6">
+                    <div>
+                        <label class="block text-[11px] font-black uppercase tracking-widest text-gray-400 mb-2">Amount Received ($)</label>
+                        <input type="number" id="payAmountInput" step="0.01" min="0.01" class="w-full border-2 border-stone-100 rounded-2xl p-4 text-3xl font-black text-tiffin-dark outline-none focus:border-tiffin-main focus:ring-4 focus:ring-tiffin-main/5 transition-all" placeholder="0.00">
+                        <p class="text-[11px] text-tiffin-accent mt-3 font-bold flex items-center" id="payBalanceInfo"></p>
+                    </div>
+                    
+                    <div class="flex flex-col sm:flex-row gap-2">
+                        <button id="payPastDueBtn" onclick="setPastDuePaymentAmount()" class="flex-1 py-3 px-4 bg-red-50 text-red-600 border border-red-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-100 hover:border-red-200 transition-all hide">PAY PAST DUE</button>
+                        <button onclick="setFullPaymentAmount()" class="flex-1 py-3 px-4 bg-tiffin-light text-tiffin-accent border border-tiffin-light rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-[#f0d4bc] transition-all">PAY FULL BALANCE</button>
+                    </div>
+                </div>
+
+                <div class="flex space-x-4 mt-10">
+                    <button onclick="closePaymentModal()" class="flex-1 py-4 border-2 border-stone-100 hover:bg-stone-50 rounded-xl text-sm font-black transition text-gray-400 uppercase tracking-widest">Cancel</button>
+                    <button id="confirmPayBtn" class="flex-1 py-4 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-xl text-sm font-black transition shadow-lg shadow-tiffin-main/20 uppercase tracking-widest">Confirm Payment</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Customer Detail Modal -->
+        <div id="detailModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-xl max-w-2xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+                <div class="p-6 border-b border-stone-100 bg-stone-50/50 flex justify-between items-center">
+                    <h3 class="text-xl font-black text-gray-800 flex items-center gap-2"><i data-lucide="user" class="w-5 h-5"></i> Customer Profile</h3>
+                    <button onclick="closeDetailModal()" class="text-gray-400 hover:text-gray-600 text-2xl font-bold">&times;</button>
+                </div>
+                <div class="p-6 overflow-y-auto space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <p class="text-xs font-bold text-gray-400 uppercase tracking-widest">Customer Name</p>
+                            <p id="detailName" class="text-lg font-bold text-gray-800"></p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-bold text-gray-400 uppercase tracking-widest">Delivery Address</p>
+                            <p id="detailAddress" class="text-lg font-bold text-gray-800"></p>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4 p-4 bg-stone-50 rounded-xl border border-stone-100">
+                        <div>
+                            <p class="text-[10px] font-bold text-gray-400 uppercase">Start Date</p>
+                            <p id="detailStart" class="text-sm font-semibold"></p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] font-bold text-gray-400 uppercase">Plan Type</p>
+                            <p id="detailPlan" class="text-sm font-semibold"></p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] font-bold text-gray-400 uppercase">Daily Status</p>
+                            <p id="detailStatus" class="text-sm font-semibold"></p>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-sm font-bold text-gray-800 mb-3 flex items-center">
+                            <i data-lucide="credit-card" class="w-4 h-4 mr-2"></i> Payment History
+                        </h4>
+                        <div class="border border-stone-100 rounded-xl overflow-hidden shadow-inner">
+                            <table class="w-full text-left text-xs">
+                                <thead class="bg-stone-50 text-gray-400 uppercase font-bold">
+                                    <tr>
+                                        <th class="p-3">Date</th>
+                                        <th class="p-3 text-right">Amount</th>
+                                        <th class="p-3">Notes</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="detailPaymentLogs" class="divide-y divide-stone-50"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- ================= SECTION 1: DASHBOARD ================= -->
-        <section id="dashboardView" class="view-section space-y-8 max-w-6xl mx-auto">
-            <div class="border-b border-amber-100 pb-4">
-                <h2 class="text-3xl font-black text-gray-800">Operational Command Center</h2>
-                <p class="text-gray-500 mt-1">This dashboard automatically updates as you log fresh deliveries and collect payments. It highlights outstanding cash flow and daily delivery goals.</p>
+        <section id="dashboardView" class="view-section hide space-y-8 max-w-6xl mx-auto">
+            <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-6 border-b border-stone-200 pb-6">
+                <div class="flex-1">
+                    <h2 class="text-3xl font-black text-gray-800">Operational Command Center</h2>
+                    <p class="text-gray-500 mt-1">Real-time performance metrics and financial health monitoring.</p>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full lg:w-auto">
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Start Date</label>
+                        <input type="date" id="dashboardStartDate" onchange="renderDashboardMetrics()" class="w-full border border-stone-200 rounded-lg p-2 text-sm outline-none focus:border-tiffin-main">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">End Date</label>
+                        <input type="date" id="dashboardEndDate" onchange="renderDashboardMetrics()" class="w-full border border-stone-200 rounded-lg p-2 text-sm outline-none focus:border-tiffin-main">
+                    </div>
+                    <div>
+                        <label for="dashboardTermFilter" class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Plan Term</label>
+                        <select id="dashboardTermFilter" onchange="renderDashboardMetrics()" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                            <option value="">All Terms</option>
+                            <option value="Daily">Daily</option>
+                            <option value="Weekly">Weekly</option>
+                            <option value="Monthly">Monthly</option>
+                        </select>
+                    </div>
+                </div>
             </div>
 
             <!-- Key Metric Metrics Cards -->
+            <!-- Key Operational Metrics Cards -->
             <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div class="bg-white rounded-2xl border border-amber-100 p-6 shadow-sm flex items-center space-x-4">
-                    <div class="text-4xl bg-amber-50 p-3 rounded-xl">⏳</div>
+                <div class="bg-white rounded-2xl border border-stone-100 p-6 shadow-sm flex items-center space-x-4">
+                    <div class="text-4xl bg-stone-50 p-3 rounded-xl">⏳</div>
                     <div>
                         <p class="text-xs text-gray-400 uppercase font-bold tracking-wider">Remaining Deliveries</p>
                         <p class="text-2xl font-black text-gray-800" id="stat-pending">0</p>
                     </div>
                 </div>
-                <div class="bg-white rounded-2xl border border-amber-100 p-6 shadow-sm flex items-center space-x-4">
+                <div class="bg-white rounded-2xl border border-stone-100 p-6 shadow-sm flex items-center space-x-4">
                     <div class="text-4xl bg-green-50 p-3 rounded-xl">✅</div>
                     <div>
                         <p class="text-xs text-gray-400 uppercase font-bold tracking-wider">Delivered Today</p>
                         <p class="text-2xl font-black text-gray-800" id="stat-completed">0</p>
                     </div>
                 </div>
-                <div class="bg-white rounded-2xl border border-amber-100 p-6 shadow-sm flex items-center space-x-4">
+                <div class="bg-white rounded-2xl border border-stone-100 p-6 shadow-sm flex items-center space-x-4">
                     <div class="text-4xl bg-red-50 p-3 rounded-xl">💵</div>
                     <div>
                         <p class="text-xs text-gray-400 uppercase font-bold tracking-wider">Outstanding Accounts</p>
                         <p class="text-2xl font-black text-red-600" id="stat-due">$0</p>
+                        <p id="stat-due-msg" class="text-[10px] text-green-600 font-bold mt-1 hide"></p>
                     </div>
                 </div>
-                <div class="bg-white rounded-2xl border border-amber-100 p-6 shadow-sm flex items-center space-x-4">
+                <div class="bg-white rounded-2xl border border-stone-100 p-6 shadow-sm flex items-center space-x-4">
+                    <div class="text-4xl bg-green-50 p-3 rounded-xl">💰</div>
+                    <div>
+                        <p class="text-xs text-gray-400 uppercase font-bold tracking-wider" id="stat-earnings-label">Total Revenue</p>
+                        <p class="text-2xl font-black text-green-600" id="stat-earnings">$0</p>
+                    </div>
+                </div>
+                <div class="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm flex items-center space-x-4">
                     <div class="text-4xl bg-blue-50 p-3 rounded-xl">👥</div>
                     <div>
                         <p class="text-xs text-gray-400 uppercase font-bold tracking-wider">Active Customers</p>
@@ -172,14 +340,14 @@
 
             <!-- Double Chart View Layout -->
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div class="bg-white rounded-2xl border border-amber-100 p-6 shadow-sm">
+                <div class="bg-white rounded-2xl border border-stone-100 p-6 shadow-sm">
                     <h3 class="font-bold text-gray-800 text-center mb-4 text-base">Payment Progress Indicator</h3>
                     <div class="chart-container">
                         <canvas id="paymentChartCanvas"></canvas>
                     </div>
                     <p class="text-center text-xs text-gray-400 mt-4 leading-relaxed">Compares revenue already cleared by customers versus payments currently due or outstanding.</p>
                 </div>
-                <div class="bg-white rounded-2xl border border-amber-100 p-6 shadow-sm">
+                <div class="bg-white rounded-2xl border border-stone-100 p-6 shadow-sm">
                     <h3 class="font-bold text-gray-800 text-center mb-4 text-base">Delivery Target Rate</h3>
                     <div class="chart-container">
                         <canvas id="deliveryChartCanvas"></canvas>
@@ -190,33 +358,64 @@
         </section>
 
         <!-- ================= SECTION 2: TRACKING ================= -->
-        <section id="trackingView" class="view-section hide space-y-6 max-w-7xl mx-auto">
-            <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-amber-100 pb-4">
+        <section id="trackingView" class="view-section space-y-6 max-w-7xl mx-auto">
+            <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-stone-200 pb-4">
                 <div>
                     <h2 class="text-3xl font-black text-gray-800">Deliveries & Cash Tracking</h2>
                     <p class="text-gray-500 mt-1">Direct operations table. Log deliveries (which open pre-filled messenger links) and clear cash balances dynamically.</p>
                 </div>
-                <div>
-                    <button onclick="openAddCustomerModal()" class="w-full md:w-auto bg-tiffin-main hover:bg-tiffin-dark text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-md transition flex items-center justify-center space-x-2">
-                        <span>➕</span> <span>Register New Customer</span>
+                <div class="flex flex-col sm:flex-row gap-3">
+                    <button onclick="resetDailyDeliveries()" class="bg-white border border-stone-200 hover:bg-stone-50 text-stone-700 px-5 py-2.5 rounded-xl text-sm font-bold shadow-sm transition flex items-center justify-center space-x-2">
+                        <i data-lucide="refresh-cw" class="w-4 h-4"></i> <span>Start New Day</span>
+                    </button>
+                    <button onclick="openCustomerModal()" class="w-full md:w-auto bg-tiffin-main hover:bg-tiffin-dark text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-md transition flex items-center justify-center space-x-2">
+                        <i data-lucide="plus-circle" class="w-4 h-4"></i> <span>Register New Customer</span>
                     </button>
                 </div>
             </div>
 
+            <!-- Table Search/Filter -->
+            <div class="bg-white p-4 border border-stone-100 rounded-2xl shadow-sm">
+                <div class="relative flex items-center">
+                    <i data-lucide="search" class="absolute left-3 w-4 h-4 text-gray-400"></i>
+                    <input type="text" id="tableSearch" oninput="filterCustomerTable()" placeholder="Search by subscriber name or delivery address..." class="w-full pl-10 pr-4 py-3 border border-stone-100 rounded-xl bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-tiffin-main transition">
+                </div>
+            </div>
+
             <!-- Customer Table Wrapper -->
-            <div class="bg-white rounded-2xl border border-amber-100 shadow-sm overflow-hidden">
+            <div class="bg-white rounded-2xl border border-stone-100 shadow-sm overflow-hidden">
                 <div class="overflow-x-auto">
                     <table class="w-full text-left border-collapse">
                         <thead>
-                            <tr class="bg-amber-50/50 border-b border-amber-100">
-                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Client Info</th>
-                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Assigned Plan</th>
-                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Outstanding Balance</th>
-                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center">Status Today</th>
+                            <tr class="bg-tiffin-light/50 border-b border-tiffin-accent/10">
+                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('address')">
+                                    <div class="flex items-center">
+                                        <span>Delivery Address & Client</span>
+                                        <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-address"></span>
+                                    </div>
+                                </th>
+                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('remaining')">
+                                    <div class="flex items-center">
+                                        <span>Plan & Progress</span>
+                                        <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-remaining"></span>
+                                    </div>
+                                </th>
+                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('balance')">
+                                    <div class="flex items-center">
+                                        <span>Outstanding Balance</span>
+                                        <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-balance"></span>
+                                    </div>
+                                </th>
+                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('status')">
+                                    <div class="flex items-center justify-center">
+                                        <span>Status Today</span>
+                                        <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-status"></span>
+                                    </div>
+                                </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="clientTableBody" class="divide-y divide-amber-50">
+                        <tbody id="clientTableBody" class="divide-y divide-tiffin-accent/5">
                             <!-- Injected Dynamically -->
                         </tbody>
                     </table>
@@ -226,7 +425,7 @@
             <!-- Add/Edit Customer Slide Modal -->
             <div id="customerModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 hidden flex items-center justify-center p-4">
                 <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full overflow-hidden flex flex-col max-h-[90vh]">
-                    <div class="p-6 border-b border-amber-100 bg-amber-50/50 flex justify-between items-center">
+                    <div class="p-6 border-b border-stone-100 bg-stone-50/50 flex justify-between items-center">
                         <h3 class="text-lg font-black text-gray-800" id="modalTitle">Register Tiffin Subscriber</h3>
                         <button onclick="closeCustomerModal()" class="text-gray-400 hover:text-gray-600 text-xl font-bold">×</button>
                     </div>
@@ -234,47 +433,95 @@
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Full Name</label>
-                                <input type="text" id="custName" required class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="John Doe">
+                                <input type="text" id="custName" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="John Doe">
                             </div>
-                            <div>
-                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">WhatsApp / Phone</label>
-                                <input type="tel" id="custPhone" required class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="15551234567">
+                            <div class="grid grid-cols-3 gap-2">
+                                <div class="col-span-1">
+                                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Code</label>
+                                    <select id="custCountryCode" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                        <option value="+1">🇨🇦 +1</option>
+                                        <option value="+91">🇮🇳 +91</option>
+                                        <option value="+1">🇺🇸 +1</option>
+                                        <option value="+44">🇬🇧 +44</option>
+                                    </select>
+                                </div>
+                                <div class="col-span-2">
+                                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">WhatsApp / Phone</label>
+                                    <input type="tel" id="custPhone" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="6477852655">
+                                </div>
                             </div>
                         </div>
                         <div>
                             <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Delivery Address</label>
-                            <input type="text" id="custAddress" required class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="123 Street, Apt 10">
+                            <input type="text" id="custAddress" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="123 Street, Apt 10">
                         </div>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div>
                                 <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Type</label>
-                                <select id="custType" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                <select id="custType" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
                                     <option value="Veg">Vegetarian</option>
                                     <option value="Non-Veg">Non-Vegetarian</option>
                                 </select>
                             </div>
                             <div>
                                 <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Portion Size</label>
-                                <select id="custSize" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                <select id="custSize" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
                                     <option value="Regular">Regular (8oz)</option>
                                     <option value="Large">Large (12oz)</option>
                                 </select>
                             </div>
                             <div>
                                 <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Term</label>
-                                <select id="custTerm" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                <select id="custTerm" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
                                     <option value="Daily">Daily</option>
                                     <option value="Weekly">Weekly</option>
                                     <option value="Monthly">Monthly</option>
                                 </select>
                             </div>
                         </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Start Date</label>
+                                <input type="date" id="custStartDate" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Next Renewal Date</label>
+                                <input type="date" id="custRenewDate" readonly class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none bg-stone-50 text-gray-500">
+                            </div>
+                        </div>
+                        <div class="hide">
+                            <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Renewal Count</label>
+                            <input type="number" id="custRenewTimes" readonly class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none bg-stone-50 text-gray-500">
+                        </div>
+                        
+                        <!-- Financial Summary Group -->
+                        <div class="bg-stone-50 p-4 rounded-xl border border-stone-100 space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Term Amount ($)</label>
+                                    <input type="number" id="custPlanAmount" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-gray-700 focus:ring-0" placeholder="0.00">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Paid So Far ($)</label>
+                                    <input type="number" id="custPaidThisTerm" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-green-600 focus:ring-0" placeholder="0.00">
+                                </div>
+                            </div>
+                            <div class="border-t border-stone-200 pt-4 grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Past Due / Arrears ($)</label>
+                                    <input type="number" id="custArrears" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-red-500 focus:ring-0" placeholder="0.00">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-tiffin-main mb-1 font-black">Current Balance ($)</label>
+                                    <input type="number" id="custDue" readonly class="w-full border-none p-0 text-base font-black bg-transparent text-tiffin-dark focus:ring-0" placeholder="0.00">
+                                </div>
+                            </div>
+                        </div>
                         <div>
-                            <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Initial Outstanding Amount ($)</label>
-                            <input type="number" id="custDue" required min="0" step="0.01" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="0.00">
+                            <div id="modalPriceBreakdown" class="mt-1.5 text-[10px] text-stone-500 italic px-1"></div>
                         </div>
                         <div class="pt-4 flex space-x-3">
-                            <button type="button" onclick="closeCustomerModal()" class="flex-1 py-2.5 border border-gray-200 hover:bg-gray-50 rounded-xl text-sm font-bold text-gray-500">Cancel</button>
+                            <button type="button" onclick="closeCustomerModal()" class="flex-1 py-2.5 border border-stone-200 hover:bg-stone-50 rounded-xl text-sm font-bold text-gray-500">Cancel</button>
                             <button type="submit" class="flex-1 py-2.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-xl text-sm font-bold shadow-md">Save Customer</button>
                         </div>
                     </form>
@@ -282,21 +529,104 @@
             </div>
         </section>
 
+        <!-- ================= SECTION 4: HISTORY ================= -->
+        <section id="historyView" class="view-section hide space-y-6 max-w-7xl mx-auto">
+            <div class="border-b border-stone-200 pb-4">
+                <h2 class="text-3xl font-black text-gray-800">Delivery History Logs</h2>
+                <p class="text-gray-500 mt-1">Review the permanent record of all completed deliveries. This data persists even after daily resets.</p>
+            </div>
+
+            <!-- History Filter and Summary -->
+            <div class="bg-white p-6 border border-stone-100 rounded-2xl shadow-sm space-y-6 overflow-hidden">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div>
+                        <label for="historyCustomerFilter" class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Filter by Customer</label>
+                        <select id="historyCustomerFilter" onchange="fetchHistory(this.value, true)" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                            <option value="">All Customers</option>
+                            <!-- Options populated dynamically -->
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Start Date</label>
+                        <input type="date" id="historyStartDate" onchange="fetchHistory(null, true)" class="w-full border border-stone-200 rounded-lg p-2 text-sm outline-none focus:border-tiffin-main">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">End Date</label>
+                        <input type="date" id="historyEndDate" onchange="fetchHistory(null, true)" class="w-full border border-stone-200 rounded-lg p-2 text-sm outline-none focus:border-tiffin-main">
+                    </div>
+                    <div class="bg-stone-50 p-3 rounded-lg border border-stone-200 flex items-center space-x-3 text-stone-400">
+                        <i data-lucide="package" class="w-8 h-8"></i>
+                        <div>
+                            <p class="text-xs text-gray-400 uppercase font-bold tracking-wider">Total Logs Shown</p>
+                            <p class="text-lg font-black text-gray-800" id="historyDeliveryCount">0</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- New Customer Summary Section -->
+                <div class="pt-4 border-t border-stone-50">
+                    <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Customer Plan Progress (Selected Range)</h4>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs">
+                            <thead>
+                                <tr class="text-gray-400 border-b border-gray-50">
+                                    <th class="pb-2 font-bold">Customer</th>
+                                    <th class="pb-2 font-bold">Plan</th>
+                                    <th class="pb-2 font-bold text-center">Tiffin Count</th>
+                                    <th class="pb-2 font-bold text-right">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="historySummaryBody" class="divide-y divide-gray-50">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="summaryPaginationControls" class="flex justify-between items-center mt-4">
+                        <button onclick="prevPageSummary()" class="px-4 py-2 bg-gray-200 rounded-lg text-sm font-semibold">Previous</button>
+                        <span id="summaryPageInfo" class="text-sm text-gray-600">Page 1 of 1</span>
+                        <button onclick="nextPageSummary()" class="px-4 py-2 bg-gray-200 rounded-lg text-sm font-semibold">Next</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- History Table -->
+            <div class="bg-white rounded-2xl border border-tiffin-main/10 shadow-sm overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-tiffin-light/20 border-b border-tiffin-main/10">
+                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Date</th>
+                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Customer Name</th>
+                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Address</th>
+                                <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody" class="divide-y divide-tiffin-main/5"></tbody>
+                    </table>
+                </div>
+                <div id="historyPaginationControls" class="flex justify-between items-center mt-4 p-4">
+                    <button onclick="prevPageHistory()" class="px-4 py-2 bg-gray-200 rounded-lg text-sm font-semibold">Previous</button>
+                    <span id="historyPageInfo" class="text-sm text-gray-600">Page 1 of 1</span>
+                    <button onclick="nextPageHistory()" class="px-4 py-2 bg-gray-200 rounded-lg text-sm font-semibold">Next</button>
+                </div>
+            </div>
+        </section>
+
         <!-- ================= SECTION 3: PRICING ================= -->
         <section id="pricingView" class="view-section hide space-y-6 max-w-6xl mx-auto">
-            <div class="border-b border-amber-100 pb-4">
+            <div class="border-b border-tiffin-main/20 pb-4">
                 <h2 class="text-3xl font-black text-gray-800">Advanced Pricing Calculator</h2>
                 <p class="text-gray-500 mt-1">Configure complex custom quotes immediately. Calculates item details with selective roti, custom mains, and optional delivery add-ons.</p>
             </div>
 
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <!-- Interactive Calc Form -->
-                <div class="bg-white rounded-2xl border border-amber-100 p-6 shadow-sm lg:col-span-7 space-y-6">
-                    <div class="flex items-center justify-between border-b border-amber-50 pb-3">
+                <div class="bg-white rounded-2xl border border-tiffin-main/10 p-6 shadow-sm lg:col-span-7 space-y-6">
+                    <div class="flex flex-col sm:flex-row items-center justify-between border-b border-tiffin-main/5 pb-4 gap-4">
                         <h3 class="font-bold text-gray-800 text-lg">Quote Estimator</h3>
-                        <div class="flex bg-amber-50 rounded-lg p-1">
-                            <button id="calcModeStandard" onclick="toggleCalcMode(true)" class="px-3 py-1 text-xs font-bold rounded-md bg-white text-tiffin-dark shadow-sm transition">Standard Plans</button>
-                            <button id="calcModeCustom" onclick="toggleCalcMode(false)" class="px-3 py-1 text-xs font-bold rounded-md text-gray-500 transition">Custom Build</button>
+                        <div class="flex bg-tiffin-light rounded-xl p-1 w-full sm:w-auto">
+                            <button id="calcModeStandard" onclick="toggleCalcMode(true)" class="flex-1 sm:flex-none px-4 py-2 text-xs font-black rounded-lg transition-all">Standard Plans</button>
+                            <button id="calcModeCustom" onclick="toggleCalcMode(false)" class="flex-1 sm:flex-none px-4 py-2 text-xs font-black rounded-lg transition-all">Custom Build</button>
                         </div>
                     </div>
 
@@ -346,11 +676,11 @@
                         <div class="space-y-2">
                             <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Dishes Content Selection</label>
                             <div class="grid grid-cols-2 gap-4">
-                                <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-amber-50/20 transition">
+                                <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
                                     <input type="checkbox" id="custCalcDal" checked class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
                                     <span class="ml-2.5 text-sm text-gray-700 font-semibold">Include Dal</span>
                                 </label>
-                                <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-amber-50/20 transition">
+                                <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
                                     <input type="checkbox" id="custCalcSabji" checked class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
                                     <span class="ml-2.5 text-sm text-gray-700 font-semibold">Include Sabji</span>
                                 </label>
@@ -362,7 +692,7 @@
                     <div class="space-y-3 pt-2">
                         <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider">A La Carte Service Options</label>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-amber-50/20 transition">
+                            <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
                                 <input type="checkbox" id="addOnDeliveryCheck" class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
                                 <span class="ml-2.5 text-sm text-gray-700 font-semibold">Daily Delivery ($1.00/day)</span>
                             </label>
@@ -378,7 +708,10 @@
                     </div>
 
                     <!-- Calculated Matrix Box -->
-                    <div class="bg-amber-50/50 rounded-2xl border border-amber-200 p-6 space-y-3">
+                    <div class="bg-tiffin-light/20 rounded-2xl border border-tiffin-main/20 p-6 space-y-3">
+                        <div id="calcLineItems" class="space-y-1.5 text-[11px] text-stone-500 border-b border-stone-200 pb-3 hidden">
+                            <!-- Individual line items will appear here -->
+                        </div>
                         <div class="flex justify-between items-center text-sm text-gray-600">
                             <span>Base Dish Price:</span>
                             <span class="font-bold" id="resBase">$0.00</span>
@@ -387,7 +720,7 @@
                             <span>Add-ons Combined:</span>
                             <span class="font-bold" id="resAddons">$0.00</span>
                         </div>
-                        <div class="border-t border-amber-200 pt-3 flex justify-between items-end">
+                        <div class="border-t border-tiffin-main/20 pt-3 flex justify-between items-end">
                             <span class="text-base font-bold text-gray-800">Total Invoice Quote:</span>
                             <span class="text-3xl font-black text-tiffin-dark" id="resTotal">$0.00</span>
                         </div>
@@ -395,37 +728,36 @@
                 </div>
 
                 <!-- Structured Rules Board (Right Column) -->
-                <div class="bg-slate-800 text-slate-300 rounded-2xl p-6 lg:col-span-5 flex flex-col justify-between space-y-6">
+                <div class="bg-tiffin-dark text-tiffin-light/80 rounded-2xl p-6 lg:col-span-5 flex flex-col justify-between space-y-6">
                     <div>
-                        <h3 class="text-white font-bold text-lg border-b border-slate-700 pb-2 mb-4">Official Rate Sheets</h3>
+                        <h3 class="text-white font-black text-xl border-b border-tiffin-accent pb-4 mb-6 uppercase tracking-tighter">Official Rate Sheets</h3>
                         
-                        <div class="space-y-4 text-xs leading-relaxed">
-                            <div>
-                                <h4 class="text-amber-400 font-bold uppercase tracking-wider mb-1">Standard Vegetarian</h4>
+                        <div class="space-y-6 text-xs leading-relaxed">
+                            <div class="bg-white/5 p-4 rounded-xl border border-white/10">
+                                <h4 class="text-tiffin-main font-bold uppercase tracking-wider mb-1">Standard Vegetarian</h4>
                                 <ul class="list-disc pl-4 space-y-1">
                                     <li>Regular (8oz): 1 Dal + 1 Sabji + 6 Roti. Trial: $11 | Monthly: $220</li>
                                     <li>Large (12oz): 1 Dal + 1 Sabji + 8 Roti + Salad. Trial: $13 | Monthly: $250</li>
                                 </ul>
                             </div>
-                            <div>
-                                <h4 class="text-amber-400 font-bold uppercase tracking-wider mb-1">Standard Non-Vegetarian</h4>
-                                <p class="text-[10px] text-slate-400 mb-1">Chicken (Mon, Wed, Fri) | Veg Sabji (Tue, Thu)</p>
+                            <div class="bg-white/5 p-4 rounded-xl border border-white/10">
+                                <h4 class="text-tiffin-main font-bold uppercase tracking-wider mb-1">Standard Non-Vegetarian</h4>
+                                <p class="text-[10px] text-tiffin-light/40 mb-1">Chicken (Mon, Wed, Fri) | Veg Sabji (Tue, Thu)</p>
                                 <ul class="list-disc pl-4 space-y-1">
-                                    <li>Regular (8oz): Trial: $15 | Weekly: $70 | Monthly: $250</li>
-                                    <li>Large (12oz): Trial: $17 | Weekly: $80 | Monthly: $280</li>
+                                    <li>Regular: Trial: $15 | Weekly: $70 | Monthly: $250</li>
+                                    <li>Large: Trial: $17 | Weekly: $80 | Monthly: $280</li>
                                 </ul>
                             </div>
-                            <div>
-                                <h4 class="text-amber-400 font-bold uppercase tracking-wider mb-1">À-La-Carte Components Matrix</h4>
+                            <div class="bg-white/5 p-4 rounded-xl border border-white/10">
+                                <h4 class="text-tiffin-main font-bold uppercase tracking-wider mb-1">À-La-Carte Components Matrix</h4>
                                 <ul class="list-disc pl-4 space-y-1">
                                     <li>Single Extra Roti: $0.50</li>
-                                    <li>Standard Dal / Sabji Individual: $4.50 (Daily/Weekly) | $4.00 (Monthly scale)</li>
-                                    <li>Large Plan Veg Component Option: $5.50</li>
+                                    <li>Standard Component: $4.50 (Daily) | $4.00 (Monthly)</li>
+                                    <li>Large Plan Veg Component: $5.50</li>
                                 </ul>
                             </div>
                         </div>
-                    </div>
-                    <div class="bg-slate-700/50 p-4 rounded-xl text-center text-[11px] text-slate-400">
+                    <div class="bg-white/5 p-4 rounded-xl text-center text-[11px] text-tiffin-light/40">
                         * Note: Tiffins operate Monday to Friday only (Weekly = 5 meals, Monthly = 20 meals).
                     </div>
                 </div>
@@ -436,119 +768,59 @@
 
     <!-- App Interactive Script Engine -->
     <script>
-        const STORAGE_KEY = 'tiffin_pro_db_v1';
-        
-        // Initialize Supabase Client
-        // !!! IMPORTANT: Replace with your actual Supabase Project URL and Anon Key !!!
-        const SUPABASE_URL = 'YOUR_SUPABASE_PROJECT_URL'; 
-        const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_PUBLIC_KEY';
-        const supabase = Supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-        const defaultClients = [
-            { id: 1, name: "Rahul Sharma", phone: "16477852655", type: "Veg", size: "Regular", term: "Monthly", address: "123 Maple St", amountDue: 220, deliveredToday: false },
-            { id: 2, name: "Anita Patel", phone: "15559876543", type: "Non-Veg", size: "Large", term: "Weekly", address: "45 Oak Ave, Apt 2B", amountDue: 0, deliveredToday: true },
-            { id: 3, name: "Sarah Jones", phone: "15554567890", type: "Veg", size: "Large", term: "Monthly", address: "78 Pine Ln", amountDue: 50, deliveredToday: false },
-            { id: 4, name: "Michael Chen", phone: "15557890123", type: "Non-Veg", size: "Regular", term: "Daily", address: "Tech Park, Bldg 4", amountDue: 15, deliveredToday: false }
-        ];
+        // Initialize Supabase
+        const SUPABASE_URL = 'https://mcolsleeftuxiouqhhbq.supabase.co'; 
+        const SUPABASE_ANON_KEY = 'sb_publishable_aRBiuLPPIU4_nd_TdAtG7Q_qoBK1QSx';
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         let state = {
-            customers: []
+            customers: [], recentLogs: [], paymentLogs: [], sortBy: 'address', sortDirection: { address: 'asc', balance: 'desc', remaining: 'asc', status: 'asc' }
         };
+        let paymentChartInstance = null; let deliveryChartInstance = null; let isStandardCalc = true; let editingCustomerId = null; let activePaymentCustomerId = null;
+        let allHistoryLogs = []; let historyCurrentPage = 1; const historyItemsPerPage = 10;
+        let allSummaryData = []; let summaryCurrentPage = 1; const summaryItemsPerPage = 5;
 
-        let paymentChartInstance = null;
-        let deliveryChartInstance = null;
-        let isStandardCalc = true;
-
-        // Load State from Supabase (Persistent Cloud Storage)
+        // Data Management
         async function loadState() {
             try {
-                const { data, error } = await supabase
+                const { data, error } = await supabaseClient
                     .from('customers')
                     .select('*');
 
                 if (error) throw error;
 
                 state.customers = data || [];
-                
-                // If database is empty, seed it with default data
-                if (state.customers.length === 0) {
-                    state.customers = JSON.parse(JSON.stringify(defaultClients));
-                    await supabase.from('customers').insert(state.customers);
-                }
+
+                // Fetch delivery logs to calculate accurate plan progress
+                const { data: logs } = await supabaseClient.from('delivery_logs').select('*');
+                state.recentLogs = logs || [];
+
+                // Fetch and aggregate all payments
+                const { data: payments } = await supabaseClient.from('payment_logs').select('customer_id, amount, created_at');
+                const paymentTotals = {};
+                state.paymentLogs = payments || [];
+                (payments || []).forEach(p => {
+                    paymentTotals[p.customer_id] = (paymentTotals[p.customer_id] || 0) + p.amount;
+                });
+
+                state.customers.forEach(c => {
+                    c.totalPaid = paymentTotals[c.id] || 0;
+                });
 
                 renderCustomerTable();
                 renderDashboardMetrics();
+                populateHistoryCustomerFilter(); // New: Populate filter dropdown
+                lucide.createIcons();
             } catch (e) {
                 console.error("Error loading state from Supabase:", e.message);
                 showToast("Failed to load data. Check console for details.", "🚨");
             }
         }
-
-        function saveState() {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-        }
-
         // Standard Static Matrix (Pricing from User Sheet)
-        const stdRates = {
-            veg: {
-                regular: { daily: 11, weekly: 60, monthly: 220 },
-                large: { daily: 13, weekly: 70, monthly: 250 }
-            },
-            nonveg: {
-                regular: { daily: 15, weekly: 70, monthly: 250 },
-                large: { daily: 17, weekly: 80, monthly: 280 }
-            }
+        const stdRates = { // Standard Static Matrix (Pricing from User Sheet)
+            veg: { regular: { daily: 11, weekly: 60, monthly: 220 }, large: { daily: 13, weekly: 70, monthly: 250 } },
+            nonveg: { regular: { daily: 15, weekly: 70, monthly: 250 }, large: { daily: 17, weekly: 80, monthly: 280 } }
         };
-
-        // UI Toast Engine
-        function showToast(message, icon = "✨") {
-            const toast = document.getElementById('toast');
-            document.getElementById('toastIcon').innerText = icon;
-            document.getElementById('toastMessage').innerText = message;
-            toast.classList.remove('translate-y-24', 'opacity-0', 'pointer-events-none');
-            setTimeout(() => {
-                toast.classList.add('translate-y-24', 'opacity-0', 'pointer-events-none');
-            }, 3000);
-        }
-
-        // Custom Confirm Dialogue Box Engine
-        function requestConfirm(title, text, icon, onConfirm) {
-            const modal = document.getElementById('confirmModal');
-            document.getElementById('confirmModalTitle').innerText = title;
-            document.getElementById('confirmModalText').innerText = text;
-            document.getElementById('confirmModalIcon').innerText = icon;
-
-            modal.classList.remove('hidden');
-
-            const cleanUp = () => {
-                modal.classList.add('hidden');
-                document.getElementById('confirmOkBtn').onclick = null;
-                document.getElementById('confirmCancelBtn').onclick = null;
-            };
-
-            document.getElementById('confirmCancelBtn').onclick = cleanUp;
-            document.getElementById('confirmOkBtn').onclick = () => {
-                onConfirm();
-                cleanUp();
-            };
-        }
-
-        // Main Navigation Layout Handler
-        function switchView(viewId) {
-            document.querySelectorAll('.view-section').forEach(el => el.classList.add('hide'));
-            document.querySelectorAll('aside button, header button').forEach(el => el.classList.remove('nav-active'));
-
-            document.getElementById(viewId).classList.remove('hide');
-
-            const desktopBtn = document.getElementById('nav-' + viewId);
-            if (desktopBtn) desktopBtn.classList.add('nav-active');
-
-            if (viewId === 'dashboardView') {
-                renderDashboardMetrics();
-            } else if (viewId === 'trackingView') {
-                renderCustomerTable();
-            }
-        }
 
         // ================= BUSINESS ENGINE: CALCULATOR =================
         function toggleCalcMode(useStandard) {
@@ -557,15 +829,17 @@
             const custBtn = document.getElementById('calcModeCustom');
             const stdForm = document.getElementById('standardCalculatorForm');
             const custForm = document.getElementById('customCalculatorForm');
+            const activeClass = "bg-white text-tiffin-dark shadow-md ring-1 ring-black/5";
+            const inactiveClass = "text-tiffin-dark/50 hover:text-tiffin-dark";
 
             if (useStandard) {
-                stdBtn.className = "px-3 py-1 text-xs font-bold rounded-md bg-white text-tiffin-dark shadow-sm transition";
-                custBtn.className = "px-3 py-1 text-xs font-bold rounded-md text-gray-500 transition";
+                stdBtn.className = `flex-1 sm:flex-none px-4 py-2 text-xs font-black rounded-lg transition-all ${activeClass}`;
+                custBtn.className = `flex-1 sm:flex-none px-4 py-2 text-xs font-black rounded-lg transition-all ${inactiveClass}`;
                 stdForm.classList.remove('hide');
                 custForm.classList.add('hide');
             } else {
-                custBtn.className = "px-3 py-1 text-xs font-bold rounded-md bg-white text-tiffin-dark shadow-sm transition";
-                stdBtn.className = "px-3 py-1 text-xs font-bold rounded-md text-gray-500 transition";
+                custBtn.className = `flex-1 sm:flex-none px-4 py-2 text-xs font-black rounded-lg transition-all ${activeClass}`;
+                stdBtn.className = `flex-1 sm:flex-none px-4 py-2 text-xs font-black rounded-lg transition-all ${inactiveClass}`;
                 custForm.classList.remove('hide');
                 stdForm.classList.add('hide');
             }
@@ -575,6 +849,7 @@
         function executeCalculator() {
             let basePrice = 0;
             let periodDays = 1;
+            let lineItems = [];
 
             const hasDelivery = document.getElementById('addOnDeliveryCheck').checked;
             const dahiOption = document.getElementById('addOnDahiSelect').value;
@@ -587,6 +862,9 @@
                 if (freq === 'weekly') periodDays = 5;
                 if (freq === 'monthly') periodDays = 20;
 
+                const freqLabel = freq.charAt(0).toUpperCase() + freq.slice(1);
+                lineItems.push(`<span>${freqLabel} Plan (${cat.toUpperCase()}, ${size})</span><span>$${stdRates[cat][size][freq].toFixed(2)}</span>`);
+
                 basePrice = stdRates[cat][size][freq];
             } else {
                 const period = document.getElementById('custCalcPeriod').value;
@@ -597,6 +875,8 @@
                 if (period === 'weekly') periodDays = 5;
                 if (period === 'monthly') periodDays = 20;
 
+                lineItems.push(`<span>Custom Meal Base (${periodDays} days)</span><span>-</span>`);
+
                 let singleMealBase = 0;
                 let singleRotiCost = 0.50;
                 let componentUnitRate = 4.50;
@@ -606,41 +886,118 @@
                 }
 
                 singleMealBase += (rotis * singleRotiCost);
-                if (hasDal) singleMealBase += componentUnitRate;
-                if (hasSabji) singleMealBase += componentUnitRate;
+                if (rotis > 0) lineItems.push(`<span class="pl-3">└ Roti (${rotis} x $0.50)</span><span>$${(rotis * 0.50).toFixed(2)}</span>`);
+                
+                if (hasDal) {
+                    singleMealBase += componentUnitRate;
+                    lineItems.push(`<span class="pl-3">└ Dal Component</span><span>$${componentUnitRate.toFixed(2)}</span>`);
+                }
+                if (hasSabji) {
+                    singleMealBase += componentUnitRate;
+                    lineItems.push(`<span class="pl-3">└ Sabji Component</span><span>$${componentUnitRate.toFixed(2)}</span>`);
+                }
 
                 basePrice = singleMealBase * periodDays;
             }
 
             let addOnsSum = 0;
-            if (hasDelivery) addOnsSum += (1.00 * periodDays);
+            if (hasDelivery) {
+                addOnsSum += (1.00 * periodDays);
+                lineItems.push(`<span>Delivery Add-on ($1.00 x ${periodDays})</span><span>$${(1.00 * periodDays).toFixed(2)}</span>`);
+            }
 
-            if (dahiOption === 'small') addOnsSum += (1.50 * periodDays);
-            else if (dahiOption === 'large') addOnsSum += (2.50 * periodDays);
+            if (dahiOption !== 'none') {
+                const dahiRate = dahiOption === 'small' ? 1.50 : 2.50;
+                addOnsSum += (dahiRate * periodDays);
+                lineItems.push(`<span>Dahi (${dahiOption}) ($${dahiRate.toFixed(2)} x ${periodDays})</span><span>$${(dahiRate * periodDays).toFixed(2)}</span>`);
+            }
 
             const totalSum = basePrice + addOnsSum;
 
             document.getElementById('resBase').innerText = `$${basePrice.toFixed(2)}`;
             document.getElementById('resAddons').innerText = `$${addOnsSum.toFixed(2)}`;
             document.getElementById('resTotal').innerText = `$${totalSum.toFixed(2)}`;
+
+            const lineItemsContainer = document.getElementById('calcLineItems');
+            lineItemsContainer.innerHTML = lineItems.map(item => `<div class="flex justify-between">${item}</div>`).join('');
+            lineItemsContainer.classList.toggle('hidden', lineItems.length === 0);
+        }
+
+        function getPlanProgress(customer) {
+            const term = customer.term;
+            const target = term === 'Daily' ? 1 : (term === 'Weekly' ? 5 : 20);
+
+            // Count total deliveries ever made to this customer
+            const totalLogs = state.recentLogs.filter(l => l.customer_id == customer.id).length;
+            
+            // Calculate current cycle progress
+            // Use renewTimes to offset the total logs to find the current term's progress
+            let count = totalLogs - ((customer.renewTimes || 0) * target);
+            if (count < 0) count = 0;
+            
+            const is2ndLast = count === (target - 1) && target > 1;
+            const isCompleted = count >= target;
+
+            return { count, target, isCompleted, is2ndLast, totalLogs };
+        }
+
+        function getBalanceBreakdown(client) {
+            const cat = client.type.toLowerCase().replace('-', '');
+            const size = client.size.toLowerCase();
+            const rates = (stdRates[cat] && stdRates[cat][size]) ? stdRates[cat][size] : null;
+            if (!rates) return "";
+
+            const progress = getPlanProgress(client);
+            
+            if (client.term === 'Daily') {
+                return `Rate: $${rates.daily.toFixed(2)} / tiffin`;
+            }
+            return `${client.term} Rate: $${rates[client.term.toLowerCase()].toFixed(2)}`;
         }
 
         // ================= BUSINESS ENGINE: DASHBOARD METRICS =================
         function renderDashboardMetrics() {
-            const totalClients = state.customers.length;
-            const completedCount = state.customers.filter(c => c.deliveredToday).length;
+            const termFilter = document.getElementById('dashboardTermFilter')?.value || '';
+            const startDate = document.getElementById('dashboardStartDate')?.value;
+            const endDate = document.getElementById('dashboardEndDate')?.value;
+            
+            const filteredCustomers = termFilter 
+                ? state.customers.filter(c => c.term === termFilter)
+                : state.customers;
+            
+            const filteredIds = new Set(filteredCustomers.map(c => c.id));
+
+            const totalClients = filteredCustomers.length;
+            const completedCount = filteredCustomers.filter(c => c.deliveredToday).length;
             const pendingCount = totalClients - completedCount;
 
-            let outstandingSum = 0;
-            state.customers.forEach(c => outstandingSum += c.amountDue);
+            const outstandingSum = filteredCustomers.reduce((sum, c) => sum + (c.amountDue || 0), 0);
+            
+            // Filtered Revenue Logic
+            let rangePayments = state.paymentLogs.filter(p => filteredIds.has(p.customer_id));
+            if (startDate) rangePayments = rangePayments.filter(p => p.created_at >= startDate);
+            if (endDate) rangePayments = rangePayments.filter(p => p.created_at <= endDate + 'T23:59:59');
+            
+            const totalCollectedInRange = rangePayments.reduce((sum, p) => sum + p.amount, 0);
 
+            document.getElementById('stat-total-clients').innerText = totalClients;
             document.getElementById('stat-pending').innerText = pendingCount;
             document.getElementById('stat-completed').innerText = completedCount;
             document.getElementById('stat-due').innerText = `$${outstandingSum.toFixed(2)}`;
-            document.getElementById('stat-total-clients').innerText = totalClients;
+            document.getElementById('stat-earnings').innerText = `$${totalCollectedInRange.toFixed(2)}`;
+            document.getElementById('stat-earnings-label').innerText = startDate || endDate ? "Revenue (Filtered)" : "Total Revenue (Lifetime)";
+
+            // Good message logic
+            const dueMsg = document.getElementById('stat-due-msg');
+            if (outstandingSum <= 0 && totalClients > 0) {
+                dueMsg.innerText = "✨ Perfect! Zero outstanding balance.";
+                dueMsg.classList.remove('hide');
+            } else {
+                dueMsg.classList.add('hide');
+            }
 
             // Chart Rendering
-            const collectedEstimate = 850.00; // Stand-in historical cleared values
+            const collectedEstimate = 0.00; // Initial value for cleared income
             const payCanvas = document.getElementById('paymentChartCanvas').getContext('2d');
             
             if (paymentChartInstance) paymentChartInstance.destroy();
@@ -649,7 +1006,7 @@
                 data: {
                     labels: ['Cleared Income', 'Outstanding Receivables'],
                     datasets: [{
-                        data: [collectedEstimate, outstandingSum],
+                        data: [totalCollectedInRange, outstandingSum],
                         backgroundColor: ['#10b981', '#ef4444'],
                         borderWidth: 0
                     }]
@@ -669,7 +1026,7 @@
                     labels: ['Delivered', 'Remaining Route'],
                     datasets: [{
                         data: [completedCount, pendingCount],
-                        backgroundColor: ['#f59e0b', '#cbd5e1'],
+                        backgroundColor: ['#3B82F6', '#60A5FA'],
                         borderWidth: 0
                     }]
                 },
@@ -682,116 +1039,502 @@
         }
 
         // ================= BUSINESS ENGINE: OPERATIONAL TABLE =================
-        function renderCustomerTable() {
+        function renderCustomerTable(filterTerm = '') {
             const tbody = document.getElementById('clientTableBody');
+            
+            // Update Header Sort Icons
+            ['address', 'balance', 'remaining', 'status'].forEach(id => {
+                const icon = document.getElementById(`sort-icon-${id}`);
+                if (icon) {
+                    icon.innerHTML = (state.sortBy === id) ? (state.sortDirection[id] === 'asc' ? '↑' : '↓') : '';
+                    icon.style.opacity = (state.sortBy === id) ? '1' : '0';
+                }
+            });
+
             tbody.innerHTML = '';
+            let filtered = state.customers.filter(c => 
+                c.name.toLowerCase().includes(filterTerm.toLowerCase()) || 
+                c.address.toLowerCase().includes(filterTerm.toLowerCase())
+            );
 
-            state.customers.forEach(client => {
+            // Apply Sorting Logic
+            filtered.sort((a, b) => {
+                const criteria = state.sortBy || 'address';
+                const direction = state.sortDirection[criteria] === 'asc' ? 1 : -1;
+                let comparison = 0;
+
+                if (criteria === 'address') {
+                    comparison = a.address.localeCompare(b.address);
+                }
+                if (criteria === 'balance') {
+                    // Outstanding vs Paid: Descending order of amountDue
+                    comparison = a.amountDue - b.amountDue; // Ascending by default, will be reversed by direction
+                }
+                if (criteria === 'remaining') {
+                    const progA = getPlanProgress(a);
+                    const progB = getPlanProgress(b);
+                    const remA = progA.target - progA.count;
+                    const remB = progB.target - progB.count;
+                    comparison = remA - remB; // Fewer remaining first (urgency)
+                }
+                if (criteria === 'status') {
+                    // Pending (false) comes before Delivered (true) for ascending
+                    if (a.deliveredToday === b.deliveredToday) comparison = 0;
+                    else comparison = a.deliveredToday ? 1 : -1;
+                }
+                // Default or tie-breaker: sort by address
+                if (comparison === 0) {
+                    comparison = a.address.localeCompare(b.address);
+                }
+
+                return comparison * direction;
+            });
+
+            filtered.forEach(client => {
                 const tr = document.createElement('tr');
-                tr.className = "hover:bg-amber-50/20 transition duration-150";
-
+                tr.className = "hover:bg-tiffin-light/40 transition duration-150";
                 const isPaid = client.amountDue <= 0;
                 const badgeClass = isPaid 
                     ? "bg-green-100 text-green-800" 
                     : "bg-red-100 text-red-800";
                 const badgeLabel = isPaid ? "Paid" : `$${client.amountDue.toFixed(2)}`;
+                
+                const deliveryStatusLabel = client.deliveredToday ? "✅ Delivered" : "Pending";
+                const deliveryStatusIcon = client.deliveredToday ? "check-circle" : "clock";
+                const deliveryStatusColor = client.deliveredToday ? "text-green-600" : "text-tiffin-accent";
 
-                const deliveryStatusLabel = client.deliveredToday ? "✅ Dispatched" : "Pending";
-                const deliveryStatusColor = client.deliveredToday ? "text-green-600" : "text-amber-500";
+                const progress = getPlanProgress(client);
+
+                // Arrears calculation for clear financial breakdown
+                const catKey = client.type.toLowerCase().replace('-', '');
+                const sizeKey = client.size.toLowerCase();
+                const termKey = client.term.toLowerCase();
+                const currentTermPrice = (stdRates[catKey] && stdRates[catKey][sizeKey]) ? (stdRates[catKey][sizeKey][termKey] || 0) : 0;
+                
+                let balanceBreakdownHtml = "";
+                if (!isPaid && client.term !== 'Daily' && client.amountDue > (currentTermPrice + 0.01)) {
+                    const arrears = client.amountDue - currentTermPrice;
+                    balanceBreakdownHtml = `<div class="text-[9px] text-stone-400 font-bold mt-1 uppercase tracking-tight">
+                        $${currentTermPrice.toFixed(2)} Plan + $${arrears.toFixed(2)} Past Due
+                    </div>`;
+                }
+                
+                let deliveryAction = '';
+                let termAction = '';
+                let billingAction = '';
+
+                // 1. Delivery Workflow Actions
+                if (!client.deliveredToday) {
+                    deliveryAction = `
+                        <button onclick="commitDelivery('${client.id}')" class="px-3 py-1.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-lg text-xs font-bold transition shadow-sm flex items-center gap-1">
+                            🚚 Deliver
+                        </button>
+                    `;
+                } else {
+                    deliveryAction = `
+                        <div class="inline-flex items-center gap-1 bg-stone-100 rounded-lg px-2 py-1">
+                            <span class="text-[10px] font-black text-green-600 uppercase tracking-tighter">✅ Delivered</span>
+                            <button onclick="cancelDelivery('${client.id}')" class="text-red-400 hover:text-red-600 transition ml-1" title="Undo Delivery Status">↩️</button>
+                        </div>
+                    `;
+                }
+
+                // 2. Term Cycle Actions (Separated logic)
+                if (progress.is2ndLast) {
+                    termAction = `
+                        <button onclick="sendTermReminder('${client.id}')" class="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-xs font-bold transition shadow-sm" title="WhatsApp Reminder">🔔</button>
+                    `;
+                }
+                if (progress.isCompleted) {
+                    termAction += `
+                        <button onclick="renewTerm('${client.id}')" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shadow-sm" title="Start New Term">🔄 Renew</button>
+                    `;
+                }
+
+                // 3. Billing & Admin Actions
+                billingAction = `
+                    <button onclick="commitPaymentClearance('${client.id}')" class="px-3 py-1.5 bg-tiffin-accent hover:bg-tiffin-dark text-white rounded-lg text-xs font-bold transition shadow-sm ${isPaid ? 'opacity-40 cursor-not-allowed' : ''}" ${isPaid ? 'disabled' : ''}>
+                        💲 Pay
+                    </button>
+                    <div class="inline-flex gap-1">
+                        <button onclick="openCustomerModal('${client.id}')" class="p-1.5 bg-tiffin-light hover:bg-white text-tiffin-accent rounded-lg transition" title="Edit Profile">✏️</button>
+                        <button onclick="removeCustomer('${client.id}')" class="p-1.5 bg-tiffin-light hover:bg-white text-tiffin-main rounded-lg transition" title="Delete Subscriber">🗑️</button>
+                    </div>
+                `;
 
                 tr.innerHTML = `
                     <td class="p-4">
-                        <div class="font-bold text-gray-800 text-sm">${client.name}</div>
-                        <div class="text-xs text-gray-400 font-medium truncate max-w-xs" title="${client.address}">📍 ${client.address}</div>
+                        <div class="font-bold text-gray-800 text-sm">📍 ${client.address}</div>
+                        <div onclick="showCustomerDetails('${client.id}')" class="mt-1 font-bold text-gray-500 text-[11px] cursor-pointer hover:text-tiffin-main transition underline decoration-dotted underline-offset-4">Client: ${client.name}</div>
+                        <div class="text-[10px] text-gray-400 font-medium mt-0.5">🗓️ Registered: ${new Date(client.startDate).toLocaleDateString('en-GB')}</div>
                     </td>
                     <td class="p-4">
-                        <div class="text-sm font-semibold text-gray-700">${client.type} Plan (${client.size})</div>
-                        <div class="text-xs text-gray-400">Term: ${client.term}</div>
+                        <div class="text-sm font-black text-tiffin-dark uppercase tracking-tight">${client.type} (${client.size}) — $${currentTermPrice.toFixed(2)}</div>
+                        <div class="text-xs font-bold text-gray-500 mt-0.5">${client.term}: ${progress.count} / ${progress.target}</div>
+                        <div class="flex items-center gap-2 mt-2">
+                            <span class="px-2 py-0.5 bg-tiffin-light text-tiffin-main text-[9px] font-black rounded-md border border-tiffin-accent/20 uppercase">
+                                ${progress.target - progress.count} REMAINING
+                            </span>
+                            ${progress.isCompleted ? '<span class="text-[10px] text-red-600 font-black animate-pulse">RENEW NOW</span>' : ''}
+                        </div>
                     </td>
                     <td class="p-4">
-                        <span class="px-2.5 py-1 rounded-full text-xs font-bold ${badgeClass}">${badgeLabel}</span>
+                        <div class="flex flex-col">
+                            <span class="px-2.5 py-1 rounded-full text-xs font-bold w-fit ${badgeClass}">${badgeLabel}</span>
+                            <div class="text-[10px] text-green-600 font-bold mt-1 uppercase tracking-tighter">Paid: $${(client.totalPaid || 0).toFixed(2)}</div>
+                            ${balanceBreakdownHtml}
+                        </div>
                     </td>
                     <td class="p-4 text-center">
-                        <span class="text-xs font-bold ${deliveryStatusColor}">${deliveryStatusLabel}</span>
+                        <span class="text-xs font-bold ${deliveryStatusColor} flex items-center justify-center gap-1"><i data-lucide="${deliveryStatusIcon}" class="w-3 h-3"></i> ${deliveryStatusLabel}</span>
                     </td>
-                    <td class="p-4 text-right space-x-1">
-                        <button onclick="commitDelivery(${client.id})" class="px-3 py-1.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-lg text-xs font-bold transition shadow-sm ${client.deliveredToday ? 'opacity-40 cursor-not-allowed' : ''}" ${client.deliveredToday ? 'disabled' : ''}>
-                            📷 Deliver
-                        </button>
-                        <button onclick="commitPaymentClearance(${client.id})" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-bold transition shadow-sm ${isPaid ? 'opacity-40 cursor-not-allowed' : ''}" ${isPaid ? 'disabled' : ''}>
-                            💲 Clear Due
-                        </button>
-                        <button onclick="removeCustomer(${client.id})" class="px-2 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-xs font-bold transition">
-                            🗑️
-                        </button>
+                    <td class="p-4 text-right">
+                        <div class="flex flex-wrap items-center justify-end gap-1.5">
+                            ${deliveryAction} ${termAction} ${billingAction}
+                        </div>
                     </td>
                 `;
                 tbody.appendChild(tr);
             });
+            lucide.createIcons();
         }
 
-        function commitDelivery(id) {
-            const client = state.customers.find(c => c.id === id);
+        async function commitDelivery(id) {
+            const client = state.customers.find(c => c.id == id);
             if (client && !client.deliveredToday) {
+                const progress = getPlanProgress(client);
                 
-                // Update in Supabase
-                supabase.from('customers')
-                    .update({ deliveredToday: true })
-                    .eq('id', id)
-                    .then(({ error }) => {
-                        if (error) throw error;
-                        client.deliveredToday = true; // Update local state
-                        renderCustomerTable();
-                        renderDashboardMetrics(); // Update dashboard after change
-                        showToast(`Logged dispatch run for ${client.name}`, "🚚");
-                    })
-                    .catch(e => console.error("Error updating delivery status:", e.message) || showToast("Failed to update delivery.", "🚨"));
+                // Pricing logic: only auto-increment for Daily plans or the very first delivery of a term
+                // Otherwise, we rely on the "Renew" button to add the package price
+                const cat = client.type.toLowerCase().replace('-', '');
+                const size = client.size.toLowerCase();
+                const rates = (stdRates[cat] && stdRates[cat][size]) ? stdRates[cat][size] : null;
+                
+                let updatedAmount = client.amountDue;
+                if (rates && client.term === 'Daily') {
+                    updatedAmount += rates.daily;
+                }
+                
+                try {
+                    // Update in Supabase
+                    const { error: updateError } = await supabaseClient.from('customers')
+                        .update({ deliveredToday: true, amountDue: updatedAmount })
+                        .eq('id', id);
 
-                // Generate WhatsApp Direct API Message Link
-                const rawMessage = `Hello ${client.name}, your fresh meal has been safely delivered to ${client.address}! 🍛 Bon Appetit!\n\n(Attachment: Delivery Photo)`;
-                const encodedMsg = encodeURIComponent(rawMessage);
-                const apiLink = `https://wa.me/${client.phone}?text=${encodedMsg}`;
-                window.open(apiLink, '_blank');
+                    if (updateError) throw updateError;
+
+                    // Log entry to permanent history
+                    const { error: logError } = await supabaseClient.from('delivery_logs')
+                        .insert([{ customer_id: id }]);
+                    if (logError) {
+                        console.error("History Log Error:", logError.message);
+                        showToast("Failed to log delivery history.", "🚨");
+                    }
+
+                    // Re-fetch all logs to ensure state.recentLogs is fully up-to-date
+                    const { data: updatedLogs, error: fetchLogsError } = await supabaseClient.from('delivery_logs').select('*');
+                    if (fetchLogsError) console.error("Error re-fetching logs:", fetchLogsError.message);
+                    state.recentLogs = updatedLogs || [];
+
+                    // Update local state and UI
+                    client.deliveredToday = true;
+                    client.amountDue = updatedAmount;
+                    renderCustomerTable();
+                    renderDashboardMetrics();
+                    showToast(`Logged dispatch run for ${client.name}`, "truck");
+                } catch (e) { 
+                    console.error("Error updating delivery status:", e.message);
+                    showToast("Failed to update delivery.", "🚨");
+                }
+
+                // WhatsApp Message Logic
+                // let messageSuffix = "🍛 Bon Appetit!";
+                // // Trigger reminder suffix when committing the final delivery of the term
+                // if (progress.count + 1 === progress.target && progress.target > 1) {
+                //     messageSuffix = "\n\nNote: Your term completes today. Please renew to ensure continued service from tomorrow. Thank you!";
+                // }
+
+                // const rawMessage = `Hello ${client.name}, your fresh meal has been safely delivered to ${client.address}! ${messageSuffix}`;
+                // const encodedMsg = encodeURIComponent(rawMessage);
+                // const cleanPhone = client.phone.replace(/\D/g, '');
+                // const apiLink = `https://wa.me/${cleanPhone}?text=${encodedMsg}`;
+                // window.open(apiLink, '_blank');
             }
         }
 
-        function commitPaymentClearance(id) {
-            const client = state.customers.find(c => c.id === id);
-            if (client && client.amountDue > 0) {
-                requestConfirm(
-                    "Resolve Bill?",
-                    `Are you sure you want to log payment and clear the outstanding balance of $${client.amountDue.toFixed(2)} for ${client.name}?`,
-                    "💵",
-                    async () => {
-                        // Update in Supabase
-                        const { error } = await supabase.from('customers')
-                            .update({ amountDue: 0 })
-                            .eq('id', id);
+        async function cancelDelivery(id) {
+            const client = state.customers.find(c => c.id == id);
+            if (!client || !client.deliveredToday) return;
 
-                        if (error) {
-                            console.error("Error clearing payment:", error.message);
-                            showToast("Failed to clear payment.", "🚨");
-                        } else {
-                            client.amountDue = 0;
-                            renderCustomerTable();
-                            renderDashboardMetrics();
-                            showToast(`Logged payment for ${client.name}`, "✅");
-                        }
+            requestConfirm(
+                "Reverse Delivery?",
+                `Reverse today's delivery for ${client.name}? This removes the history log and deducts the daily cost if applicable.`,
+                "undo-2",
+                async () => {
+                    const cat = client.type.toLowerCase().replace('-', '');
+                    const size = client.size.toLowerCase();
+                    const rates = (stdRates[cat] && stdRates[cat][size]) ? stdRates[cat][size] : null;
+                    let updatedAmount = client.amountDue;
+                    if (rates && client.term === 'Daily') {
+                        updatedAmount = Math.max(0, updatedAmount - rates.daily);
                     }
-                );
+
+                    try {
+                        // 1. Find and remove the latest log from today
+                        const today = new Date().toISOString().split('T')[0];
+                        const { data: logs, error: fetchErr } = await supabaseClient
+                            .from('delivery_logs')
+                            .select('id')
+                            .eq('customer_id', id)
+                            .gte('delivery_time', today)
+                            .order('delivery_time', { ascending: false })
+                            .limit(1);
+                        if (fetchErr) throw fetchErr;
+                        if (logs && logs.length > 0) {
+                            const { error: delErr } = await supabaseClient.from('delivery_logs').delete().eq('id', logs[0].id);
+                            if (delErr) throw delErr;
+                            state.recentLogs = state.recentLogs.filter(l => l.id != logs[0].id);
+                            
+                            // Re-fetch all logs to ensure state.recentLogs is fully up-to-date
+                            const { data: updatedLogs, error: fetchLogsError } = await supabaseClient.from('delivery_logs').select('*');
+                            if (fetchLogsError) console.error("Error re-fetching logs:", fetchLogsError.message);
+                            state.recentLogs = updatedLogs || [];
+                        }
+
+                        // 2. Update customer status
+                        const { error: updateErr } = await supabaseClient.from('customers').update({ deliveredToday: false, amountDue: updatedAmount }).eq('id', id);
+                        if (updateErr) throw updateErr;
+
+                        client.deliveredToday = false;
+                        client.amountDue = updatedAmount;
+                        renderCustomerTable();
+                        renderDashboardMetrics();
+                        showToast(`Reversed delivery for ${client.name}`, "undo-2");
+                    } catch (e) {
+                        console.error("Reverse Error:", e.message);
+                        showToast("Failed to reverse delivery.", "🚨");
+                    }
+                }
+            );
+        }
+
+        function sendTermReminder(id) {
+            const client = state.customers.find(c => c.id == id);
+            if (!client) return;
+
+            const rawMessage = `Hello ${client.name}, your tiffin term is concluding tomorrow. We hope you've enjoyed your service! To ensure uninterrupted meals and to discuss any preferences for your next term, please confirm your renewal. We value your business!`;
+            const encodedMsg = encodeURIComponent(rawMessage);
+            const cleanPhone = client.phone.replace(/\D/g, '');
+            const apiLink = `https://wa.me/${cleanPhone}?text=${encodedMsg}`;
+            window.open(apiLink, '_blank');
+        }
+
+        async function renewTerm(id) {
+            const client = state.customers.find(c => c.id == id);
+            if (!client) return;
+
+            const cat = client.type.toLowerCase().replace('-', '');
+            const size = client.size.toLowerCase();
+            const term = client.term.toLowerCase();
+            const price = stdRates[cat][size][term];
+
+            requestConfirm(
+                "Renew Subscription?",
+                `Starting new ${client.term} term for ${client.name}. This adds $${price.toFixed(2)} to the existing balance of $${client.amountDue.toFixed(2)}. New Total: $${(client.amountDue + price).toFixed(2)}`,
+                "refresh-cw",
+                async () => {
+                    const updatedAmount = client.amountDue + price;
+                    const nextRenewDate = calculateNextRenewDate(client.renewDate || new Date(), client.term);
+                    const updatedRenewTimes = (client.renewTimes || 0) + 1;
+
+                    const { error } = await supabaseClient
+                        .from('customers')
+                        .update({ 
+                            amountDue: updatedAmount,
+                            renewDate: nextRenewDate,
+                            renewTimes: updatedRenewTimes
+                        })
+                        .eq('id', id);
+
+                    if (error) {
+                        showToast("Renewal failed.", "alert-circle");
+                    } else {
+                        client.amountDue = updatedAmount;
+                        client.renewDate = nextRenewDate;
+                        client.renewTimes = updatedRenewTimes;
+                        renderCustomerTable();
+                        showToast(`Term renewed for ${client.name}!`, "✅");
+                    }
+                }
+            );
+        }
+
+        function commitPaymentClearance(id) {
+            const client = state.customers.find(c => c.id == id);
+            if (client && client.amountDue > 0) {
+                const modal = document.getElementById('paymentModal');
+                const input = document.getElementById('payAmountInput');
+                const pastDueBtn = document.getElementById('payPastDueBtn');
+                
+                activePaymentCustomerId = id;
+                document.getElementById('paymentModalText').innerText = `Logging payment for ${client.name}.`;
+                input.value = ""; 
+                document.getElementById('payBalanceInfo').innerText = `Total balance remaining: $${client.amountDue.toFixed(2)}`;
+
+                // Calculate Arrears to determine if "Pay Past Due" should be shown
+                const catKey = client.type.toLowerCase().replace('-', '');
+                const sizeKey = client.size.toLowerCase();
+                const termKey = client.term.toLowerCase();
+                const currentTermPrice = (stdRates[catKey] && stdRates[catKey][sizeKey]) ? (stdRates[catKey][sizeKey][termKey] || 0) : 0;
+                const arrears = Math.max(0, client.amountDue - currentTermPrice);
+
+                if (arrears > 0.01) {
+                    pastDueBtn.classList.remove('hide');
+                    pastDueBtn.innerText = `PAY PAST DUE ($${arrears.toFixed(2)})`;
+                } else {
+                    pastDueBtn.classList.add('hide');
+                }
+                
+                modal.classList.remove('hidden');
+                document.getElementById('confirmPayBtn').onclick = submitPartialPayment;
+            }
+        }
+
+        function setFullPaymentAmount() {
+            const client = state.customers.find(c => c.id == activePaymentCustomerId);
+            if (client) {
+                document.getElementById('payAmountInput').value = client.amountDue.toFixed(2);
+            }
+        }
+
+        function setPastDuePaymentAmount() {
+            const client = state.customers.find(c => c.id == activePaymentCustomerId);
+            if (client) {
+                const catKey = client.type.toLowerCase().replace('-', '');
+                const sizeKey = client.size.toLowerCase();
+                const termKey = client.term.toLowerCase();
+                const currentTermPrice = (stdRates[catKey] && stdRates[catKey][sizeKey]) ? (stdRates[catKey][sizeKey][termKey] || 0) : 0;
+                const arrears = Math.max(0, client.amountDue - currentTermPrice);
+                if (arrears > 0) {
+                    document.getElementById('payAmountInput').value = arrears.toFixed(2);
+                }
+            }
+        }
+
+        function closePaymentModal() {
+            document.getElementById('paymentModal').classList.add('hidden');
+        }
+
+        async function showCustomerDetails(id) {
+            const client = state.customers.find(c => c.id == id);
+            if (!client) return;
+
+            document.getElementById('detailName').innerText = client.name;
+            document.getElementById('detailAddress').innerText = client.address;
+            document.getElementById('detailStart').innerText = client.startDate ? new Date(client.startDate).toLocaleDateString('en-GB') : 'N/A';
+            document.getElementById('detailPlan').innerText = `${client.type} (${client.size}) - ${client.term}`;
+            document.getElementById('detailStatus').innerHTML = client.deliveredToday ? `<span class="text-green-600 flex items-center gap-1"><i data-lucide="check-circle" class="w-4 h-4"></i> Delivered</span>` : `<span class="text-amber-500 flex items-center gap-1"><i data-lucide="clock" class="w-4 h-4"></i> Pending</span>`;
+
+            const logTable = document.getElementById('detailPaymentLogs');
+            logTable.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400 italic">Fetching payment logs...</td></tr>';
+            
+            document.getElementById('detailModal').classList.remove('hidden');
+
+            try {
+                const { data, error } = await supabaseClient
+                    .from('payment_logs')
+                    .select('*')
+                    .eq('customer_id', id)
+                    .order('created_at', { ascending: false });
+
+                if (error) throw error;
+
+                if (!data || data.length === 0) {
+                    logTable.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400">No payment history found.</td></tr>';
+                } else {
+                    logTable.innerHTML = data.map(log => `
+                        <tr class="hover:bg-stone-50 transition">
+                            <td class="p-3 text-gray-600">${new Date(log.created_at).toLocaleDateString('en-GB')}</td>
+                            <td class="p-3 text-right font-bold text-green-600">$${log.amount.toFixed(2)}</td>
+                            <td class="p-3 text-gray-500 italic text-[10px]">${log.notes || 'N/A'}</td>
+                        </tr>
+                    `).join('');
+                }
+                lucide.createIcons();
+            } catch (e) {
+                console.error("Payment Log Fetch Error:", e);
+                logTable.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-red-400 text-xs">Failed to load payment history.</td></tr>';
+            }
+        }
+
+        function closeDetailModal() {
+            document.getElementById('detailModal').classList.add('hidden');
+        }
+
+        async function submitPartialPayment() {
+            const amountInput = document.getElementById('payAmountInput');
+            const amount = parseFloat(amountInput.value);
+            
+            if (isNaN(amount) || amount <= 0) {
+                showToast("Enter a valid payment amount", "⚠️");
+                return;
+            }
+
+            const client = state.customers.find(c => c.id == activePaymentCustomerId);
+            if (!client || amount > client.amountDue + 0.01) { // small buffer for float math
+                if (amount > client.amountDue) showToast("Amount exceeds balance.", "⚠️");
+                return;
+            }
+
+            const newBalance = Math.max(0, client.amountDue - amount);
+            
+            const btn = document.getElementById('confirmPayBtn');
+            btn.disabled = true;
+            btn.innerText = "Processing...";
+
+            try {
+                const { error } = await supabaseClient.from('customers')
+                    .update({ amountDue: newBalance })
+                    .eq('id', activePaymentCustomerId);
+
+                if (error) throw error;
+
+                // Log the payment in history
+                await supabaseClient.from('payment_logs').insert([{
+                    customer_id: activePaymentCustomerId,
+                    amount: amount,
+                    notes: "Partial Payment via Billing Table"
+                }]);
+
+                client.amountDue = newBalance;
+                client.totalPaid = (client.totalPaid || 0) + amount;
+                renderCustomerTable();
+                renderDashboardMetrics();
+
+                // If the customer edit modal is open for this customer, refresh its financial fields
+                if (!document.getElementById('customerModal').classList.contains('hidden') && editingCustomerId === activePaymentCustomerId) {
+                    await refreshCustomerFinancialsInModal(activePaymentCustomerId);
+                }
+                closePaymentModal();
+                showToast(`Received $${amount.toFixed(2)}. New balance: $${newBalance.toFixed(2)}`, "✅");
+            } catch (e) {
+                showToast("Failed to update balance", "🚨");
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Confirm Payment";
             }
         }
 
         function removeCustomer(id) {
-            const client = state.customers.find(c => c.id === id);
+            const client = state.customers.find(c => c.id == id);
             if (client) {
                 requestConfirm(
                     "Remove Customer?",
                     `Are you sure you want to delete ${client.name} from your subscriber register?`,
-                    "🗑️",
+                    "trash-2",
                     async () => {
                         // Delete from Supabase
-                        const { error } = await supabase.from('customers')
+                        const { error } = await supabaseClient.from('customers')
                             .delete()
                             .eq('id', id);
 
@@ -799,19 +1542,351 @@
                             console.error("Error removing customer:", error.message);
                             showToast("Failed to remove customer.", "🚨");
                         } else {
-                            state.customers = state.customers.filter(c => c.id !== id);
+                            state.customers = state.customers.filter(c => c.id != id);
                             renderCustomerTable();
                             renderDashboardMetrics();
-                            showToast(`${client.name} removed successfully.`);
+                            showToast(`${client.name} removed successfully.`, "trash-2");
                         }
                     }
                 );
             }
         }
 
+        async function resetDailyDeliveries() {
+            requestConfirm(
+                "Start New Delivery Day?",
+                "This will reset all current 'Dispatched' statuses back to 'Pending'. This action updates the cloud database for all subscribers.",
+                "refresh-cw",
+                async () => {
+                    const { error } = await supabaseClient
+                        .from('customers')
+                        .update({ deliveredToday: false })
+                        .eq('deliveredToday', true);
+
+                    if (error) {
+                        console.error("Reset Error:", error.message);
+                        showToast("Failed to reset delivery day.", "🚨");
+                    } else {
+                        state.customers.forEach(c => c.deliveredToday = false);
+                        renderCustomerTable();
+                        renderDashboardMetrics();
+                        showToast("All statuses reset to Pending. Good luck today!", "calendar");
+                    }
+                }
+            );
+        }
+
+        function filterCustomerTable() {
+            const term = document.getElementById('tableSearch').value;
+            renderCustomerTable(term);
+        }
+
+        function applyTableSort(criteria) {
+            if (state.sortBy === criteria) {
+                // Toggle direction if the same column is clicked
+                state.sortDirection[criteria] = state.sortDirection[criteria] === 'asc' ? 'desc' : 'asc';
+            } else {
+                // Set new sort criteria and default direction
+                state.sortBy = criteria;
+                // Default directions: 'asc' for address, remaining, status; 'desc' for balance
+                state.sortDirection = {
+                    address: 'asc', balance: 'desc', remaining: 'asc', status: 'asc'
+                };
+                // Override default for the newly selected criteria if needed
+            }
+            filterCustomerTable();
+        }
+
+        async function fetchHistory(selectedCustomerId = null, resetPagination = false) {
+            if (resetPagination) {
+                historyCurrentPage = 1;
+                summaryCurrentPage = 1;
+            }
+
+            if (!selectedCustomerId) selectedCustomerId = document.getElementById('historyCustomerFilter').value;
+            
+            const tbody = document.getElementById('historyTableBody');
+            const summaryBody = document.getElementById('historySummaryBody');
+            const deliveryCountEl = document.getElementById('historyDeliveryCount');
+
+            const startDate = document.getElementById('historyStartDate').value;
+            const endDate = document.getElementById('historyEndDate').value;
+
+            tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-gray-400">Loading history records...</td></tr>';
+            summaryBody.innerHTML = '';
+
+            try {
+                let query = supabaseClient
+                    .from('delivery_logs')
+                    .select('*, customers(name, address, term)')
+                    .order('delivery_time', { ascending: false });
+
+                if (selectedCustomerId) {
+                    query = query.eq('customer_id', selectedCustomerId);
+                }
+
+                if (startDate) query = query.gte('delivery_time', startDate);
+                if (endDate) query = query.lte('delivery_time', endDate + 'T23:59:59');
+
+                const { data: logs, error: logsError } = await query.limit(100);
+                if (logsError) throw logsError;
+                
+                allHistoryLogs = logs || [];
+                deliveryCountEl.innerText = allHistoryLogs.length;
+
+                // Build Summary per Customer from all customers, then filter logs
+                const summaryMap = {};
+                state.customers.forEach(c => {
+                    summaryMap[c.id] = { name: c.name, term: c.term, count: 0 };
+                });
+
+                allHistoryLogs.forEach(log => {
+                    if (log.customer_id && summaryMap[log.customer_id]) {
+                        summaryMap[log.customer_id].count++;
+                    }
+                });
+
+                allSummaryData = Object.values(summaryMap);
+
+                renderPaginatedDetailedHistory();
+                renderPaginatedSummary();
+
+                lucide.createIcons();
+            } catch (e) {
+                console.error("History Error:", e.message);
+                showToast("Failed to load delivery history.", "🚨");
+            }
+        }
+
+        function renderPaginatedDetailedHistory() {
+            const tbody = document.getElementById('historyTableBody');
+            tbody.innerHTML = '';
+
+            const startIndex = (historyCurrentPage - 1) * historyItemsPerPage;
+            const endIndex = startIndex + historyItemsPerPage;
+            const paginatedLogs = allHistoryLogs.slice(startIndex, endIndex);
+
+            if (paginatedLogs.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-gray-400">No delivery records found for this page.</td></tr>';
+            } else {
+                paginatedLogs.forEach(log => {
+                    const tr = document.createElement('tr');
+                    tr.className = "hover:bg-amber-50/20 transition duration-150 text-sm";
+                    const dateObj = new Date(log.delivery_time);
+                    tr.innerHTML = `
+                        <td class="p-4 font-semibold text-gray-600">${dateObj.toLocaleDateString('en-GB')}</td>
+                        <td class="p-4 font-bold text-gray-800">${log.customers?.name || 'Deleted Customer'}</td>
+                        <td class="p-4 text-gray-500 text-xs">${log.customers?.address || 'N/A'}</td>
+                        <td class="p-4 text-right font-bold text-tiffin-dark">${dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+            renderPaginationControls('historyPaginationControls', 'historyPageInfo', allHistoryLogs.length, historyCurrentPage, historyItemsPerPage, 'history');
+            lucide.createIcons();
+        }
+
+        function renderPaginatedSummary() {
+            const summaryBody = document.getElementById('historySummaryBody');
+            summaryBody.innerHTML = '';
+
+            const startIndex = (summaryCurrentPage - 1) * summaryItemsPerPage;
+            const endIndex = startIndex + summaryItemsPerPage;
+            const paginatedSummary = allSummaryData.slice(startIndex, endIndex);
+
+            if (paginatedSummary.length === 0) {
+                summaryBody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-400">No customer summaries for this page.</td></tr>';
+            } else {
+                paginatedSummary.forEach(s => {
+                    let expected = s.term === 'Daily' ? 1 : (s.term === 'Weekly' ? 5 : 20);
+                    let isDone = s.count >= expected;
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td class="py-2 font-bold text-gray-700">${s.name}</td>
+                        <td class="py-2 text-gray-400 font-medium">${s.term}</td>
+                        <td class="py-2 text-center font-black">${s.count} / ${expected}</td>
+                        <td class="py-2 text-right">
+                            <span class="${isDone ? 'text-green-600' : 'text-blue-500'} font-bold">${isDone ? '✅ Complete' : '⏳ In Progress'}</span>
+                        </td>
+                    `;
+                    summaryBody.appendChild(row);
+                });
+            }
+            renderPaginationControls('summaryPaginationControls', 'summaryPageInfo', allSummaryData.length, summaryCurrentPage, summaryItemsPerPage, 'summary');
+        }
+
+        function renderPaginationControls(containerId, infoId, totalItems, currentPage, itemsPerPage, type) {
+            const container = document.getElementById(containerId);
+            const infoSpan = document.getElementById(infoId);
+            const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+            infoSpan.innerText = `Page ${currentPage} of ${totalPages}`;
+
+            const prevBtn = container.querySelector('button:first-child');
+            const nextBtn = container.querySelector('button:last-child');
+
+            prevBtn.disabled = currentPage === 1;
+            nextBtn.disabled = currentPage === totalPages;
+
+            prevBtn.onclick = () => {
+                if (type === 'history') { historyCurrentPage--; renderPaginatedDetailedHistory(); }
+                else if (type === 'summary') { summaryCurrentPage--; renderPaginatedSummary(); }
+            };
+            nextBtn.onclick = () => {
+                if (type === 'history') { historyCurrentPage++; renderPaginatedDetailedHistory(); }
+                else if (type === 'summary') { summaryCurrentPage++; renderPaginatedSummary(); }
+            };
+        }
+
+        function prevPageHistory() { /* Handled by renderPaginationControls */ }
+        function nextPageHistory() { /* Handled by renderPaginationControls */ }
+        function prevPageSummary() { /* Handled by renderPaginationControls */ }
+        function nextPageSummary() { /* Handled by renderPaginationControls */ }
+
+        function populateHistoryCustomerFilter() {
+            const select = document.getElementById('historyCustomerFilter');
+            select.innerHTML = '<option value="">All Customers</option>'; // Reset options
+            state.customers.sort((a, b) => a.name.localeCompare(b.name)).forEach(customer => {
+                const option = document.createElement('option');
+                option.value = customer.id;
+                option.innerText = customer.name;
+                select.appendChild(option);
+            });
+        }
+
+        // Helper to calculate next renewal date
+        function calculateNextRenewDate(baseDate, term) {
+            const date = new Date(baseDate);
+            if (term === 'Daily') date.setDate(date.getDate() + 1);
+            else if (term === 'Weekly') date.setDate(date.getDate() + 5); // 5 delivery days
+            else if (term === 'Monthly') date.setDate(date.getDate() + 20); // 20 delivery days
+            
+            return date.toISOString().split('T')[0]; // Return YYYY-MM-DD
+        }
+
+        // Helper function to refresh financial fields in the customer edit modal
+        async function refreshCustomerFinancialsInModal(customerId) {
+            const client = state.customers.find(c => c.id == customerId);
+            if (!client) return;
+
+            // 1. Update custDue from the latest client state
+            document.getElementById('custDue').value = client.amountDue.toFixed(2);
+
+            // 2. Re-fetch payment logs and update custPaidThisTerm
+            try {
+                const { data: payments } = await supabaseClient
+                    .from('payment_logs')
+                    .select('amount, created_at')
+                    .eq('customer_id', customerId);
+
+                if (payments) {
+                    let termStart = new Date(client.startDate);
+                    if (client.renewTimes > 0 && client.renewDate) {
+                        const rDate = new Date(client.renewDate);
+                        const days = client.term === 'Weekly' ? 7 : (client.term === 'Monthly' ? 28 : 1);
+                        termStart = new Date(rDate.getTime() - (days * 24 * 60 * 60 * 1000));
+                    }
+                    const totalPaid = payments
+                        .filter(p => new Date(p.created_at) >= termStart)
+                        .reduce((sum, p) => sum + p.amount, 0);
+                    document.getElementById('custPaidThisTerm').value = totalPaid.toFixed(2);
+                }
+            } catch (e) { console.error("Payment calculation error during refresh:", e); }
+
+            // 3. Recalculate and update arrears (which depends on custDue and custPlanAmount)
+            const rawType = document.getElementById('custType').value;
+            const rawSize = document.getElementById('custSize').value;
+            const rawTerm = document.getElementById('custTerm').value;
+
+            const typeKey = rawType.toLowerCase().replace('-', '');
+            const sizeKey = rawSize.toLowerCase();
+            const termKey = rawTerm.toLowerCase();
+
+            if (stdRates[typeKey] && stdRates[typeKey][sizeKey] && stdRates[typeKey][sizeKey][termKey]) {
+                const recommendedPrice = stdRates[typeKey][sizeKey][termKey];
+                const currentBalance = client.amountDue; // Use the updated client.amountDue
+                const arrears = Math.max(0, currentBalance - recommendedPrice);
+                document.getElementById('custArrears').value = arrears.toFixed(2);
+                document.getElementById('custPlanAmount').value = recommendedPrice.toFixed(2); // Ensure this is also up-to-date
+            }
+        }
+
         // Modal Form Controllers
-        function openAddCustomerModal() {
-            document.getElementById('customerForm').reset();
+        async function openCustomerModal(id = null) {
+            const form = document.getElementById('customerForm');
+            const title = document.getElementById('modalTitle');
+            const submitBtn = form.querySelector('button[type="submit"]');
+            
+            form.reset();
+            editingCustomerId = id;
+
+            if (id) {
+                const client = state.customers.find(c => c.id == id);
+                if (client) {
+                    title.innerText = "Edit Tiffin Subscriber";
+                    submitBtn.innerText = "Update Customer";
+                    
+                    document.getElementById('custName').value = client.name;
+                    
+                    // Split country code and number for the UI
+                    const phone = client.phone || "";
+                    if (phone.startsWith('+91')) {
+                        document.getElementById('custCountryCode').value = "+91";
+                        document.getElementById('custPhone').value = phone.substring(3);
+                    } else if (phone.startsWith('+1')) {
+                        document.getElementById('custCountryCode').value = "+1";
+                        document.getElementById('custPhone').value = phone.substring(2);
+                    } else if (phone.startsWith('+44')) {
+                        document.getElementById('custCountryCode').value = "+44";
+                        document.getElementById('custPhone').value = phone.substring(3);
+                    } else {
+                        document.getElementById('custCountryCode').value = "+1";
+                        document.getElementById('custPhone').value = phone;
+                    }
+
+                    document.getElementById('custAddress').value = client.address;
+                    document.getElementById('custType').value = client.type;
+                    document.getElementById('custSize').value = client.size;
+                    document.getElementById('custTerm').value = client.term;
+                    document.getElementById('custStartDate').value = client.startDate ? new Date(client.startDate).toISOString().split('T')[0] : '';
+                    document.getElementById('custRenewDate').value = client.renewDate ? new Date(client.renewDate).toISOString().split('T')[0] : '';
+                    document.getElementById('custRenewTimes').value = client.renewTimes || 0;
+                    document.getElementById('custDue').value = client.amountDue.toFixed(2);
+
+                    // Calculate payments made in the current term
+                    try {
+                        const { data: payments } = await supabaseClient
+                            .from('payment_logs')
+                            .select('amount, created_at')
+                            .eq('customer_id', id);
+
+                        if (payments) {
+                            // Heuristic: Current term started at startDate (if never renewed) 
+                            // or roughly (term length) before the renewDate.
+                            let termStart = new Date(client.startDate);
+                            if (client.renewTimes > 0 && client.renewDate) {
+                                const rDate = new Date(client.renewDate);
+                                const days = client.term === 'Weekly' ? 7 : (client.term === 'Monthly' ? 28 : 1);
+                                termStart = new Date(rDate.getTime() - (days * 24 * 60 * 60 * 1000));
+                            }
+                            const totalPaid = payments
+                                .filter(p => new Date(p.created_at) >= termStart)
+                                .reduce((sum, p) => sum + p.amount, 0);
+                            document.getElementById('custPaidThisTerm').value = totalPaid.toFixed(2);
+                        }
+                    } catch (e) { console.error("Payment calculation error:", e); }
+
+                    // custPaidThisTerm will be set by autoFillInitialAmount
+                    autoFillInitialAmount();
+                }
+            } else {
+                title.innerText = "Register Tiffin Subscriber";
+                submitBtn.innerText = "Save Customer";
+                document.getElementById('custPaidThisTerm').value = "0.00"; // New customer, no payments yet
+                document.getElementById('custStartDate').value = new Date().toISOString().split('T')[0]; // Default to today
+                autoFillInitialAmount();
+            }
+
             document.getElementById('customerModal').classList.remove('hidden');
         }
 
@@ -821,33 +1896,70 @@
 
         document.getElementById('customerForm').onsubmit = async function(event) {
             event.preventDefault();
-            const newClient = {
+            const submitBtn = event.target.querySelector('button[type="submit"]');
+            const originalBtnText = submitBtn.innerText;
+
+            submitBtn.disabled = true;
+            submitBtn.innerText = "Processing...";
+
+            const countryCode = document.getElementById('custCountryCode').value;
+            const pureNumber = document.getElementById('custPhone').value.replace(/\D/g, '');
+
+            const customerData = {
                 name: document.getElementById('custName').value,
-                phone: document.getElementById('custPhone').value,
+                phone: countryCode + pureNumber,
                 address: document.getElementById('custAddress').value,
                 type: document.getElementById('custType').value,
                 size: document.getElementById('custSize').value,
                 term: document.getElementById('custTerm').value,
-                amountDue: parseFloat(document.getElementById('custDue').value) || 0,
-                deliveredToday: false
+                amountDue: parseFloat(document.getElementById('custDue').value) || 0
             };
 
-            // Insert into Supabase
-            const { data, error } = await supabase
-                .from('customers')
-                .insert([newClient])
-                .select(); // Select the inserted data to get the generated ID
+            customerData.startDate = document.getElementById('custStartDate').value;
+            customerData.renewDate = calculateNextRenewDate(customerData.startDate, customerData.term);
+            customerData.renewTimes = parseInt(document.getElementById('custRenewTimes').value) || 0;
 
-            if (error) {
-                console.error("Error adding new customer:", error.message);
-                showToast("Failed to register customer.", "🚨");
+            if (editingCustomerId) {
+                // Update existing record
+                const { data, error } = await supabaseClient
+                    .from('customers')
+                    .update(customerData)
+                    .eq('id', editingCustomerId)
+                    .select();
+
+                if (error) {
+                    console.error("Error updating customer:", error.message);
+                    showToast(`Error: ${error.message}`, "🚨");
+                } else if (data && data.length > 0) {
+                    const index = state.customers.findIndex(c => c.id == editingCustomerId);
+                    if (index !== -1) state.customers[index] = data[0];
+                    closeCustomerModal();
+                    renderCustomerTable();
+                    renderDashboardMetrics();
+                    showToast(`Updated ${customerData.name} successfully!`);
+                }
             } else {
-                state.customers.push(data[0]); // Add the new client with its Supabase-generated ID
-                closeCustomerModal();
-                renderCustomerTable();
-                renderDashboardMetrics(); // Update dashboard after adding new customer
-                showToast(`Subscriber ${newClient.name} successfully registered!`);
+                // Insert new record
+                const newClient = { ...customerData, deliveredToday: false, renewTimes: 0 };
+                const { data, error } = await supabaseClient
+                    .from('customers')
+                    .insert([newClient])
+                    .select();
+
+                if (error) {
+                    console.error("Error adding new customer:", error.message);
+                    showToast(`Error: ${error.message}`, "🚨");
+                } else if (data && data.length > 0) {
+                    state.customers.push(data[0]);
+                    closeCustomerModal();
+                    renderCustomerTable();
+                    renderDashboardMetrics();
+                    showToast(`Subscriber ${newClient.name} successfully registered!`);
+                }
             }
+
+            submitBtn.disabled = false;
+            submitBtn.innerText = originalBtnText;
         };
 
         // Attach Calculator Event Triggers
@@ -861,11 +1973,85 @@
             document.getElementById(id).addEventListener('input', executeCalculator);
         });
 
+        // Attach Modal Auto-fill triggers
+        ['custType', 'custSize', 'custTerm', 'custStartDate'].forEach(id => {
+            document.getElementById(id).addEventListener('change', autoFillInitialAmount);
+        });
+
         // Application Lifepath Initialization on Window Bootup
+        // This function is also responsible for updating the renewDate in the modal
+        function autoFillInitialAmount() {
+            const rawType = document.getElementById('custType').value;
+            const rawSize = document.getElementById('custSize').value;
+            const rawTerm = document.getElementById('custTerm').value;
+
+            const typeKey = rawType.toLowerCase().replace('-', '');
+            const sizeKey = rawSize.toLowerCase();
+            const termKey = rawTerm.toLowerCase();
+
+            if (stdRates[typeKey] && stdRates[typeKey][sizeKey] && stdRates[typeKey][sizeKey][termKey]) {
+                const recommendedPrice = stdRates[typeKey][sizeKey][termKey];
+                
+                document.getElementById('custPlanAmount').value = recommendedPrice.toFixed(2);
+
+                let currentBalance = 0; // This will be the value for custDue
+
+                if (editingCustomerId) {
+                    const client = state.customers.find(c => c.id == editingCustomerId);
+                    if (client) {
+                        const isOriginalPlan = client.type === rawType && client.size === rawSize && client.term === rawTerm;
+                        if (isOriginalPlan) {
+                            currentBalance = client.amountDue;
+                        } else {
+                            const oldType = client.type.toLowerCase().replace('-', '');
+                            const oldSize = client.size.toLowerCase();
+                            const oldTerm = client.term.toLowerCase();
+                            const oldPlanPrice = (stdRates[oldType] && stdRates[oldType][oldSize]) ? (stdRates[oldType][oldSize][oldTerm] || 0) : 0;
+                            
+                            // Adjust current debt by the price difference to account for previous payments
+                            const adjustedDebt = client.amountDue + (recommendedPrice - oldPlanPrice);
+                            currentBalance = Math.max(0, adjustedDebt);
+                        }
+                    }
+                } else {
+                    // New customer
+                    currentBalance = recommendedPrice; // Initial due is the plan price
+                }
+
+                document.getElementById('custDue').value = currentBalance.toFixed(2);
+
+                let arrears = 0;
+                arrears = Math.max(0, currentBalance - recommendedPrice); // Arrears is simply current balance minus current plan price
+                document.getElementById('custArrears').value = arrears.toFixed(2);
+
+                // Sync Renew Date in UI
+                const currentStartDate = document.getElementById('custStartDate').value;
+                if (currentStartDate) {
+                    const nextDate = calculateNextRenewDate(currentStartDate, rawTerm);
+                    document.getElementById('custRenewDate').value = nextDate;
+                }
+
+                const typeLabel = typeKey === 'veg' ? 'Vegetarian' : 'Non-Vegetarian';
+                const periodLabel = termKey === 'daily' ? 'Single Meal' : (termKey === 'weekly' ? 'Weekly (5 tiffins)' : 'Monthly (20 tiffins)');
+                document.getElementById('modalPriceBreakdown').innerText = `* Recommended price for ${sizeKey} ${typeLabel} ${periodLabel}: $${recommendedPrice.toFixed(2)}`;
+            }
+        }
         window.onload = async function() {
+            // Set default history dates to current month
+            const now = new Date();
+            const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+            const today = now.toISOString().split('T')[0];
+            document.getElementById('historyStartDate').value = firstDay;
+            document.getElementById('historyEndDate').value = today;
+            
+            // Set default dashboard dates
+            document.getElementById('dashboardStartDate').value = firstDay;
+            document.getElementById('dashboardEndDate').value = today;
+
             await loadState();
-            renderDashboardMetrics();
+            switchView('trackingView');
             executeCalculator();
+            lucide.createIcons();
         };
     </script>
 </body>
