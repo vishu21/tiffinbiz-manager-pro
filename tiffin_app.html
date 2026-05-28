@@ -398,6 +398,7 @@
                                         <span>Delivery Address & Client</span>
                                         <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-address"></span>
                                         <span class="ml-1 text-[10px]" id="sort-icon-address"></span>
+                                        <span class="ml-1 text-[10px] opacity-0" id="sort-icon-address"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('remaining')">
@@ -405,6 +406,7 @@
                                         <span>Plan & Progress</span>
                                         <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-remaining"></span>
                                         <span class="ml-1 text-[10px]" id="sort-icon-remaining"></span>
+                                        <span class="ml-1 text-[10px] opacity-0" id="sort-icon-remaining"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('balance')">
@@ -412,6 +414,7 @@
                                         <span>Outstanding Balance</span>
                                         <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-balance"></span>
                                         <span class="ml-1 text-[10px]" id="sort-icon-balance"></span>
+                                        <span class="ml-1 text-[10px] opacity-0" id="sort-icon-balance"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('status')">
@@ -419,6 +422,7 @@
                                         <span>Status Today</span>
                                         <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-status"></span>
                                         <span class="ml-1 text-[10px]" id="sort-icon-status"></span>
+                                        <span class="ml-1 text-[10px] opacity-0" id="sort-icon-status"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Actions</th>
@@ -1143,7 +1147,7 @@
                 // 1. Delivery Workflow Actions
                 if (!client.deliveredToday) {
                     deliveryAction = `
-                        <button onclick="commitDelivery('${client.id}')" class="px-3 py-1.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-lg text-xs font-bold transition shadow-sm flex items-center justify-center gap-1">
+                        <button onclick="commitDelivery('${client.id}')" class="w-full md:w-auto px-6 py-4 md:px-3 md:py-1.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-xl md:rounded-lg text-base md:text-xs font-black md:font-bold transition shadow-lg md:shadow-sm flex items-center justify-center gap-2 md:gap-1">
                             🚚 Deliver
                         </button>
                     `;
@@ -1247,8 +1251,11 @@
                         </div>
                     </div>
 
-                    <div class="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-stone-100">
-                        ${deliveryAction} ${termAction} ${billingAction}
+                    <div class="flex flex-col gap-3 pt-3 border-t border-stone-100">
+                        ${deliveryAction}
+                        <div class="flex flex-wrap items-center justify-end gap-2">
+                            ${termAction} ${billingAction}
+                        </div>
                     </div>
                 `;
                 cardsMobile.appendChild(cardDiv);
@@ -1317,6 +1324,19 @@
                     renderCustomerTable();
                     renderDashboardMetrics();
                     showToast(`Logged dispatch run for ${client.name}`, "truck");
+
+                    // WhatsApp Message Logic
+                    let messageSuffix = "🍛 Bon Appetit!";
+                    // Trigger reminder suffix when committing the final delivery of the term
+                    if (progress.count + 1 === progress.target && progress.target > 1) {
+                        messageSuffix = "\n\nNote: Your term completes today. Please renew to ensure continued service from tomorrow. Thank you!";
+                    }
+
+                    const rawMessage = `Hello ${client.name}, your fresh meal has been safely delivered to ${client.address}! ${messageSuffix}`;
+                    const encodedMsg = encodeURIComponent(rawMessage);
+                    const cleanPhone = client.phone.replace(/\D/g, '');
+                    const apiLink = `https://wa.me/${cleanPhone}?text=${encodedMsg}`;
+                    window.open(apiLink, '_blank');
                 } catch (e) { 
                     console.error("Error updating delivery status:", e.message);
                     showToast("Failed to update delivery.", "🚨");
