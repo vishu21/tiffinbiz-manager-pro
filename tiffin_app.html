@@ -46,6 +46,9 @@
             margin-left: auto;
             margin-right: auto;
             height: 240px;
+            width: 100%; /* Ensure it takes full width of its parent */
+            /* Removed fixed max-width and height to allow for responsive scaling */
+            height: 240px; /* Chart.js will handle responsiveness within this container */
         }
         .nav-active {
             background-color: rgba(255, 255, 255, 0.1);
@@ -125,7 +128,7 @@
         }
     </script>
 </head>
-<body class="text-gray-800 h-screen flex flex-col md:flex-row overflow-hidden">
+<body class="text-gray-800 h-screen flex flex-col md:flex-row">
     <!-- Mobile Header -->
     <header class="md:hidden bg-tiffin-dark border-b border-tiffin-accent/20 px-4 py-3 flex items-center justify-between z-20 shadow-sm">
         <div class="flex items-center space-x-2">
@@ -160,6 +163,7 @@
             <button onclick="switchView('pricingView')" id="nav-pricingView" class="w-full text-left px-6 py-3 text-tiffin-light/60 hover:bg-white/5 flex items-center space-x-3 transition font-semibold">
                 <i data-lucide="calculator" class="w-5 h-5"></i> <span>Advanced Calculator</span>
             </button>
+        </nav>
         <div class="p-4 border-t border-tiffin-accent">
             <div class="bg-white/5 text-tiffin-light/60 text-xs p-3 rounded-lg border border-white/10">
                 <strong>Supabase Active:</strong> Data is now synced to your cloud database.
@@ -383,8 +387,9 @@
             </div>
 
             <!-- Customer Table Wrapper -->
-            <div class="bg-white rounded-2xl border border-stone-100 shadow-sm overflow-hidden">
-                <div class="overflow-x-auto">
+            <div class="bg-white rounded-2xl border border-stone-100 shadow-sm">
+                <!-- Desktop Table View -->
+                <div class="overflow-x-auto hidden md:block">
                     <table class="w-full text-left border-collapse">
                         <thead>
                             <tr class="bg-tiffin-light/50 border-b border-tiffin-accent/10">
@@ -392,33 +397,42 @@
                                     <div class="flex items-center">
                                         <span>Delivery Address & Client</span>
                                         <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-address"></span>
+                                        <span class="ml-1 text-[10px]" id="sort-icon-address"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('remaining')">
                                     <div class="flex items-center">
                                         <span>Plan & Progress</span>
                                         <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-remaining"></span>
+                                        <span class="ml-1 text-[10px]" id="sort-icon-remaining"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('balance')">
                                     <div class="flex items-center">
                                         <span>Outstanding Balance</span>
                                         <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-balance"></span>
+                                        <span class="ml-1 text-[10px]" id="sort-icon-balance"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('status')">
                                     <div class="flex items-center justify-center">
                                         <span>Status Today</span>
                                         <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-status"></span>
+                                        <span class="ml-1 text-[10px]" id="sort-icon-status"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="clientTableBody" class="divide-y divide-tiffin-accent/5">
+                        <tbody id="clientTableBodyDesktop" class="divide-y divide-tiffin-accent/5">
                             <!-- Injected Dynamically -->
                         </tbody>
                     </table>
+                </div>
+
+                <!-- Mobile Card View -->
+                <div id="clientCardsMobile" class="md:hidden divide-y divide-tiffin-accent/5">
+                    <!-- Injected Dynamically -->
                 </div>
             </div>
 
@@ -566,8 +580,8 @@
                 <!-- New Customer Summary Section -->
                 <div class="pt-4 border-t border-stone-50">
                     <h4 class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Customer Plan Progress (Selected Range)</h4>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-xs">
+                    <div class="overflow-x-auto hidden md:block">
+                        <table class="w-full text-left text-xs hidden md:table">
                             <thead>
                                 <tr class="text-gray-400 border-b border-gray-50">
                                     <th class="pb-2 font-bold">Customer</th>
@@ -576,10 +590,12 @@
                                     <th class="pb-2 font-bold text-right">Status</th>
                                 </tr>
                             </thead>
-                            <tbody id="historySummaryBody" class="divide-y divide-gray-50">
+                            <tbody id="historySummaryBodyDesktop" class="divide-y divide-gray-50">
                                 <!-- Populated dynamically -->
                             </tbody>
                         </table>
+                    </div>
+                    <div id="historySummaryCardsMobile" class="md:hidden divide-y divide-gray-50">
                     </div>
                     <div id="summaryPaginationControls" class="flex justify-between items-center mt-4">
                         <button onclick="prevPageSummary()" class="px-4 py-2 bg-gray-200 rounded-lg text-sm font-semibold">Previous</button>
@@ -590,8 +606,8 @@
             </div>
 
             <!-- History Table -->
-            <div class="bg-white rounded-2xl border border-tiffin-main/10 shadow-sm overflow-hidden">
-                <div class="overflow-x-auto">
+            <div class="bg-white rounded-2xl border border-tiffin-main/10 shadow-sm">
+                <div class="overflow-x-auto hidden md:block">
                     <table class="w-full text-left border-collapse">
                         <thead>
                             <tr class="bg-tiffin-light/20 border-b border-tiffin-main/10">
@@ -601,8 +617,10 @@
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Time</th>
                             </tr>
                         </thead>
-                        <tbody id="historyTableBody" class="divide-y divide-tiffin-main/5"></tbody>
+                        <tbody id="historyTableBodyDesktop" class="divide-y divide-tiffin-main/5"></tbody>
                     </table>
+                </div>
+                <div id="historyCardsMobile" class="md:hidden divide-y divide-tiffin-main/5">
                 </div>
                 <div id="historyPaginationControls" class="flex justify-between items-center mt-4 p-4">
                     <button onclick="prevPageHistory()" class="px-4 py-2 bg-gray-200 rounded-lg text-sm font-semibold">Previous</button>
@@ -1040,7 +1058,8 @@
 
         // ================= BUSINESS ENGINE: OPERATIONAL TABLE =================
         function renderCustomerTable(filterTerm = '') {
-            const tbody = document.getElementById('clientTableBody');
+            const tbodyDesktop = document.getElementById('clientTableBodyDesktop');
+            const cardsMobile = document.getElementById('clientCardsMobile');
             
             // Update Header Sort Icons
             ['address', 'balance', 'remaining', 'status'].forEach(id => {
@@ -1051,7 +1070,8 @@
                 }
             });
 
-            tbody.innerHTML = '';
+            tbodyDesktop.innerHTML = '';
+            cardsMobile.innerHTML = '';
             let filtered = state.customers.filter(c => 
                 c.name.toLowerCase().includes(filterTerm.toLowerCase()) || 
                 c.address.toLowerCase().includes(filterTerm.toLowerCase())
@@ -1091,7 +1111,8 @@
             });
 
             filtered.forEach(client => {
-                const tr = document.createElement('tr');
+                // Desktop Table Row
+                const tr = document.createElement('tr'); // Create a table row for desktop
                 tr.className = "hover:bg-tiffin-light/40 transition duration-150";
                 const isPaid = client.amountDue <= 0;
                 const badgeClass = isPaid 
@@ -1099,24 +1120,20 @@
                     : "bg-red-100 text-red-800";
                 const badgeLabel = isPaid ? "Paid" : `$${client.amountDue.toFixed(2)}`;
                 
-                const deliveryStatusLabel = client.deliveredToday ? "✅ Delivered" : "Pending";
                 const deliveryStatusIcon = client.deliveredToday ? "check-circle" : "clock";
                 const deliveryStatusColor = client.deliveredToday ? "text-green-600" : "text-tiffin-accent";
 
                 const progress = getPlanProgress(client);
 
-                // Arrears calculation for clear financial breakdown
                 const catKey = client.type.toLowerCase().replace('-', '');
                 const sizeKey = client.size.toLowerCase();
                 const termKey = client.term.toLowerCase();
                 const currentTermPrice = (stdRates[catKey] && stdRates[catKey][sizeKey]) ? (stdRates[catKey][sizeKey][termKey] || 0) : 0;
-                
+
                 let balanceBreakdownHtml = "";
                 if (!isPaid && client.term !== 'Daily' && client.amountDue > (currentTermPrice + 0.01)) {
                     const arrears = client.amountDue - currentTermPrice;
-                    balanceBreakdownHtml = `<div class="text-[9px] text-stone-400 font-bold mt-1 uppercase tracking-tight">
-                        $${currentTermPrice.toFixed(2)} Plan + $${arrears.toFixed(2)} Past Due
-                    </div>`;
+                    balanceBreakdownHtml = `<div class="text-[9px] text-stone-400 font-bold mt-1 uppercase tracking-tight">$${currentTermPrice.toFixed(2)} Plan + $${arrears.toFixed(2)} Past Due</div>`;
                 }
                 
                 let deliveryAction = '';
@@ -1126,7 +1143,7 @@
                 // 1. Delivery Workflow Actions
                 if (!client.deliveredToday) {
                     deliveryAction = `
-                        <button onclick="commitDelivery('${client.id}')" class="px-3 py-1.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-lg text-xs font-bold transition shadow-sm flex items-center gap-1">
+                        <button onclick="commitDelivery('${client.id}')" class="px-3 py-1.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-lg text-xs font-bold transition shadow-sm flex items-center justify-center gap-1">
                             🚚 Deliver
                         </button>
                     `;
@@ -1134,7 +1151,7 @@
                     deliveryAction = `
                         <div class="inline-flex items-center gap-1 bg-stone-100 rounded-lg px-2 py-1">
                             <span class="text-[10px] font-black text-green-600 uppercase tracking-tighter">✅ Delivered</span>
-                            <button onclick="cancelDelivery('${client.id}')" class="text-red-400 hover:text-red-600 transition ml-1" title="Undo Delivery Status">↩️</button>
+                            <button onclick="cancelDelivery('${client.id}')" class="text-red-400 hover:text-red-600 transition ml-1" title="Undo Delivery Status"><i data-lucide="undo-2" class="w-3 h-3"></i></button>
                         </div>
                     `;
                 }
@@ -1142,12 +1159,12 @@
                 // 2. Term Cycle Actions (Separated logic)
                 if (progress.is2ndLast) {
                     termAction = `
-                        <button onclick="sendTermReminder('${client.id}')" class="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-xs font-bold transition shadow-sm" title="WhatsApp Reminder">🔔</button>
+                        <button onclick="sendTermReminder('${client.id}')" class="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-xs font-bold transition shadow-sm flex items-center justify-center gap-1" title="WhatsApp Reminder"><i data-lucide="bell" class="w-3 h-3"></i> Reminder</button>
                     `;
                 }
                 if (progress.isCompleted) {
                     termAction += `
-                        <button onclick="renewTerm('${client.id}')" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shadow-sm" title="Start New Term">🔄 Renew</button>
+                        <button onclick="renewTerm('${client.id}')" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shadow-sm flex items-center justify-center gap-1" title="Start New Term"><i data-lucide="refresh-cw" class="w-3 h-3"></i> Renew</button>
                     `;
                 }
 
@@ -1157,8 +1174,8 @@
                         💲 Pay
                     </button>
                     <div class="inline-flex gap-1">
-                        <button onclick="openCustomerModal('${client.id}')" class="p-1.5 bg-tiffin-light hover:bg-white text-tiffin-accent rounded-lg transition" title="Edit Profile">✏️</button>
-                        <button onclick="removeCustomer('${client.id}')" class="p-1.5 bg-tiffin-light hover:bg-white text-tiffin-main rounded-lg transition" title="Delete Subscriber">🗑️</button>
+                        <button onclick="openCustomerModal('${client.id}')" class="p-1.5 bg-tiffin-light hover:bg-white text-tiffin-accent rounded-lg transition flex items-center justify-center" title="Edit Profile"><i data-lucide="edit" class="w-3 h-3"></i></button>
+                        <button onclick="removeCustomer('${client.id}')" class="p-1.5 bg-tiffin-light hover:bg-white text-tiffin-main rounded-lg transition flex items-center justify-center" title="Delete Subscriber"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
                     </div>
                 `;
 
@@ -1186,7 +1203,7 @@
                         </div>
                     </td>
                     <td class="p-4 text-center">
-                        <span class="text-xs font-bold ${deliveryStatusColor} flex items-center justify-center gap-1"><i data-lucide="${deliveryStatusIcon}" class="w-3 h-3"></i> ${deliveryStatusLabel}</span>
+                        <span class="text-xs font-bold ${deliveryStatusColor} flex items-center justify-center gap-1"><i data-lucide="${deliveryStatusIcon}" class="w-3 h-3"></i> ${client.deliveredToday ? "Delivered" : "Pending"}</span>
                     </td>
                     <td class="p-4 text-right">
                         <div class="flex flex-wrap items-center justify-end gap-1.5">
@@ -1194,9 +1211,67 @@
                         </div>
                     </td>
                 `;
-                tbody.appendChild(tr);
+                tbodyDesktop.appendChild(tr);
+
+                // Mobile Card View
+                const cardDiv = document.createElement('div');
+                cardDiv.className = "p-4 bg-white space-y-3";
+                cardDiv.innerHTML = `
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <div class="font-bold text-gray-800 text-base">📍 ${client.address}</div>
+                            <div onclick="showCustomerDetails('${client.id}')" class="mt-1 font-bold text-gray-500 text-xs cursor-pointer hover:text-tiffin-main transition underline decoration-dotted underline-offset-4">Client: ${client.name}</div>
+                            <div class="text-[10px] text-gray-400 font-medium mt-0.5">🗓️ Registered: ${new Date(client.startDate).toLocaleDateString('en-GB')}</div>
+                        </div>
+                        <div class="flex flex-col items-end gap-1">
+                            <span class="px-2.5 py-1 rounded-full text-xs font-bold w-fit ${badgeClass}">${badgeLabel}</span>
+                            <div class="text-[10px] text-green-600 font-bold mt-0.5 uppercase tracking-tighter">Paid: $${(client.totalPaid || 0).toFixed(2)}</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                            <p class="text-gray-400 uppercase font-bold tracking-wider text-[10px]">Plan & Progress</p>
+                            <p class="font-black text-tiffin-dark uppercase tracking-tight">${client.type} (${client.size})</p>
+                            <p class="text-gray-500 mt-0.5">${client.term}: ${progress.count} / ${progress.target}</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-gray-400 uppercase font-bold tracking-wider text-[10px]">Status Today</p>
+                            <span class="font-bold ${deliveryStatusColor} flex items-center justify-end gap-1"><i data-lucide="${deliveryStatusIcon}" class="w-3 h-3"></i> ${client.deliveredToday ? "Delivered" : "Pending"}</span>
+                            <div class="flex items-center justify-end gap-2 mt-2">
+                                <span class="px-2 py-0.5 bg-tiffin-light text-tiffin-main text-[9px] font-black rounded-md border border-tiffin-accent/20 uppercase">
+                                    ${progress.target - progress.count} REMAINING
+                                </span>
+                                ${progress.isCompleted ? '<span class="text-[10px] text-red-600 font-black animate-pulse">RENEW NOW</span>' : ''}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-stone-100">
+                        ${deliveryAction} ${termAction} ${billingAction}
+                    </div>
+                `;
+                cardsMobile.appendChild(cardDiv);
             });
             lucide.createIcons();
+        }
+
+        // Helper function to render Lucide icons in dynamically added HTML
+        function renderLucideIconsInElement(element) {
+            if (element) {
+                element.querySelectorAll('[data-lucide]').forEach((el) => {
+                    const iconName = el.getAttribute('data-lucide');
+                    if (iconName) {
+                        const iconHtml = lucide.createIcons({
+                            icons: { [iconName]: lucide.icons[iconName] },
+                            class: el.className,
+                            width: el.getAttribute('width') || '24',
+                            height: el.getAttribute('height') || '24',
+                        });
+                        if (iconHtml) el.innerHTML = iconHtml[iconName];
+                    }
+                });
+            }
         }
 
         async function commitDelivery(id) {
@@ -1604,6 +1679,8 @@
             }
 
             if (!selectedCustomerId) selectedCustomerId = document.getElementById('historyCustomerFilter').value;
+            selectedCustomerId = selectedCustomerId || document.getElementById('historyCustomerFilter').value;
+            
             
             const tbody = document.getElementById('historyTableBody');
             const summaryBody = document.getElementById('historySummaryBody');
@@ -1614,6 +1691,11 @@
 
             tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-gray-400">Loading history records...</td></tr>';
             summaryBody.innerHTML = '';
+            const tbodyDesktop = document.getElementById('historyTableBodyDesktop');
+            const cardsMobile = document.getElementById('historyCardsMobile');
+            const summaryBodyDesktop = document.getElementById('historySummaryBodyDesktop');
+            const summaryCardsMobile = document.getElementById('historySummaryCardsMobile');
+
 
             try {
                 let query = supabaseClient
@@ -1630,6 +1712,11 @@
 
                 const { data: logs, error: logsError } = await query.limit(100);
                 if (logsError) throw logsError;
+
+                tbodyDesktop.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-gray-400">Loading history records...</td></tr>';
+                cardsMobile.innerHTML = '';
+                summaryBodyDesktop.innerHTML = '';
+                summaryCardsMobile.innerHTML = '';
                 
                 allHistoryLogs = logs || [];
                 deliveryCountEl.innerText = allHistoryLogs.length;
@@ -1659,15 +1746,19 @@
         }
 
         function renderPaginatedDetailedHistory() {
-            const tbody = document.getElementById('historyTableBody');
+            const tbody = document.getElementById('historyTableBodyDesktop');
+            const cardsMobile = document.getElementById('historyCardsMobile');
             tbody.innerHTML = '';
-
+            cardsMobile.innerHTML = '';
+            
             const startIndex = (historyCurrentPage - 1) * historyItemsPerPage;
             const endIndex = startIndex + historyItemsPerPage;
             const paginatedLogs = allHistoryLogs.slice(startIndex, endIndex);
 
             if (paginatedLogs.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-gray-400">No delivery records found for this page.</td></tr>';
+                const noRecordsHtml = '<tr><td colspan="4" class="p-8 text-center text-gray-400">No delivery records found for this page.</td></tr>';
+                tbody.innerHTML = noRecordsHtml;
+                cardsMobile.innerHTML = `<div class="p-8 text-center text-gray-400">${noRecordsHtml}</div>`;
             } else {
                 paginatedLogs.forEach(log => {
                     const tr = document.createElement('tr');
@@ -1681,14 +1772,33 @@
                     `;
                     tbody.appendChild(tr);
                 });
+
+                paginatedLogs.forEach(log => {
+                    const cardDiv = document.createElement('div');
+                    cardDiv.className = "p-4 bg-white space-y-2 text-sm";
+                    const dateObj = new Date(log.delivery_time);
+                    cardDiv.innerHTML = `
+                        <div class="flex justify-between items-center">
+                            <span class="font-bold text-gray-800">${log.customers?.name || 'Deleted Customer'}</span>
+                            <span class="font-semibold text-gray-600">${dateObj.toLocaleDateString('en-GB')}</span>
+                        </div>
+                        <div class="flex justify-between items-center text-xs text-gray-500">
+                            <span>Address: ${log.customers?.address || 'N/A'}</span>
+                            <span class="font-bold text-tiffin-dark">${dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                    `;
+                    cardsMobile.appendChild(cardDiv);
+                });
             }
             renderPaginationControls('historyPaginationControls', 'historyPageInfo', allHistoryLogs.length, historyCurrentPage, historyItemsPerPage, 'history');
             lucide.createIcons();
         }
 
         function renderPaginatedSummary() {
-            const summaryBody = document.getElementById('historySummaryBody');
+            const summaryBody = document.getElementById('historySummaryBodyDesktop');
+            const summaryCardsMobile = document.getElementById('historySummaryCardsMobile');
             summaryBody.innerHTML = '';
+            summaryCardsMobile.innerHTML = '';
 
             const startIndex = (summaryCurrentPage - 1) * summaryItemsPerPage;
             const endIndex = startIndex + summaryItemsPerPage;
@@ -1696,6 +1806,9 @@
 
             if (paginatedSummary.length === 0) {
                 summaryBody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-gray-400">No customer summaries for this page.</td></tr>';
+                const noSummaryHtml = '<tr><td colspan="4" class="p-4 text-center text-gray-400">No customer summaries for this page.</td></tr>';
+                summaryBody.innerHTML = noSummaryHtml;
+                summaryCardsMobile.innerHTML = `<div class="p-4 text-center text-gray-400">${noSummaryHtml}</div>`;
             } else {
                 paginatedSummary.forEach(s => {
                     let expected = s.term === 'Daily' ? 1 : (s.term === 'Weekly' ? 5 : 20);
@@ -1710,6 +1823,24 @@
                         </td>
                     `;
                     summaryBody.appendChild(row);
+                });
+
+                paginatedSummary.forEach(s => {
+                    let expected = s.term === 'Daily' ? 1 : (s.term === 'Weekly' ? 5 : 20);
+                    let isDone = s.count >= expected;
+                    const cardDiv = document.createElement('div');
+                    cardDiv.className = "p-4 bg-white space-y-1 text-sm";
+                    cardDiv.innerHTML = `
+                        <div class="flex justify-between items-center">
+                            <span class="font-bold text-gray-700">${s.name}</span>
+                            <span class="font-medium text-gray-400">${s.term}</span>
+                        </div>
+                        <div class="flex justify-between items-center text-xs">
+                            <span>Tiffin Count: <span class="font-black">${s.count} / ${expected}</span></span>
+                            <span class="${isDone ? 'text-green-600' : 'text-blue-500'} font-bold">${isDone ? '✅ Complete' : '⏳ In Progress'}</span>
+                        </div>
+                    `;
+                    summaryCardsMobile.appendChild(cardDiv);
                 });
             }
             renderPaginationControls('summaryPaginationControls', 'summaryPageInfo', allSummaryData.length, summaryCurrentPage, summaryItemsPerPage, 'summary');
