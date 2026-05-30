@@ -69,6 +69,12 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #a3a3a3;
         }
+        @media print {
+            body * { visibility: hidden; }
+            .print-active, .print-active * { visibility: visible; }
+            .print-active { position: absolute; left: 0; top: 0; width: 100%; height: auto; }
+            .no-print { display: none !important; }
+        }
     </style>
     <script>
         // UI Toast Engine
@@ -121,6 +127,8 @@
                 renderDashboardMetrics();
             } else if (viewId === 'trackingView') {
                 renderCustomerTable();
+            } else if (viewId === 'kitchenView') {
+                renderKitchenPrep();
             } else if (viewId === 'historyView') {
                 fetchHistory(null, true); // Reset pagination when switching to history view
             }
@@ -140,6 +148,7 @@
             <button onclick="switchView('trackingView')" class="p-2 text-tiffin-light/60 hover:text-tiffin-main" title="Deliveries"><i data-lucide="truck" class="w-5 h-5"></i></button>
             <button onclick="switchView('historyView')" class="p-2 text-tiffin-light/60 hover:text-tiffin-main" title="History"><i data-lucide="calendar" class="w-5 h-5"></i></button>
             <button onclick="switchView('pricingView')" class="p-2 text-tiffin-light/60 hover:text-tiffin-main" title="Calculator"><i data-lucide="calculator" class="w-5 h-5"></i></button>
+            <button onclick="switchView('kitchenView')" class="p-2 text-tiffin-light/60 hover:text-tiffin-main" title="Kitchen Prep"><i data-lucide="chef-hat" class="w-5 h-5"></i></button>
         </div>
     </header>
 
@@ -159,6 +168,9 @@
             </button>
             <button onclick="switchView('historyView')" id="nav-historyView" class="w-full text-left px-6 py-3 text-tiffin-light/60 hover:bg-white/5 flex items-center space-x-3 transition font-semibold">
                 <i data-lucide="calendar" class="w-5 h-5"></i> <span>Service Logs</span>
+            </button>
+            <button onclick="switchView('kitchenView')" id="nav-kitchenView" class="w-full text-left px-6 py-3 text-tiffin-light/60 hover:bg-white/5 flex items-center space-x-3 transition font-semibold">
+                <i data-lucide="chef-hat" class="w-5 h-5"></i> <span>Kitchen & Packing</span>
             </button>
             <button onclick="switchView('pricingView')" id="nav-pricingView" class="w-full text-left px-6 py-3 text-tiffin-light/60 hover:bg-white/5 flex items-center space-x-3 transition font-semibold">
                 <i data-lucide="calculator" class="w-5 h-5"></i> <span>Advanced Calculator</span>
@@ -273,6 +285,210 @@
             </div>
         </div>
 
+        <!-- Add/Edit Customer Slide Modal (Moved to global level to be accessible from any view) -->
+        <div id="customerModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 hidden flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-xl max-w-4xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+                <div class="p-6 border-b border-stone-100 bg-stone-50/50 flex justify-between items-center">
+                    <div class="flex items-center gap-4">
+                        <h3 class="text-lg font-black text-gray-800" id="modalTitle">Register Tiffin Subscriber</h3>
+                        <div id="modalNavigation" class="flex items-center gap-2 hide border-l-2 border-stone-200 pl-4">
+                            <button type="button" onclick="navigateModalCustomer(-1)" class="p-2.5 bg-stone-100 hover:bg-tiffin-main hover:text-white rounded-xl text-gray-600 transition-all shadow-sm" title="Previous Customer">
+                                <i data-lucide="chevron-left" class="w-5 h-5"></i>
+                            </button>
+                            <button type="button" onclick="navigateModalCustomer(1)" class="p-2.5 bg-stone-100 hover:bg-tiffin-main hover:text-white rounded-xl text-gray-600 transition-all shadow-sm" title="Next Customer">
+                                <i data-lucide="chevron-right" class="w-5 h-5"></i>
+                            </button>
+                            <button type="button" onclick="openCustomerModal()" class="ml-2 p-2.5 bg-tiffin-light hover:bg-tiffin-main hover:text-white rounded-xl text-tiffin-main transition-all shadow-sm flex items-center gap-2 text-[10px] font-black uppercase tracking-wider" title="Register New Customer">
+                                <i data-lucide="plus" class="w-4 h-4"></i> <span>Add New</span>
+                            </button>
+                        </div>
+                    </div>
+                    <button onclick="closeCustomerModal()" class="text-gray-400 hover:text-gray-600 text-xl font-bold">×</button>
+                </div>
+                <form id="customerForm" class="p-6 space-y-8 overflow-y-auto flex-1">
+                    <!-- Section 1: Subscriber Identity -->
+                    <div class="space-y-4">
+                        <h4 class="text-[10px] font-black uppercase tracking-widest text-tiffin-main border-b border-stone-100 pb-2 flex items-center gap-2">
+                            <i data-lucide="user" class="w-3 h-3"></i> I. Identity & Contact
+                        </h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Full Name</label>
+                                <input type="text" id="custName" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="John Doe">
+                            </div>
+                            <div class="grid grid-cols-3 gap-2">
+                                <div class="col-span-1">
+                                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Code</label>
+                                    <select id="custCountryCode" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                        <option value="+1">🇨🇦 +1</option>
+                                        <option value="+91">🇮🇳 +91</option>
+                                        <option value="+1">🇺🇸 +1</option>
+                                        <option value="+44">🇬🇧 +44</option>
+                                    </select>
+                                </div>
+                                <div class="col-span-2">
+                                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">WhatsApp / Phone</label>
+                                    <input type="tel" id="custPhone" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="6477852655">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section 2: Plan Configuration -->
+                    <div class="space-y-6 p-6 bg-tiffin-light/50 border border-tiffin-accent/20 rounded-2xl shadow-sm ring-4 ring-tiffin-main/5">
+                        <h4 class="text-[11px] font-black uppercase tracking-widest text-tiffin-dark border-b border-tiffin-accent/20 pb-3 flex items-center gap-2">
+                            <i data-lucide="package" class="w-4 h-4 text-tiffin-main"></i> II. Plan Configuration
+                        </h4>
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-6">
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-tiffin-dark/50 mb-2">Type</label>
+                                <select id="custType" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                    <option value="Veg">Vegetarian</option>
+                                    <option value="Non-Veg">Non-Vegetarian</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-tiffin-dark/50 mb-2">Portion Size</label>
+                                <select id="custSize" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                    <option value="Small">Small</option>
+                                    <option value="Regular" selected>Regular (8oz)</option>
+                                    <option value="Large">Large (12oz)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-tiffin-dark/50 mb-2">Roti Count</label>
+                                <input type="number" id="custRotiCount" value="6" min="0" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                            </div>
+                            <div id="smallComponentContainer" class="hide">
+                                <label class="block text-xs font-bold uppercase tracking-wider text-tiffin-dark/50 mb-2">Small Tiffin Choice</label>
+                                <select id="custSmallComponent" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main font-bold text-tiffin-main">
+                                    <option value="Sabji" selected>Sabji (Default)</option>
+                                    <option value="Dal">Dal</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-tiffin-dark/50 mb-2">Rice Add-ons</label>
+                                <div class="grid grid-cols-3 gap-2">
+                                    <div>
+                                        <label class="block text-[10px] font-bold uppercase text-gray-400 mb-1">RG</label>
+                                        <input type="number" id="custRgRiceCount" value="0" min="0" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main font-bold text-amber-700">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold uppercase text-gray-400 mb-1">LG</label>
+                                        <input type="number" id="custLgRiceCount" value="0" min="0" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main font-bold text-amber-700">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold uppercase text-gray-400 mb-1">XL</label>
+                                        <input type="number" id="custXlRiceCount" value="0" min="0" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main font-bold text-amber-700">
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-tiffin-dark/50 mb-2">Term</label>
+                                <select id="custTerm" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                    <option value="Daily">Daily</option>
+                                    <option value="Weekly">Weekly</option>
+                                    <option value="Monthly">Monthly</option>
+                                </select>
+                            </div>
+                            <div class="col-span-2 md:col-span-3">
+                                <div id="riceSuggestionBox" class="bg-amber-50 border border-amber-100 p-3 rounded-xl flex items-center justify-between hide transition-all duration-300">
+                                    <div class="flex items-center gap-3">
+                                        <div class="p-2 bg-amber-100 rounded-lg text-amber-600">
+                                            <i data-lucide="lightbulb" class="w-4 h-4"></i>
+                                        </div>
+                                        <div>
+                                            <p class="text-[10px] font-black uppercase text-amber-600/60 tracking-widest">Smart Rice Suggestion</p>
+                                            <p id="riceSuggestionText" class="text-xs font-bold text-amber-900"></p>
+                                        </div>
+                                    </div>
+                                    <button type="button" onclick="applyRiceSuggestion()" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-black uppercase tracking-wider shadow-sm transition-all active:scale-95">Apply</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-tiffin-dark/50 mb-2">Start Date</label>
+                                <input type="date" id="custStartDate" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-bold uppercase tracking-wider text-tiffin-dark/50 mb-2">Next Renewal Date</label>
+                                <input type="date" id="custRenewDate" readonly class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none bg-stone-50 text-gray-500">
+                            </div>
+                        </div>
+                        <div class="hide">
+                            <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Renewal Count</label>
+                            <input type="number" id="custRenewTimes" readonly class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none bg-stone-50 text-gray-500">
+                        </div>
+                    </div>
+
+                    <!-- Section 3: Delivery Logistics -->
+                    <div class="space-y-4">
+                        <h4 class="text-[10px] font-black uppercase tracking-widest text-tiffin-main border-b border-stone-100 pb-2 flex items-center gap-2">
+                            <i data-lucide="map-pin" class="w-3 h-3"></i> III. Delivery Logistics
+                        </h4>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Delivery Address</label>
+                            <input type="text" id="custAddress" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="123 Street, Apt 10">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Special Instructions / Extras</label>
+                            <input type="text" id="custInstructions" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="e.g. No onions, Extra salad, Soya bean">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2">Weekly Delivery Schedule</label>
+                            <div class="flex flex-wrap gap-2">
+                                <template id="dayBtnTemplate">
+                                    <label class="flex-1 min-w-[60px]">
+                                        <input type="checkbox" name="custSchedule" class="peer hidden" value="">
+                                        <div class="text-center py-2 rounded-lg border border-stone-200 text-xs font-bold peer-checked:bg-tiffin-main peer-checked:text-white peer-checked:border-tiffin-main cursor-pointer hover:bg-stone-50 transition-all">
+                                        </div>
+                                    </label>
+                                </template>
+                                <div id="scheduleContainer" class="flex flex-wrap gap-2 w-full"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section 4: Financial Summary -->
+                    <div class="space-y-4">
+                        <h4 class="text-[10px] font-black uppercase tracking-widest text-tiffin-main border-b border-stone-100 pb-2 flex items-center gap-2">
+                            <i data-lucide="dollar-sign" class="w-3 h-3"></i> IV. Financial Summary
+                        </h4>
+                        <div class="bg-stone-50 p-4 rounded-xl border border-stone-100 space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Term Amount ($)</label>
+                                    <input type="number" id="custPlanAmount" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-gray-700 focus:ring-0" placeholder="0.00">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Paid So Far ($)</label>
+                                    <input type="number" id="custPaidThisTerm" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-green-600 focus:ring-0" placeholder="0.00">
+                                </div>
+                            </div>
+                            <div class="border-t border-stone-200 pt-4 grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Past Due / Arrears ($)</label>
+                                    <input type="number" id="custArrears" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-red-500 focus:ring-0" placeholder="0.00">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-tiffin-main mb-1 font-black">Current Balance ($)</label>
+                                    <input type="number" id="custDue" readonly class="w-full border-none p-0 text-base font-black bg-transparent text-tiffin-dark focus:ring-0" placeholder="0.00">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <div id="modalPriceBreakdown" class="mt-1.5 text-[10px] text-stone-500 italic px-1"></div>
+                    </div>
+                </form>
+                <div class="p-5 border-t border-stone-100 bg-stone-50/80 backdrop-blur-sm flex space-x-3">
+                    <button type="button" onclick="closeCustomerModal()" class="flex-1 py-3 border border-stone-200 hover:bg-stone-50 rounded-xl text-sm font-bold text-gray-500 transition-colors">Cancel</button>
+                    <button type="submit" form="customerForm" id="custSubmitBtn" class="flex-1 py-3 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-xl text-sm font-bold shadow-lg shadow-tiffin-main/20 transition-all">Save Customer</button>
+                </div>
+            </div>
+        </div>
+
         <!-- ================= SECTION 1: DASHBOARD ================= -->
         <section id="dashboardView" class="view-section hide space-y-8 max-w-6xl mx-auto">
             <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-6 border-b border-stone-200 pb-6">
@@ -379,10 +595,17 @@
             </div>
 
             <!-- Table Search/Filter -->
-            <div class="bg-white p-4 border border-stone-100 rounded-2xl shadow-sm">
-                <div class="relative flex items-center">
+            <div class="bg-white p-4 border border-stone-100 rounded-2xl shadow-sm flex flex-col md:flex-row gap-4 items-center">
+                <div class="relative flex-1 w-full">
                     <i data-lucide="search" class="absolute left-3 w-4 h-4 text-gray-400"></i>
                     <input type="text" id="tableSearch" oninput="filterCustomerTable()" placeholder="Search by subscriber name or delivery address..." class="w-full pl-10 pr-4 py-3 border border-stone-100 rounded-xl bg-stone-50 text-sm focus:outline-none focus:ring-2 focus:ring-tiffin-main transition">
+                </div>
+                <div class="flex items-center space-x-2 md:border-l md:border-stone-200 md:pl-4 whitespace-nowrap">
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" id="scheduledOnlyToggle" onchange="toggleScheduledFilter()" class="sr-only peer">
+                        <div class="w-9 h-5 bg-stone-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-tiffin-main"></div>
+                        <span class="ml-2 text-xs font-black text-gray-500 uppercase tracking-tighter">Today's Route Only</span>
+                    </label>
                 </div>
             </div>
 
@@ -396,33 +619,25 @@
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('address')">
                                     <div class="flex items-center">
                                         <span>Delivery Address & Client</span>
-                                        <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-address"></span>
                                         <span class="ml-1 text-[10px]" id="sort-icon-address"></span>
-                                        <span class="ml-1 text-[10px] opacity-0" id="sort-icon-address"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('remaining')">
                                     <div class="flex items-center">
                                         <span>Plan & Progress</span>
-                                        <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-remaining"></span>
                                         <span class="ml-1 text-[10px]" id="sort-icon-remaining"></span>
-                                        <span class="ml-1 text-[10px] opacity-0" id="sort-icon-remaining"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('balance')">
                                     <div class="flex items-center">
                                         <span>Outstanding Balance</span>
-                                        <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-balance"></span>
                                         <span class="ml-1 text-[10px]" id="sort-icon-balance"></span>
-                                        <span class="ml-1 text-[10px] opacity-0" id="sort-icon-balance"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-center cursor-pointer hover:text-tiffin-main transition group border-b-2 border-transparent hover:border-tiffin-main" onclick="applyTableSort('status')">
                                     <div class="flex items-center justify-center">
                                         <span>Status Today</span>
-                                        <span class="ml-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]" id="sort-icon-status"></span>
                                         <span class="ml-1 text-[10px]" id="sort-icon-status"></span>
-                                        <span class="ml-1 text-[10px] opacity-0" id="sort-icon-status"></span>
                                     </div>
                                 </th>
                                 <th class="p-4 text-xs font-bold text-gray-500 uppercase tracking-wider text-right">Actions</th>
@@ -440,110 +655,85 @@
                 </div>
             </div>
 
-            <!-- Add/Edit Customer Slide Modal -->
-            <div id="customerModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 hidden flex items-center justify-center p-4">
-                <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full overflow-hidden flex flex-col max-h-[90vh]">
-                    <div class="p-6 border-b border-stone-100 bg-stone-50/50 flex justify-between items-center">
-                        <h3 class="text-lg font-black text-gray-800" id="modalTitle">Register Tiffin Subscriber</h3>
-                        <button onclick="closeCustomerModal()" class="text-gray-400 hover:text-gray-600 text-xl font-bold">×</button>
+        </section>
+
+        <!-- ================= SECTION 5: KITCHEN PREP ================= -->
+        <section id="kitchenView" class="view-section hide space-y-6 max-w-6xl mx-auto">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-end border-b border-stone-200 pb-4 gap-4">
+                <div>
+                    <h2 class="text-3xl font-black text-gray-800">Kitchen & Packing List</h2>
+                    <div class="flex items-center gap-3 mt-1">
+                        <p class="text-gray-500" id="kitchenDateDisplay"></p>
+                        <select id="kitchenDaySelector" onchange="renderKitchenPrep()" class="bg-white border border-stone-200 rounded-lg px-2 py-1 text-xs font-bold outline-none focus:border-tiffin-main no-print">
+                            <option value="today">Auto (Today)</option>
+                            <option value="1">Monday</option>
+                            <option value="2">Tuesday</option>
+                            <option value="3">Wednesday</option>
+                            <option value="4">Thursday</option>
+                            <option value="5">Friday</option>
+                        </select>
                     </div>
-                    <form id="customerForm" class="p-6 space-y-4 overflow-y-auto flex-1">
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Full Name</label>
-                                <input type="text" id="custName" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="John Doe">
-                            </div>
-                            <div class="grid grid-cols-3 gap-2">
-                                <div class="col-span-1">
-                                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Code</label>
-                                    <select id="custCountryCode" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
-                                        <option value="+1">🇨🇦 +1</option>
-                                        <option value="+91">🇮🇳 +91</option>
-                                        <option value="+1">🇺🇸 +1</option>
-                                        <option value="+44">🇬🇧 +44</option>
-                                    </select>
-                                </div>
-                                <div class="col-span-2">
-                                    <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">WhatsApp / Phone</label>
-                                    <input type="tel" id="custPhone" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="6477852655">
-                                </div>
-                            </div>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Delivery Address</label>
-                            <input type="text" id="custAddress" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main" placeholder="123 Street, Apt 10">
-                        </div>
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div>
-                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Type</label>
-                                <select id="custType" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
-                                    <option value="Veg">Vegetarian</option>
-                                    <option value="Non-Veg">Non-Vegetarian</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Portion Size</label>
-                                <select id="custSize" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
-                                    <option value="Regular">Regular (8oz)</option>
-                                    <option value="Large">Large (12oz)</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Term</label>
-                                <select id="custTerm" class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
-                                    <option value="Daily">Daily</option>
-                                    <option value="Weekly">Weekly</option>
-                                    <option value="Monthly">Monthly</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Start Date</label>
-                                <input type="date" id="custStartDate" required class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Next Renewal Date</label>
-                                <input type="date" id="custRenewDate" readonly class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none bg-stone-50 text-gray-500">
-                            </div>
-                        </div>
-                        <div class="hide">
-                            <label class="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Renewal Count</label>
-                            <input type="number" id="custRenewTimes" readonly class="w-full border border-stone-200 rounded-lg p-2.5 text-sm outline-none bg-stone-50 text-gray-500">
-                        </div>
-                        
-                        <!-- Financial Summary Group -->
-                        <div class="bg-stone-50 p-4 rounded-xl border border-stone-100 space-y-4">
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Term Amount ($)</label>
-                                    <input type="number" id="custPlanAmount" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-gray-700 focus:ring-0" placeholder="0.00">
-                                </div>
-                                <div>
-                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Paid So Far ($)</label>
-                                    <input type="number" id="custPaidThisTerm" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-green-600 focus:ring-0" placeholder="0.00">
-                                </div>
-                            </div>
-                            <div class="border-t border-stone-200 pt-4 grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Past Due / Arrears ($)</label>
-                                    <input type="number" id="custArrears" readonly class="w-full border-none p-0 text-sm font-bold bg-transparent text-red-500 focus:ring-0" placeholder="0.00">
-                                </div>
-                                <div>
-                                    <label class="block text-[10px] font-bold uppercase tracking-wider text-tiffin-main mb-1 font-black">Current Balance ($)</label>
-                                    <input type="number" id="custDue" readonly class="w-full border-none p-0 text-base font-black bg-transparent text-tiffin-dark focus:ring-0" placeholder="0.00">
-                                </div>
-                            </div>
-                        </div>
-                        <div>
-                            <div id="modalPriceBreakdown" class="mt-1.5 text-[10px] text-stone-500 italic px-1"></div>
-                        </div>
-                        <div class="pt-4 flex space-x-3">
-                            <button type="button" onclick="closeCustomerModal()" class="flex-1 py-2.5 border border-stone-200 hover:bg-stone-50 rounded-xl text-sm font-bold text-gray-500">Cancel</button>
-                            <button type="submit" class="flex-1 py-2.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-xl text-sm font-bold shadow-md">Save Customer</button>
-                        </div>
-                    </form>
                 </div>
+                <div class="flex gap-2">
+                    <button onclick="window.print()" class="bg-white border border-stone-200 px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-stone-50">
+                        <i data-lucide="printer" class="w-4 h-4"></i> Print List
+                    </button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- Menu Input -->
+                <div class="md:col-span-1 bg-white p-6 rounded-2xl border border-stone-100 shadow-sm space-y-4">
+                    <h3 class="font-black text-tiffin-dark uppercase text-xs tracking-widest">Today's Menu</h3>
+                    <input type="text" id="menuDish1" placeholder="Dish 1 (e.g. Bhindi)" class="w-full border border-stone-200 rounded-lg p-3 text-sm outline-none focus:border-tiffin-main">
+                    <input type="text" id="menuDish2" placeholder="Dish 2 (e.g. Yellow Daal)" class="w-full border border-stone-200 rounded-lg p-3 text-sm outline-none focus:border-tiffin-main">
+                </div>
+
+                <!-- Kitchen Aggregates -->
+                <div class="md:col-span-2 bg-tiffin-dark text-white p-6 rounded-2xl shadow-lg grid grid-cols-3 gap-4">
+                    <div class="text-center border-r border-white/10">
+                        <p class="text-[10px] uppercase font-bold text-tiffin-accent">Total Roti</p>
+                        <p class="text-3xl font-black" id="totalRotiCount">0</p>
+                    </div>
+                    <div class="text-center border-r border-white/10">
+                        <p class="text-[10px] uppercase font-bold text-tiffin-accent">Dish 1 (Sabji)</p>
+                        <p class="text-3xl font-black" id="totalOzDish1">0<span class="text-sm">oz</span></p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-[10px] uppercase font-bold text-tiffin-accent">Dish 2 (Dal)</p>
+                        <p class="text-3xl font-black" id="totalOzDish2">0<span class="text-sm">oz</span></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detailed Packing Table -->
+            <div class="bg-white rounded-2xl border border-stone-100 shadow-sm overflow-hidden">
+                <div class="p-4 bg-stone-50/50 border-b border-stone-100 flex justify-end">
+                    <button onclick="openGoogleMapsRoute()" class="px-4 py-2 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-lg text-xs font-black uppercase tracking-wider shadow-sm flex items-center gap-2 transition-all">
+                        <i data-lucide="map" aria-hidden="true"></i> Open Route in Google Maps
+                    </button>
+                </div>
+                <table class="w-full text-left border-collapse">
+                    <thead class="bg-stone-50 border-b border-stone-100">
+                        <tr>
+                            <th class="p-4 text-[10px] font-black uppercase text-gray-400">Customer</th>
+                            <th class="p-4 text-[10px] font-black uppercase text-gray-400 cursor-pointer hover:text-tiffin-main transition-colors" onclick="applyKitchenSort('type')">
+                                <div class="flex items-center gap-1">Diet/Size <span id="k-sort-type"></span></div>
+                            </th>
+                            <th class="p-4 text-[10px] font-black uppercase text-gray-400 text-center cursor-pointer hover:text-tiffin-main transition-colors" onclick="applyKitchenSort('roti_count')">
+                                <div class="flex items-center justify-center gap-1">Roti <span id="k-sort-roti_count"></span></div>
+                            </th>
+                            <th class="p-4 text-[10px] font-black uppercase text-gray-400 cursor-pointer hover:text-tiffin-main transition-colors" onclick="applyKitchenSort('address')">
+                                <div class="flex items-center gap-1">Address (Route) <span id="k-sort-address"></span></div>
+                            </th>
+                            <th class="p-4 text-[10px] font-black uppercase text-gray-400">Special Notes</th>
+                            <th class="p-4 text-[10px] font-black uppercase text-gray-400 text-right print:hidden">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="kitchenTableBody" class="divide-y divide-stone-50">
+                        <!-- Dynamic rows -->
+                    </tbody>
+                </table>
             </div>
         </section>
 
@@ -636,9 +826,14 @@
 
         <!-- ================= SECTION 3: PRICING ================= -->
         <section id="pricingView" class="view-section hide space-y-6 max-w-6xl mx-auto">
-            <div class="border-b border-tiffin-main/20 pb-4">
-                <h2 class="text-3xl font-black text-gray-800">Advanced Pricing Calculator</h2>
-                <p class="text-gray-500 mt-1">Configure complex custom quotes immediately. Calculates item details with selective roti, custom mains, and optional delivery add-ons.</p>
+            <div class="border-b-2 border-tiffin-main/10 pb-4 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+                <div>
+                    <h2 class="text-3xl font-black text-tiffin-dark tracking-tight">Financial Quotation Hub</h2>
+                    <p class="text-gray-500 mt-1 font-medium">Generate custom quotes and view standardized plan architectures.</p>
+                </div>
+                <button onclick="printSection('allPlansContainer')" class="no-print flex items-center gap-2 px-4 py-2 bg-stone-100 hover:bg-stone-200 text-stone-600 rounded-xl text-xs font-bold transition-all shadow-sm mb-1">
+                    <i data-lucide="printer" class="w-4 h-4"></i> Print All Rates
+                </button>
             </div>
 
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -657,13 +852,14 @@
                             <div>
                                 <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Plan Class</label>
                                 <select id="stdPlanCat" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
-                                    <option value="veg">Vegetarian</option>
-                                    <option value="nonveg">Non-Vegetarian</option>
+                                    <option value="veg">Vegetarian (Base)</option>
+                                    <option value="nonveg">Non-Vegetarian (+$2/meal)</option>
                                 </select>
                             </div>
                             <div>
                                 <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Volume</label>
                                 <select id="stdPlanSize" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                    <option value="small">Small (8oz)</option>
                                     <option value="regular">Regular (8oz)</option>
                                     <option value="large">Large (12oz)</option>
                                 </select>
@@ -695,17 +891,39 @@
                             </div>
                         </div>
 
-                        <div class="space-y-2">
-                            <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Dishes Content Selection</label>
-                            <div class="grid grid-cols-2 gap-4">
-                                <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
-                                    <input type="checkbox" id="custCalcDal" checked class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
-                                    <span class="ml-2.5 text-sm text-gray-700 font-semibold">Include Dal</span>
-                                </label>
-                                <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
-                                    <input type="checkbox" id="custCalcSabji" checked class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
-                                    <span class="ml-2.5 text-sm text-gray-700 font-semibold">Include Sabji</span>
-                                </label>
+                        <div class="space-y-4">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Dietary Preference</label>
+                                    <select id="custCalcType" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                        <option value="veg">Vegetarian</option>
+                                        <option value="nonveg">Non-Vegetarian (+$2.00)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Entree Portion Size</label>
+                                    <select id="custCalcSize" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
+                                        <option value="8oz">Regular (8oz) - $4.00</option>
+                                        <option value="12oz">Large (12oz) - $5.00</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="space-y-2">
+                                <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Itemized Content Selection</label>
+                                <div class="grid grid-cols-3 gap-3">
+                                    <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
+                                        <input type="checkbox" id="custCalcDal" checked class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
+                                        <span class="ml-2.5 text-sm text-gray-700 font-semibold">Dal</span>
+                                    </label>
+                                    <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
+                                        <input type="checkbox" id="custCalcSabji" checked class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
+                                        <span class="ml-2.5 text-sm text-gray-700 font-semibold">Sabji</span>
+                                    </label>
+                                    <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
+                                        <input type="checkbox" id="custCalcSides" class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
+                                        <span class="ml-2.5 text-sm text-gray-700 font-semibold">Sides ($1)</span>
+                                    </label>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -729,58 +947,186 @@
                         </div>
                     </div>
 
-                    <!-- Calculated Matrix Box -->
-                    <div class="bg-tiffin-light/20 rounded-2xl border border-tiffin-main/20 p-6 space-y-3">
-                        <div id="calcLineItems" class="space-y-1.5 text-[11px] text-stone-500 border-b border-stone-200 pb-3 hidden">
-                            <!-- Individual line items will appear here -->
+                    <!-- Quote Summary Card -->
+                    <div class="bg-stone-900 rounded-2xl p-6 text-white shadow-xl ring-4 ring-tiffin-main/10">
+                        <div class="flex items-center gap-2 mb-4 text-tiffin-accent">
+                            <i data-lucide="receipt" class="w-5 h-5"></i>
+                            <span class="text-xs font-black uppercase tracking-widest">Order Summary</span>
                         </div>
-                        <div class="flex justify-between items-center text-sm text-gray-600">
-                            <span>Base Dish Price:</span>
-                            <span class="font-bold" id="resBase">$0.00</span>
+                        <div id="calcLineItems" class="space-y-2 text-[11px] text-white/50 border-b border-white/10 pb-4 mb-4 hidden">
                         </div>
-                        <div class="flex justify-between items-center text-sm text-gray-600">
-                            <span>Add-ons Combined:</span>
-                            <span class="font-bold" id="resAddons">$0.00</span>
+                        <div class="space-y-2 mb-6">
+                            <div class="flex justify-between text-sm">
+                                <span class="text-white/60">Base Plan Value</span>
+                                <span class="font-bold" id="resBase">$0.00</span>
+                            </div>
+                            <div class="flex justify-between text-sm">
+                                <span class="text-white/60">Selected Add-ons</span>
+                                <span class="font-bold text-tiffin-accent" id="resAddons">$0.00</span>
+                            </div>
                         </div>
-                        <div class="border-t border-tiffin-main/20 pt-3 flex justify-between items-end">
-                            <span class="text-base font-bold text-gray-800">Total Invoice Quote:</span>
-                            <span class="text-3xl font-black text-tiffin-dark" id="resTotal">$0.00</span>
+                        <div class="flex justify-between items-center bg-white/5 p-4 rounded-xl border border-white/10">
+                            <span class="text-xs font-black uppercase tracking-widest text-white/40">Total Quote</span>
+                            <span class="text-3xl font-black text-tiffin-main" id="resTotal">$0.00</span>
+                        </div>
+
+                        <!-- Share & PDF Actions -->
+                        <div class="grid grid-cols-2 gap-3 mt-4 no-print">
+                            <button onclick="shareQuoteWhatsApp()" class="flex items-center justify-center gap-2 py-3 bg-green-600 hover:bg-green-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-green-600/20">
+                                <i data-lucide="share-2" class="w-3 h-3"></i> Share WhatsApp
+                            </button>
+                            <button onclick="printSection('quoteSummaryCard')" class="flex items-center justify-center gap-2 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all">
+                                <i data-lucide="file-text" class="w-3 h-3"></i> Save as PDF
+                            </button>
                         </div>
                     </div>
                 </div>
 
-                <!-- Structured Rules Board (Right Column) -->
-                <div class="bg-tiffin-dark text-tiffin-light/80 rounded-2xl p-6 lg:col-span-5 flex flex-col justify-between space-y-6">
-                    <div>
-                        <h3 class="text-white font-black text-xl border-b border-tiffin-accent pb-4 mb-6 uppercase tracking-tighter">Official Rate Sheets</h3>
-                        
-                        <div class="space-y-6 text-xs leading-relaxed">
-                            <div class="bg-white/5 p-4 rounded-xl border border-white/10">
-                                <h4 class="text-tiffin-main font-bold uppercase tracking-wider mb-1">Standard Vegetarian</h4>
-                                <ul class="list-disc pl-4 space-y-1">
-                                    <li>Regular (8oz): 1 Dal + 1 Sabji + 6 Roti. Trial: $11 | Monthly: $220</li>
-                                    <li>Large (12oz): 1 Dal + 1 Sabji + 8 Roti + Salad. Trial: $13 | Monthly: $250</li>
-                                </ul>
-                            </div>
-                            <div class="bg-white/5 p-4 rounded-xl border border-white/10">
-                                <h4 class="text-tiffin-main font-bold uppercase tracking-wider mb-1">Standard Non-Vegetarian</h4>
-                                <p class="text-[10px] text-tiffin-light/40 mb-1">Chicken (Mon, Wed, Fri) | Veg Sabji (Tue, Thu)</p>
-                                <ul class="list-disc pl-4 space-y-1">
-                                    <li>Regular: Trial: $15 | Weekly: $70 | Monthly: $250</li>
-                                    <li>Large: Trial: $17 | Weekly: $80 | Monthly: $280</li>
-                                </ul>
-                            </div>
-                            <div class="bg-white/5 p-4 rounded-xl border border-white/10">
-                                <h4 class="text-tiffin-main font-bold uppercase tracking-wider mb-1">À-La-Carte Components Matrix</h4>
-                                <ul class="list-disc pl-4 space-y-1">
-                                    <li>Single Extra Roti: $0.50</li>
-                                    <li>Standard Component: $4.50 (Daily) | $4.00 (Monthly)</li>
-                                    <li>Large Plan Veg Component: $5.50</li>
-                                </ul>
+                <!-- Right Column: Reference Hub -->
+                <div class="lg:col-span-5 space-y-6" id="allPlansContainer">
+                    <!-- Vegetarian Card -->
+                    <div class="bg-white rounded-2xl border-l-4 border-green-500 shadow-sm overflow-hidden print:shadow-none" id="vegPlansCard">
+                        <div class="p-5 bg-green-50/50 border-b border-stone-100 flex justify-between items-center">
+                            <h3 class="font-black text-green-700 uppercase text-xs tracking-widest flex items-center gap-2">
+                                <i data-lucide="leaf" class="w-4 h-4"></i> Vegetarian Plans
+                            </h3>
+                            <div class="flex items-center gap-2">
+                                <span class="text-[9px] font-bold bg-green-500 text-white px-2 py-0.5 rounded-full">BASE RATE</span>
+                                <button onclick="printSection('vegPlansCard')" class="no-print p-1 hover:bg-green-100 rounded transition-colors text-green-700">
+                                    <i data-lucide="printer" class="w-3 h-3"></i>
+                                </button>
                             </div>
                         </div>
-                    <div class="bg-white/5 p-4 rounded-xl text-center text-[11px] text-tiffin-light/40">
-                        * Note: Tiffins operate Monday to Friday only (Weekly = 5 meals, Monthly = 20 meals).
+                        <div class="p-0 overflow-x-auto">
+                            <table class="w-full text-left text-xs">
+                                <thead class="bg-stone-50/50 text-stone-400 font-bold border-b border-stone-100">
+                                    <tr>
+                                        <th class="p-3">Plan Size</th>
+                                        <th class="p-3 text-center">Daily</th>
+                                        <th class="p-3 text-center">Weekly</th>
+                                        <th class="p-3 text-right">Monthly</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-stone-50">
+                                    <tr class="hover:bg-stone-50/50">
+                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Small Plan</span><br><span class="text-[10px] text-stone-400">1x8oz Dal/Sabji ($6) + 4 Roti ($2)</span></td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$8</td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$35</td>
+                                        <td class="p-3 text-right font-black text-tiffin-dark">$120</td>
+                                    </tr>
+                                    <tr class="hover:bg-stone-50/50">
+                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Regular Plan</span><br><span class="text-[10px] text-stone-400">2x8oz Entrees ($10) + 6 Roti ($3)</span></td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$13</td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$60</td>
+                                        <td class="p-3 text-right font-black text-tiffin-dark">$220</td>
+                                    </tr>
+                                    <tr class="hover:bg-stone-50/50">
+                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Large Plan</span><br><span class="text-[10px] text-stone-400">2x12oz Entrees ($10.6) + 8 Roti ($4) + Sides ($0.4)</span></td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$15</td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$68</td>
+                                        <td class="p-3 text-right font-black text-tiffin-dark">$240</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Non-Veg Card -->
+                    <div class="bg-white rounded-2xl border-l-4 border-red-500 shadow-sm overflow-hidden print:shadow-none" id="nonvegPlansCard">
+                        <div class="p-5 bg-red-50/50 border-b border-stone-100 flex justify-between items-start">
+                            <div>
+                                <h3 class="font-black text-red-700 uppercase text-xs tracking-widest flex items-center gap-2 mb-1">
+                                    <i data-lucide="flame" class="w-4 h-4"></i> Non-Vegetarian Plans
+                                </h3>
+                                <p class="text-[9px] font-bold text-red-400 uppercase tracking-tighter">Chicken: M-W-F | Veg: Tue-Thu</p>
+                            </div>
+                            <button onclick="printSection('nonvegPlansCard')" class="no-print p-1 hover:bg-red-100 rounded transition-colors text-red-700">
+                                <i data-lucide="printer" class="w-3 h-3"></i>
+                            </button>
+                        </div>
+                        <div class="p-0 overflow-x-auto">
+                            <table class="w-full text-left text-xs">
+                                <thead class="bg-stone-50/50 text-stone-400 font-bold border-b border-stone-100">
+                                    <tr>
+                                        <th class="p-3">Plan Size</th>
+                                        <th class="p-3 text-center">Daily</th>
+                                        <th class="p-3 text-center">Weekly</th>
+                                        <th class="p-3 text-right">Monthly</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-stone-50">
+                                    <tr class="hover:bg-stone-50/50">
+                                        <td class="p-3">
+                                            <span class="font-bold text-stone-700 uppercase">Small Plan</span><br>
+                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $10.00</span><br>
+                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $8.00</span><br>
+                                            <span class="text-[10px] text-stone-400">Incl. 4 Roti</span>
+                                        </td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$10</td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$45</td>
+                                        <td class="p-3 text-right font-black text-tiffin-dark">$160</td>
+                                    </tr>
+                                    <tr class="hover:bg-stone-50/50">
+                                        <td class="p-3">
+                                            <span class="font-bold text-stone-700 uppercase">Regular Plan</span><br>
+                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $15.00</span><br>
+                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $13.00</span><br>
+                                            <span class="text-[10px] text-stone-400">Incl. 6 Roti</span>
+                                        </td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$15</td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$70</td>
+                                        <td class="p-3 text-right font-black text-tiffin-dark">$250</td>
+                                    </tr>
+                                    <tr class="hover:bg-stone-50/50">
+                                        <td class="p-3">
+                                            <span class="font-bold text-stone-700 uppercase">Large Plan</span><br>
+                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $17.00</span><br>
+                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $15.00</span><br>
+                                            <span class="text-[10px] text-stone-400">Incl. 8 Roti + Sides</span>
+                                        </td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$17</td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$78</td>
+                                        <td class="p-3 text-right font-black text-tiffin-dark">$270</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Component Costs -->
+                    <div class="bg-tiffin-dark rounded-2xl p-5 text-white/90">
+                        <h4 class="text-[10px] font-black uppercase tracking-widest text-tiffin-accent mb-4 border-b border-white/10 pb-2">Custom Build Unit Rates</h4>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="space-y-3">
+                                <div>
+                                    <p class="text-[10px] text-white/40 font-bold uppercase">Veg Entree</p>
+                                    <p class="text-sm font-bold">$4.00 <span class="text-[10px] opacity-40">8oz</span> / $5.00 <span class="text-[10px] opacity-40">12oz</span></p>
+                                </div>
+                                <div>
+                                    <p class="text-[10px] text-white/40 font-bold uppercase">Meat Entree</p>
+                                    <p class="text-sm font-bold">$6.00 <span class="text-[10px] opacity-40">8oz</span> / $7.00 <span class="text-[10px] opacity-40">12oz</span></p>
+                                </div>
+                            </div>
+                            <div class="space-y-3 border-l border-white/10 pl-4">
+                                <div>
+                                    <p class="text-[10px] text-white/40 font-bold uppercase">Extra Roti</p>
+                                    <p class="text-sm font-bold">$0.50 <span class="text-[10px] opacity-40">piece</span></p>
+                                </div>
+                                <div>
+                                    <p class="text-[10px] text-white/40 font-bold uppercase">Salad/Sides</p>
+                                    <p class="text-sm font-bold">$0.40 <span class="text-[10px] opacity-40">meal</span> <span class="text-[8px] text-tiffin-accent">($2/5d)</span></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-stone-100 rounded-xl p-4 text-[10px] text-stone-400 font-bold text-center leading-tight">
+                        <div class="mb-2 text-stone-500">
+                            <i data-lucide="info" class="w-3 h-3 inline-block mr-1"></i>
+                            TIFFINS OPERATE MON–FRI ONLY.<br>
+                            (WEEKLY = 5 MEALS | MONTHLY = 20 MEALS)
+                        </div>
+                        <div class="text-tiffin-accent">* All plans come with roti; rice can be substituted for fewer roti as desired.</div>
                     </div>
                 </div>
             </div>
@@ -796,7 +1142,7 @@
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         let state = {
-            customers: [], recentLogs: [], paymentLogs: [], sortBy: 'address', sortDirection: { address: 'asc', balance: 'desc', remaining: 'asc', status: 'asc' }
+            customers: [], recentLogs: [], paymentLogs: [], filterScheduledOnly: false, sortBy: 'address', sortDirection: { address: 'asc', balance: 'desc', remaining: 'asc', status: 'asc' }, currentVisibleIds: [], kitchenSortBy: 'address', kitchenSortDir: 'asc'
         };
         let paymentChartInstance = null; let deliveryChartInstance = null; let isStandardCalc = true; let editingCustomerId = null; let activePaymentCustomerId = null;
         let allHistoryLogs = []; let historyCurrentPage = 1; const historyItemsPerPage = 10;
@@ -839,10 +1185,47 @@
             }
         }
         // Standard Static Matrix (Pricing from User Sheet)
-        const stdRates = { // Standard Static Matrix (Pricing from User Sheet)
-            veg: { regular: { daily: 11, weekly: 60, monthly: 220 }, large: { daily: 13, weekly: 70, monthly: 250 } },
-            nonveg: { regular: { daily: 15, weekly: 70, monthly: 250 }, large: { daily: 17, weekly: 80, monthly: 280 } }
+        const stdRates = {
+            veg: { 
+                small: { daily: 8, weekly: 35, monthly: 120 },
+                regular: { daily: 13, weekly: 60, monthly: 220 }, // Daily changed from 11 to 13
+                large: { daily: 15, weekly: 68, monthly: 240 }    
+            },
+            nonveg: { 
+                small: { daily: 10, weekly: 45, monthly: 160 },
+                regular: { daily: 15, weekly: 70, monthly: 250 }, 
+                large: { daily: 17, weekly: 78, monthly: 270 } 
+            }
         };
+
+        // Default Roti Counts based on Portion Size
+        const defaultRotiCounts = {
+            'Small': 4,
+            'Regular': 6,
+            'Large': 8
+        };
+
+        let editingArrears = 0;
+        function calculatePriceForParams(type, size, term, rotiCount, rgRice, lgRice, xlRice) {
+            const typeKey = type.toLowerCase().replace('-', '');
+            const sizeKey = size.toLowerCase();
+            const termKey = term.toLowerCase();
+
+            if (!stdRates[typeKey] || !stdRates[typeKey][sizeKey] || !stdRates[typeKey][sizeKey][termKey]) return 0;
+
+            const basePrice = stdRates[typeKey][sizeKey][termKey];
+            const defaultRoti = defaultRotiCounts[size] || 6;
+            
+            // Adjustments based on $0.50 per roti and rice values derived from substitution rules
+            const rotiAdj = (rotiCount - defaultRoti) * 0.50;
+            const riceAdj = (rgRice * 1.00) + (lgRice * 1.50) + (xlRice * 4.00);
+
+            let periodDays = 1;
+            if (termKey === 'weekly') periodDays = 5;
+            if (termKey === 'monthly') periodDays = 20;
+
+            return basePrice + (rotiAdj + riceAdj) * periodDays;
+        }
 
         // ================= BUSINESS ENGINE: CALCULATOR =================
         function toggleCalcMode(useStandard) {
@@ -884,43 +1267,97 @@
                 if (freq === 'weekly') periodDays = 5;
                 if (freq === 'monthly') periodDays = 20;
 
-                const freqLabel = freq.charAt(0).toUpperCase() + freq.slice(1);
-                lineItems.push(`<span>${freqLabel} Plan (${cat.toUpperCase()}, ${size})</span><span>$${stdRates[cat][size][freq].toFixed(2)}</span>`);
-
-                basePrice = stdRates[cat][size][freq];
+                if (stdRates[cat] && stdRates[cat][size] && stdRates[cat][size][freq]) {
+                    basePrice = stdRates[cat][size][freq];
+                    const freqLabel = freq.charAt(0).toUpperCase() + freq.slice(1);
+                    lineItems.push(`<span>${freqLabel} Plan (${cat.toUpperCase()}, ${size})</span><span>$${basePrice.toFixed(2)}</span>`);
+                } else {
+                    lineItems.push(`<span>Standard Plan (${cat.toUpperCase()}, ${size}, ${freq})</span><span>N/A</span>`);
+                    basePrice = 0; // Default to 0 if pricing is not found
+                }
             } else {
                 const period = document.getElementById('custCalcPeriod').value;
+                const dietType = document.getElementById('custCalcType').value;
+                const compSize = document.getElementById('custCalcSize').value;
                 const rotis = parseInt(document.getElementById('custCalcRoti').value) || 0;
                 const hasDal = document.getElementById('custCalcDal').checked;
                 const hasSabji = document.getElementById('custCalcSabji').checked;
+                const hasSides = document.getElementById('custCalcSides').checked;
 
                 if (period === 'weekly') periodDays = 5;
                 if (period === 'monthly') periodDays = 20;
 
-                lineItems.push(`<span>Custom Meal Base (${periodDays} days)</span><span>-</span>`);
-
                 let singleMealBase = 0;
-                let singleRotiCost = 0.50;
-                let componentUnitRate = 4.50;
-
-                if (period === 'monthly') {
-                    componentUnitRate = 4.00;
-                }
+                const singleRotiCost = 0.50;
+                
+                // Itemized logic: Meat component costs $2 more than Veg
+                const vegRate = compSize === '12oz' ? 5.00 : 4.00;
+                const meatRate = compSize === '12oz' ? 7.00 : 6.00;
 
                 singleMealBase += (rotis * singleRotiCost);
                 if (rotis > 0) lineItems.push(`<span class="pl-3">└ Roti (${rotis} x $0.50)</span><span>$${(rotis * 0.50).toFixed(2)}</span>`);
                 
+                // If Non-Veg is selected, one of the entrees (Sabji) is considered a Meat item
+                const mainRate = (dietType === 'nonveg') ? meatRate : vegRate;
+
+                if (dietType === 'nonveg') {
+                    lineItems.push(`<span class="pl-3 text-red-500 font-bold">└ Meat Day Profile Selected</span><span>-</span>`);
+                }
+
                 if (hasDal) {
-                    singleMealBase += componentUnitRate;
-                    lineItems.push(`<span class="pl-3">└ Dal Component</span><span>$${componentUnitRate.toFixed(2)}</span>`);
+                    singleMealBase += vegRate;
+                    lineItems.push(`<span class="pl-3">└ Dal (${compSize})</span><span>$${vegRate.toFixed(2)}</span>`);
                 }
                 if (hasSabji) {
-                    singleMealBase += componentUnitRate;
-                    lineItems.push(`<span class="pl-3">└ Sabji Component</span><span>$${componentUnitRate.toFixed(2)}</span>`);
+                    singleMealBase += mainRate;
+                    lineItems.push(`<span class="pl-3">└ Sabji (${compSize}) ${dietType === 'nonveg' ? '(Meat)' : ''}</span><span>$${mainRate.toFixed(2)}</span>`);
+                }
+                if (hasSides) {
+                    singleMealBase += 0.40;
+                    lineItems.push(`<span class="pl-3">└ Sides (Salad/Dessert)</span><span>$0.40</span>`);
                 }
 
                 basePrice = singleMealBase * periodDays;
+                
+                if (singleMealBase > 0) {
+                    lineItems.unshift(`<span>Raw Items Sum (${periodDays} days)</span><span>-</span>`);
+                    
+                    // Apply Frequency Markups and Bundle Discounts to align with Standard Plan pricing
+                    let markup = 0;
+                    if (period === 'daily') markup = 2.00;
+                    else if (period === 'weekly') markup = 1.00;
+
+                    let discount = 0;
+                    if (hasDal && hasSabji) {
+                        const tier = compSize === '12oz' ? 'large' : 'regular';
+                        const targetMealRate = stdRates[dietType][tier][period] / periodDays;
+                        
+                        // Standard raw baselines used to determine the maximum bundle discount offered for each tier
+                        // Regular: 6 Roti + 2x8oz | Large: 8 Roti + 2x12oz + Sides
+                        let stdRaw = (tier === 'regular') ? (dietType === 'nonveg' ? 12.20 : 11.00) : (dietType === 'nonveg' ? 15.60 : 14.40);
+                        const maxDiscount = Math.max(0, (stdRaw + markup) - targetMealRate);
+                        
+                        // Capped discount logic: Discount the custom configuration down to the bundle target rate, but not below it
+                        discount = Math.min(maxDiscount, Math.max(0, (singleMealBase + markup) - targetMealRate));
+                    }
+                    
+                    basePrice = (singleMealBase + markup - discount) * periodDays;
+
+                    // Add transparency to the quote breakdown
+                    if (markup > 0) {
+                        lineItems.push(`<span class="pl-3 text-amber-600">└ Frequency Adjustment (Trial/Weekly)</span><span>+$${(markup * periodDays).toFixed(2)}</span>`);
+                    }
+                    if (discount > 0) {
+                        lineItems.push(`<span class="pl-3 text-green-600">└ Bundle Discount Applied</span><span>-$${(discount * periodDays).toFixed(2)}</span>`);
+                    }
+                } else {
+                    basePrice = 0;
+                }
             }
+
+            // Build Quote Card ID for Print Target
+            const summaryCard = document.querySelector('.bg-stone-900.rounded-2xl.p-6.text-white');
+            if (summaryCard) summaryCard.id = 'quoteSummaryCard';
 
             let addOnsSum = 0;
             if (hasDelivery) {
@@ -1061,9 +1498,165 @@
         }
 
         // ================= BUSINESS ENGINE: OPERATIONAL TABLE =================
+        // ================= BUSINESS ENGINE: KITCHEN PREP =================
+        function renderKitchenPrep() {
+            const now = new Date();
+            const daySelector = document.getElementById('kitchenDaySelector');
+            let targetDay = now.getDay();
+            
+            if (daySelector && daySelector.value !== 'today') {
+                targetDay = parseInt(daySelector.value);
+            }
+
+            const daysMap = { 0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday' };
+            const dateDisplay = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            document.getElementById('kitchenDateDisplay').innerText = daySelector && daySelector.value !== 'today' ? `Prep List for ${daysMap[targetDay]}` : dateDisplay;
+            
+            const tbody = document.getElementById('kitchenTableBody');
+            tbody.innerHTML = '';
+
+            // Filter for only people scheduled for targetDay
+            const activeToday = state.customers.filter(c => {
+                const schedule = c.schedule || [1, 2, 3, 4, 5];
+                return schedule.includes(targetDay);
+            });
+
+            // Update Sorting Indicators
+            ['type', 'roti_count', 'address'].forEach(id => {
+                const el = document.getElementById(`k-sort-${id}`);
+                if (el) el.innerText = state.kitchenSortBy === id ? (state.kitchenSortDir === 'asc' ? '↑' : '↓') : '';
+            });
+
+            // Sort the list
+            activeToday.sort((a, b) => {
+                let valA = a[state.kitchenSortBy];
+                let valB = b[state.kitchenSortBy];
+                const dir = state.kitchenSortDir === 'asc' ? 1 : -1;
+
+                if (state.kitchenSortBy === 'type') {
+                    // Sort by Type then Size
+                    valA = a.type + a.size;
+                    valB = b.type + b.size;
+                }
+                
+                if (typeof valA === 'string') return valA.localeCompare(valB) * dir;
+                return (valA - valB) * dir;
+            });
+
+            if (activeToday.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="p-12 text-center text-gray-400 italic font-medium">No deliveries scheduled for the selected day.</td>
+                    </tr>
+                `;
+            }
+
+            let totalRoti = 0;
+            let totalOzDish1 = 0;
+            let totalOzDish2 = 0;
+
+            activeToday.forEach(c => {
+                const roti = c.roti_count || defaultRotiCounts[c.size] || 6;
+                let dishVolume = 4; // Regular default: 8oz total -> 4oz per dish
+                if (c.size === 'Large') dishVolume = 6; // 12oz total -> 6oz per dish
+                if (c.size === 'Small') dishVolume = 8; // 1 dish, assuming 8oz container
+
+                if (c.size === 'Small') {
+                    if (c.small_component_choice === 'Dal') totalOzDish2 += dishVolume;
+                    else totalOzDish1 += dishVolume;
+                } else {
+                    totalOzDish1 += dishVolume;
+                    totalOzDish2 += dishVolume;
+                }
+                totalRoti += roti;
+
+                const riceText = c.rice && c.rice !== 'None' ? c.rice.replace(/(\d+)(rg|lg|xl)/g, '$1 $2 rice') : '';
+                const specialNotes = c.special_instructions || '';
+                const smallInfo = c.size === 'Small' ? `[${c.small_component_choice || 'Sabji'} Only] ` : '';
+                let combinedNotes = specialNotes;
+                if (riceText) {
+                    combinedNotes = `${smallInfo}(${riceText}) ${specialNotes}`.trim();
+                } else if (smallInfo) {
+                    combinedNotes = `${smallInfo}${specialNotes}`.trim();
+                }
+
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-stone-50";
+                const displaySize = c.size === 'Small' ? 'Small' : `${c.size} (${dishVolume * 2}oz)`;
+                tr.innerHTML = `
+                    <td class="p-4 font-bold text-gray-800">${c.name}</td>
+                    <td class="p-4">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-black ${c.type === 'Veg' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'} uppercase">${c.type}</span>
+                        <span class="ml-1 text-xs font-bold text-gray-500">${displaySize}</span>
+                    </td>
+                    <td class="p-4 text-center font-black text-tiffin-main text-lg">${roti}</td>
+                    <td class="p-4 text-xs text-gray-500">${c.address}</td>
+                    <td class="p-4 text-xs italic text-amber-600 font-medium">${combinedNotes || '-'}</td>
+                    <td class="p-4 text-right print:hidden">
+                        <button onclick="openCustomerModal('${c.id}')" class="p-2 bg-tiffin-light hover:bg-tiffin-accent hover:text-white text-tiffin-main rounded-lg transition-all shadow-sm" title="Quick Edit Details">
+                            <i data-lucide="edit-3" class="w-4 h-4"></i>
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            document.getElementById('totalRotiCount').innerText = totalRoti;
+            document.getElementById('totalOzDish1').innerHTML = `${totalOzDish1}<span class="text-sm ml-1">oz</span>`;
+            document.getElementById('totalOzDish2').innerHTML = `${totalOzDish2}<span class="text-sm ml-1">oz</span>`;
+            
+            lucide.createIcons();
+        }
+
+        function applyKitchenSort(criteria) {
+            if (state.kitchenSortBy === criteria) {
+                state.kitchenSortDir = state.kitchenSortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                state.kitchenSortBy = criteria;
+                state.kitchenSortDir = 'asc';
+            }
+            renderKitchenPrep();
+        }
+
+        function openGoogleMapsRoute() {
+            const now = new Date();
+            const todayDay = now.getDay();
+            const home = "3270 Singleton Avenue, Unit 42, London, ON";
+            
+            let activeToday = state.customers.filter(c => {
+                const schedule = c.schedule || [1, 2, 3, 4, 5];
+                return schedule.includes(todayDay);
+            });
+
+            if (activeToday.length === 0) return showToast("No deliveries scheduled for today.", "info");
+
+            // Optimized heuristic sorting: Group by street name, then sort numerically by house number.
+            // This prevents zig-zagging and ensures logical neighborhood flow.
+            activeToday.sort((a, b) => {
+                const parseAddr = (addr) => {
+                    const match = addr.match(/^(\d+)\s+(.*)/);
+                    return match ? { num: parseInt(match[1]), street: match[2].toLowerCase() } : { num: 0, street: addr.toLowerCase() };
+                };
+                const aP = parseAddr(a.address);
+                const bP = parseAddr(b.address);
+                return aP.street.localeCompare(bP.street) || aP.num - bP.num;
+            });
+
+            const destinations = activeToday.map(c => encodeURIComponent(c.address + ", London, ON")).join('/');
+            // Create a round-trip route starting and ending at home to optimize total time
+            const url = `https://www.google.com/maps/dir/${encodeURIComponent(home)}/${destinations}/${encodeURIComponent(home)}`;
+            window.open(url, '_blank');
+        }
+
         function renderCustomerTable(filterTerm = '') {
             const tbodyDesktop = document.getElementById('clientTableBodyDesktop');
             const cardsMobile = document.getElementById('clientCardsMobile');
+            
+            // Get today's day (1 for Mon, 5 for Fri)
+            const now = new Date();
+            const todayDay = now.getDay(); 
+            const isWeekend = todayDay === 0 || todayDay === 6;
+            const dayMap = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri' };
             
             // Update Header Sort Icons
             ['address', 'balance', 'remaining', 'status'].forEach(id => {
@@ -1076,10 +1669,16 @@
 
             tbodyDesktop.innerHTML = '';
             cardsMobile.innerHTML = '';
-            let filtered = state.customers.filter(c => 
-                c.name.toLowerCase().includes(filterTerm.toLowerCase()) || 
-                c.address.toLowerCase().includes(filterTerm.toLowerCase())
-            );
+            
+            let filtered = state.customers.filter(c => {
+                const matchesSearch = c.name.toLowerCase().includes(filterTerm.toLowerCase()) || 
+                                    c.address.toLowerCase().includes(filterTerm.toLowerCase());
+                
+                if (!state.filterScheduledOnly) return matchesSearch;
+                
+                const schedule = c.schedule || [1, 2, 3, 4, 5];
+                return matchesSearch && (schedule.includes(todayDay) || c.deliveredToday);
+            });
 
             // Apply Sorting Logic
             filtered.sort((a, b) => {
@@ -1114,6 +1713,8 @@
                 return comparison * direction;
             });
 
+            state.currentVisibleIds = filtered.map(c => c.id);
+
             filtered.forEach(client => {
                 // Desktop Table Row
                 const tr = document.createElement('tr'); // Create a table row for desktop
@@ -1125,11 +1726,30 @@
                 const badgeLabel = isPaid ? "Paid" : `$${client.amountDue.toFixed(2)}`;
                 
                 const deliveryStatusIcon = client.deliveredToday ? "check-circle" : "clock";
-                const deliveryStatusColor = client.deliveredToday ? "text-green-600" : "text-tiffin-accent";
+                
+                // Check if customer is scheduled for today
+                const schedule = client.schedule || [1, 2, 3, 4, 5];
+                const isScheduledToday = schedule.includes(todayDay);
+                
+                let statusText = client.deliveredToday ? "Delivered" : (isScheduledToday ? "Pending" : "Off-Schedule");
+                let deliveryStatusColor = client.deliveredToday ? "text-green-600" : (isScheduledToday ? "text-tiffin-accent" : "text-stone-400");
+                
+                if (isWeekend) {
+                    statusText = client.deliveredToday ? "Delivered" : "Weekend";
+                    deliveryStatusColor = client.deliveredToday ? "text-green-600" : "text-stone-300";
+                }
 
                 const progress = getPlanProgress(client);
 
-                const catKey = client.type.toLowerCase().replace('-', '');
+                // Weekly Schedule Visualization
+                const weekDaysShort = ['M', 'T', 'W', 'T', 'F'];
+                const weeklyVisual = `<div class="flex gap-1 mt-2">` + weekDaysShort.map((day, i) => {
+                    const isSet = schedule.includes(i + 1);
+                    const active = (todayDay === i + 1) ? 'ring-2 ring-tiffin-main ring-offset-1' : '';
+                    return `<span class="w-3.5 h-3.5 flex items-center justify-center rounded-[3px] text-[7px] font-black ${isSet ? 'bg-tiffin-main text-white' : 'bg-stone-100 text-stone-300'} ${active}">${day}</span>`;
+                }).join('') + `</div>`;
+
+                const catKey = client.type ? client.type.toLowerCase().replace('-', '') : 'veg';
                 const sizeKey = client.size.toLowerCase();
                 const termKey = client.term.toLowerCase();
                 const currentTermPrice = (stdRates[catKey] && stdRates[catKey][sizeKey]) ? (stdRates[catKey][sizeKey][termKey] || 0) : 0;
@@ -1147,8 +1767,12 @@
                 // 1. Delivery Workflow Actions
                 if (!client.deliveredToday) {
                     deliveryAction = `
-                        <button onclick="commitDelivery('${client.id}')" class="w-full md:w-auto px-6 py-4 md:px-3 md:py-1.5 bg-tiffin-main hover:bg-tiffin-dark text-white rounded-xl md:rounded-lg text-base md:text-xs font-black md:font-bold transition shadow-lg md:shadow-sm flex items-center justify-center gap-2 md:gap-1">
+                        <button onclick="commitDelivery('${client.id}')" 
+                            class="w-full md:w-auto px-6 py-4 md:px-3 md:py-1.5 
+                            ${isScheduledToday ? 'bg-tiffin-main hover:bg-tiffin-dark' : 'bg-stone-300 hover:bg-stone-400'} 
+                            text-white rounded-xl md:rounded-lg text-base md:text-xs font-black md:font-bold transition shadow-lg md:shadow-sm flex items-center justify-center gap-2 md:gap-1">
                             🚚 Deliver
+                            ${!isScheduledToday ? '<span class="text-[8px] ml-1 opacity-70">(Extra)</span>' : ''}
                         </button>
                     `;
                 } else {
@@ -1198,6 +1822,7 @@
                             </span>
                             ${progress.isCompleted ? '<span class="text-[10px] text-red-600 font-black animate-pulse">RENEW NOW</span>' : ''}
                         </div>
+                        ${weeklyVisual}
                     </td>
                     <td class="p-4">
                         <div class="flex flex-col">
@@ -1207,7 +1832,7 @@
                         </div>
                     </td>
                     <td class="p-4 text-center">
-                        <span class="text-xs font-bold ${deliveryStatusColor} flex items-center justify-center gap-1"><i data-lucide="${deliveryStatusIcon}" class="w-3 h-3"></i> ${client.deliveredToday ? "Delivered" : "Pending"}</span>
+                        <span class="text-xs font-bold ${deliveryStatusColor} flex items-center justify-center gap-1"><i data-lucide="${deliveryStatusIcon}" class="w-3 h-3"></i> ${statusText}</span>
                     </td>
                     <td class="p-4 text-right">
                         <div class="flex flex-wrap items-center justify-end gap-1.5">
@@ -1241,7 +1866,7 @@
                         </div>
                         <div class="text-right">
                             <p class="text-gray-400 uppercase font-bold tracking-wider text-[10px]">Status Today</p>
-                            <span class="font-bold ${deliveryStatusColor} flex items-center justify-end gap-1"><i data-lucide="${deliveryStatusIcon}" class="w-3 h-3"></i> ${client.deliveredToday ? "Delivered" : "Pending"}</span>
+                            <span class="font-bold ${deliveryStatusColor} flex items-center justify-end gap-1"><i data-lucide="${deliveryStatusIcon}" class="w-3 h-3"></i> ${statusText}</span>
                             <div class="flex items-center justify-end gap-2 mt-2">
                                 <span class="px-2 py-0.5 bg-tiffin-light text-tiffin-main text-[9px] font-black rounded-md border border-tiffin-accent/20 uppercase">
                                     ${progress.target - progress.count} REMAINING
@@ -1250,6 +1875,7 @@
                             </div>
                         </div>
                     </div>
+                    <div class="pb-1">${weeklyVisual}</div>
 
                     <div class="flex flex-col gap-3 pt-3 border-t border-stone-100">
                         ${deliveryAction}
@@ -1325,6 +1951,7 @@
                     renderDashboardMetrics();
                     showToast(`Logged dispatch run for ${client.name}`, "truck");
 
+                    const riceInfo = (client.rice && client.rice !== 'None') ? ` (includes ${client.rice.replace(/(\d+)(rg|lg|xl)/g, '$1 $2 rice')})` : '';
                     // WhatsApp Message Logic
                     let messageSuffix = "🍛 Bon Appetit!";
                     // Trigger reminder suffix when committing the final delivery of the term
@@ -1332,7 +1959,7 @@
                         messageSuffix = "\n\nNote: Your term completes today. Please renew to ensure continued service from tomorrow. Thank you!";
                     }
 
-                    const rawMessage = `Hello ${client.name}, your fresh meal has been safely delivered to ${client.address}! ${messageSuffix}`;
+                    const rawMessage = `Hello ${client.name}, your fresh meal${riceInfo} has been safely delivered to ${client.address}! ${messageSuffix}`;
                     const encodedMsg = encodeURIComponent(rawMessage);
                     const cleanPhone = client.phone.replace(/\D/g, '');
                     const apiLink = `https://wa.me/${cleanPhone}?text=${encodedMsg}`;
@@ -1432,7 +2059,11 @@
             const size = client.size.toLowerCase();
             const term = client.term.toLowerCase();
             const price = stdRates[cat][size][term];
-
+            if (!price) {
+                showToast("Cannot renew: Pricing for this plan not found.", "alert-circle");
+                return;
+            }
+            
             requestConfirm(
                 "Renew Subscription?",
                 `Starting new ${client.term} term for ${client.name}. This adds $${price.toFixed(2)} to the existing balance of $${client.amountDue.toFixed(2)}. New Total: $${(client.amountDue + price).toFixed(2)}`,
@@ -1676,6 +2307,11 @@
             renderCustomerTable(term);
         }
 
+        function toggleScheduledFilter() {
+            state.filterScheduledOnly = document.getElementById('scheduledOnlyToggle').checked;
+            filterCustomerTable();
+        }
+
         function applyTableSort(criteria) {
             if (state.sortBy === criteria) {
                 // Toggle direction if the same column is clicked
@@ -1698,19 +2334,14 @@
                 summaryCurrentPage = 1;
             }
 
-            if (!selectedCustomerId) selectedCustomerId = document.getElementById('historyCustomerFilter').value;
             selectedCustomerId = selectedCustomerId || document.getElementById('historyCustomerFilter').value;
             
             
-            const tbody = document.getElementById('historyTableBody');
-            const summaryBody = document.getElementById('historySummaryBody');
             const deliveryCountEl = document.getElementById('historyDeliveryCount');
 
             const startDate = document.getElementById('historyStartDate').value;
             const endDate = document.getElementById('historyEndDate').value;
 
-            tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-gray-400">Loading history records...</td></tr>';
-            summaryBody.innerHTML = '';
             const tbodyDesktop = document.getElementById('historyTableBodyDesktop');
             const cardsMobile = document.getElementById('historyCardsMobile');
             const summaryBodyDesktop = document.getElementById('historySummaryBodyDesktop');
@@ -1962,16 +2593,118 @@
             }
         }
 
+        let currentRiceSuggestion = null;
+        function calculateRiceSuggestion() {
+            const size = document.getElementById('custSize').value;
+            const count = parseInt(document.getElementById('custRotiCount').value) || 0;
+            const def = defaultRotiCounts[size] || 0;
+            const diff = def - count;
+
+            let result = { rg: 0, lg: 0, xl: 0, text: "" };
+
+            // Logic: 2 less=rg, 3 less=lg, 4 less=2rg, 5 less=rg+lg, 6 less=2lg, 8 less=xl
+            if (diff === 2) { result.rg = 1; result.text = "1 RG Rice"; }
+            else if (diff === 3) { result.lg = 1; result.text = "1 LG Rice"; }
+            else if (diff === 4) { result.rg = 2; result.text = "2 RG Rice"; }
+            else if (diff === 5) { result.rg = 1; result.lg = 1; result.text = "1 RG + 1 LG Rice"; }
+            else if (diff === 6) { result.lg = 2; result.text = "2 LG Rice"; }
+            else if (diff === 7) { result.rg = 2; result.lg = 1; result.text = "2 RG + 1 LG Rice"; }
+            else if (diff === 8) { result.xl = 1; result.text = "1 XL Rice"; }
+            else return null;
+
+            return result;
+        }
+
+        function updateRiceSuggestionUI() {
+            const suggestion = calculateRiceSuggestion();
+            const box = document.getElementById('riceSuggestionBox');
+            const text = document.getElementById('riceSuggestionText');
+            
+            if (!box || !text) return;
+
+            // Check if current values match suggestion
+            const currentRg = parseInt(document.getElementById('custRgRiceCount').value) || 0;
+            const currentLg = parseInt(document.getElementById('custLgRiceCount').value) || 0;
+            const currentXl = parseInt(document.getElementById('custXlRiceCount').value) || 0;
+
+            const alreadyApplied = suggestion && 
+                                   currentRg === suggestion.rg && 
+                                   currentLg === suggestion.lg && 
+                                   currentXl === suggestion.xl;
+
+            if (suggestion && !alreadyApplied) {
+                currentRiceSuggestion = suggestion;
+                const size = document.getElementById('custSize').value;
+                const count = parseInt(document.getElementById('custRotiCount').value) || 0;
+                const diff = defaultRotiCounts[size] - count;
+                text.innerText = `Since you've selected ${diff} less roti than the default (${defaultRotiCounts[size]}), we suggest adding ${suggestion.text}.`;
+                box.classList.remove('hide');
+                lucide.createIcons();
+            } else {
+                currentRiceSuggestion = null;
+                box.classList.add('hide');
+            }
+        }
+
+        function applyRiceSuggestion() {
+            if (!currentRiceSuggestion) return;
+            document.getElementById('custRgRiceCount').value = currentRiceSuggestion.rg;
+            document.getElementById('custLgRiceCount').value = currentRiceSuggestion.lg;
+            document.getElementById('custXlRiceCount').value = currentRiceSuggestion.xl;
+            document.getElementById('riceSuggestionBox').classList.add('hide');
+            showToast(`Added ${currentRiceSuggestion.text} to your selection!`, "sparkles");
+        }
+
+        // Navigation function updated to use larger icons
         // Modal Form Controllers
+        function navigateModalCustomer(direction) {
+            if (!editingCustomerId || state.currentVisibleIds.length === 0) return;
+            const currentIndex = state.currentVisibleIds.indexOf(editingCustomerId);
+            if (currentIndex === -1) return;
+            
+            let nextIndex = currentIndex + direction;
+            if (nextIndex < 0) nextIndex = state.currentVisibleIds.length - 1;
+            if (nextIndex >= state.currentVisibleIds.length) nextIndex = 0;
+            
+            openCustomerModal(state.currentVisibleIds[nextIndex]);
+        }
         async function openCustomerModal(id = null) {
             const form = document.getElementById('customerForm');
             const title = document.getElementById('modalTitle');
-            const submitBtn = form.querySelector('button[type="submit"]');
+            editingArrears = 0;
+            const submitBtn = document.getElementById('custSubmitBtn');
+            const scheduleContainer = document.getElementById('scheduleContainer');
+            
+            // Build Schedule Checkboxes
+            const days = [{v:1, l:'Mon'}, {v:2, l:'Tue'}, {v:3, l:'Wed'}, {v:4, l:'Thu'}, {v:5, l:'Fri'}];
+            scheduleContainer.innerHTML = '';
+            days.forEach(day => {
+                const div = document.createElement('div');
+                div.className = "flex-1 min-w-[60px]";
+                div.innerHTML = `
+                    <label class="block cursor-pointer">
+                        <input type="checkbox" name="custSchedule" value="${day.v}" class="peer hidden">
+                        <div class="text-center py-2 rounded-lg border border-stone-200 text-[10px] font-black uppercase peer-checked:bg-tiffin-main peer-checked:text-white peer-checked:border-tiffin-main transition-all">${day.l}</div>
+                    </label>
+                `;
+                scheduleContainer.appendChild(div);
+            });
             
             form.reset();
             editingCustomerId = id;
+            const nav = document.getElementById('modalNavigation');
+
+            const custSizeSelect = document.getElementById('custSize');
+            const custRotiCountInput = document.getElementById('custRotiCount');
+            const custSmallComponentSelect = document.getElementById('custSmallComponent');
+            const smallComponentContainer = document.getElementById('smallComponentContainer');
+            const custRgRiceCountInput = document.getElementById('custRgRiceCount');
+            const custLgRiceCountInput = document.getElementById('custLgRiceCount');
+            const custXlRiceCountInput = document.getElementById('custXlRiceCount');
+            const custInstructionsInput = document.getElementById('custInstructions');
 
             if (id) {
+                nav.classList.remove('hide');
                 const client = state.customers.find(c => c.id == id);
                 if (client) {
                     title.innerText = "Edit Tiffin Subscriber";
@@ -1997,12 +2730,52 @@
 
                     document.getElementById('custAddress').value = client.address;
                     document.getElementById('custType').value = client.type;
-                    document.getElementById('custSize').value = client.size;
+                    custSizeSelect.value = client.size;
                     document.getElementById('custTerm').value = client.term;
                     document.getElementById('custStartDate').value = client.startDate ? new Date(client.startDate).toISOString().split('T')[0] : '';
                     document.getElementById('custRenewDate').value = client.renewDate ? new Date(client.renewDate).toISOString().split('T')[0] : '';
                     document.getElementById('custRenewTimes').value = client.renewTimes || 0;
                     document.getElementById('custDue').value = client.amountDue.toFixed(2);
+                    custRotiCountInput.value = client.roti_count || defaultRotiCounts[client.size] || 6;
+                    
+                    custSmallComponentSelect.value = client.small_component_choice || 'Sabji';
+                    smallComponentContainer.classList.toggle('hide', client.size !== 'Small');
+                    
+                    // Parse client.rice to populate new rice inputs
+                    if (client.rice && client.rice !== 'None') {
+                        const riceParts = client.rice.split(',').map(s => s.trim());
+                        let rg = 0, lg = 0, xl = 0;
+                        riceParts.forEach(part => {
+                            if (part.includes('rg')) rg = parseInt(part.replace('rg', '')) || 1;
+                            if (part.includes('lg')) lg = parseInt(part.replace('lg', '')) || 1;
+                            if (part.includes('xl')) xl = parseInt(part.replace('xl', '')) || 1;
+                        });
+                        custRgRiceCountInput.value = rg;
+                        custLgRiceCountInput.value = lg;
+                        custXlRiceCountInput.value = xl;
+
+                    // Calculate Arrears (Balance carried over from before the current plan/selections)
+                    const currentPrice = calculatePriceForParams(
+                        client.type, 
+                        client.size, 
+                        client.term, 
+                        client.roti_count || defaultRotiCounts[client.size],
+                        rg, lg, xl
+                    );
+                    editingArrears = Math.max(0, client.amountDue - currentPrice);
+                    } else {
+                        custRgRiceCountInput.value = 0; custLgRiceCountInput.value = 0; custXlRiceCountInput.value = 0;
+                    custRgRiceCountInput.value = 0; 
+                    custLgRiceCountInput.value = 0; 
+                    custXlRiceCountInput.value = 0;
+                    }
+                    custInstructionsInput.value = client.special_instructions || "";
+
+                    // Set Schedule Checkboxes
+                    const schedule = client.schedule || [1, 2, 3, 4, 5];
+                    document.querySelectorAll('input[name="custSchedule"]').forEach(cb => {
+                        cb.checked = schedule.includes(parseInt(cb.value));
+                    });
 
                     // Calculate payments made in the current term
                     try {
@@ -2031,14 +2804,26 @@
                     autoFillInitialAmount();
                 }
             } else {
+                nav.classList.add('hide');
                 title.innerText = "Register Tiffin Subscriber";
                 submitBtn.innerText = "Save Customer";
                 document.getElementById('custPaidThisTerm').value = "0.00"; // New customer, no payments yet
                 document.getElementById('custStartDate').value = new Date().toISOString().split('T')[0]; // Default to today
+                custRgRiceCountInput.value = 0;
+                custLgRiceCountInput.value = 0;
+                custXlRiceCountInput.value = 0;
+                custSmallComponentSelect.value = 'Sabji';
+                smallComponentContainer.classList.add('hide');
+                custRotiCountInput.value = defaultRotiCounts['Regular'] || 6;
+                custInstructionsInput.value = "";
+                // Default schedule all Mon-Fri
+                document.querySelectorAll('input[name="custSchedule"]').forEach(cb => cb.checked = true);
                 autoFillInitialAmount();
             }
 
+            updateRiceSuggestionUI();
             document.getElementById('customerModal').classList.remove('hidden');
+            lucide.createIcons();
         }
 
         function closeCustomerModal() {
@@ -2047,7 +2832,7 @@
 
         document.getElementById('customerForm').onsubmit = async function(event) {
             event.preventDefault();
-            const submitBtn = event.target.querySelector('button[type="submit"]');
+            const submitBtn = document.getElementById('custSubmitBtn');
             const originalBtnText = submitBtn.innerText;
 
             submitBtn.disabled = true;
@@ -2055,15 +2840,31 @@
 
             const countryCode = document.getElementById('custCountryCode').value;
             const pureNumber = document.getElementById('custPhone').value.replace(/\D/g, '');
+            const selectedSchedule = Array.from(document.querySelectorAll('input[name="custSchedule"]:checked'))
+                                         .map(cb => parseInt(cb.value));
 
+            const rgCount = parseInt(document.getElementById('custRgRiceCount').value) || 0;
+            const lgCount = parseInt(document.getElementById('custLgRiceCount').value) || 0;
+            const xlCount = parseInt(document.getElementById('custXlRiceCount').value) || 0;
+
+            let riceStringParts = [];
+            if (rgCount > 0) riceStringParts.push(`${rgCount}rg`);
+            if (lgCount > 0) riceStringParts.push(`${lgCount}lg`);
+            if (xlCount > 0) riceStringParts.push(`${xlCount}xl`);
+            const finalRiceString = riceStringParts.length > 0 ? riceStringParts.join(', ') : 'None';
             const customerData = {
                 name: document.getElementById('custName').value,
                 phone: countryCode + pureNumber,
                 address: document.getElementById('custAddress').value,
                 type: document.getElementById('custType').value,
                 size: document.getElementById('custSize').value,
+                small_component_choice: document.getElementById('custSmallComponent').value,
                 term: document.getElementById('custTerm').value,
-                amountDue: parseFloat(document.getElementById('custDue').value) || 0
+                roti_count: parseInt(document.getElementById('custRotiCount').value) || 0, // Keep roti_count
+                rice: finalRiceString, // Use the constructed string
+                special_instructions: document.getElementById('custInstructions').value,
+                amountDue: parseFloat(document.getElementById('custDue').value) || 0,
+                schedule: selectedSchedule
             };
 
             customerData.startDate = document.getElementById('custStartDate').value;
@@ -2087,6 +2888,7 @@
                     closeCustomerModal();
                     renderCustomerTable();
                     renderDashboardMetrics();
+                    renderKitchenPrep();
                     showToast(`Updated ${customerData.name} successfully!`);
                 }
             } else {
@@ -2105,6 +2907,7 @@
                     closeCustomerModal();
                     renderCustomerTable();
                     renderDashboardMetrics();
+                    renderKitchenPrep();
                     showToast(`Subscriber ${newClient.name} successfully registered!`);
                 }
             }
@@ -2113,11 +2916,34 @@
             submitBtn.innerText = originalBtnText;
         };
 
+        // Print Helper
+        function printSection(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.classList.add('print-active');
+            window.print();
+            el.classList.remove('print-active');
+        }
+
+        // Share via WhatsApp
+        function shareQuoteWhatsApp() {
+            const total = document.getElementById('resTotal').innerText;
+            const base = document.getElementById('resBase').innerText;
+            const addons = document.getElementById('resAddons').innerText;
+            const lineItems = Array.from(document.getElementById('calcLineItems').children)
+                .map(el => el.innerText.replace(/\n/g, ': '))
+                .join('\n');
+            
+            const text = `TIFFINS OPERATE MON–FRI ONLY.\n(WEEKLY = 5 MEALS | MONTHLY = 20 MEALS)\n\n_*TIFFINBIZ PRO QUOTE*\n-------------------\n${lineItems}\n\n*Base Value:* ${base}\n*Add-ons:* ${addons}\n*TOTAL QUOTE:* ${total}\n-------------------\n_Prices are in CAD. Contact us to confirm start date._`;
+            const encoded = encodeURIComponent(text);
+            window.open(`https://wa.me/?text=${encoded}`, '_blank');
+        }
+
         // Attach Calculator Event Triggers
         const interactiveTriggerIds = [
             'stdPlanCat', 'stdPlanSize', 'stdPlanFreq',
-            'custCalcPeriod', 'custCalcRoti', 'custCalcDal', 'custCalcSabji',
-            'addOnDeliveryCheck', 'addOnDahiSelect'
+            'custCalcPeriod', 'custCalcType', 'custCalcSize', 'custCalcRoti', 
+            'custCalcDal', 'custCalcSabji', 'custCalcSides', 'addOnDeliveryCheck', 'addOnDahiSelect'
         ];
         interactiveTriggerIds.forEach(id => {
             document.getElementById(id).addEventListener('change', executeCalculator);
@@ -2125,66 +2951,53 @@
         });
 
         // Attach Modal Auto-fill triggers
-        ['custType', 'custSize', 'custTerm', 'custStartDate'].forEach(id => {
-            document.getElementById(id).addEventListener('change', autoFillInitialAmount);
+        ['custType', 'custSize', 'custTerm', 'custStartDate', 'custRotiCount', 'custRgRiceCount', 'custLgRiceCount', 'custXlRiceCount'].forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('change', () => {
+                autoFillInitialAmount();
+                updateRiceSuggestionUI();
+            });
+            if (id === 'custRotiCount') el.addEventListener('input', updateRiceSuggestionUI);
+            if (id.includes('RiceCount')) el.addEventListener('input', updateRiceSuggestionUI);
         });
 
         // Application Lifepath Initialization on Window Bootup
         // This function is also responsible for updating the renewDate in the modal
         function autoFillInitialAmount() {
-            const rawType = document.getElementById('custType').value;
-            const rawSize = document.getElementById('custSize').value;
-            const rawTerm = document.getElementById('custTerm').value;
+            const typeEl = document.getElementById('custType');
+            const sizeEl = document.getElementById('custSize');
+            const termEl = document.getElementById('custTerm');
+            if (!typeEl || !sizeEl || !termEl) return;
 
-            const typeKey = rawType.toLowerCase().replace('-', '');
-            const sizeKey = rawSize.toLowerCase();
-            const termKey = rawTerm.toLowerCase();
-
-            if (stdRates[typeKey] && stdRates[typeKey][sizeKey] && stdRates[typeKey][sizeKey][termKey]) {
-                const recommendedPrice = stdRates[typeKey][sizeKey][termKey];
-                
+            const type = typeEl.value;
+            const size = sizeEl.value;
+            const term = termEl.value;
+            const rotiCount = parseInt(document.getElementById('custRotiCount').value) || 0;
+            const rgRice = parseInt(document.getElementById('custRgRiceCount').value) || 0;
+            const lgRice = parseInt(document.getElementById('custLgRiceCount').value) || 0;
+            const xlRice = parseInt(document.getElementById('custXlRiceCount').value) || 0;
+            
+            const smallComponentContainer = document.getElementById('smallComponentContainer');
+            if (smallComponentContainer) {
+                smallComponentContainer.classList.toggle('hide', size !== 'Small');
+            }
+            
+            const recommendedPrice = calculatePriceForParams(type, size, term, rotiCount, rgRice, lgRice, xlRice);
+            if (recommendedPrice > 0) {
                 document.getElementById('custPlanAmount').value = recommendedPrice.toFixed(2);
-
-                let currentBalance = 0; // This will be the value for custDue
-
-                if (editingCustomerId) {
-                    const client = state.customers.find(c => c.id == editingCustomerId);
-                    if (client) {
-                        const isOriginalPlan = client.type === rawType && client.size === rawSize && client.term === rawTerm;
-                        if (isOriginalPlan) {
-                            currentBalance = client.amountDue;
-                        } else {
-                            const oldType = client.type.toLowerCase().replace('-', '');
-                            const oldSize = client.size.toLowerCase();
-                            const oldTerm = client.term.toLowerCase();
-                            const oldPlanPrice = (stdRates[oldType] && stdRates[oldType][oldSize]) ? (stdRates[oldType][oldSize][oldTerm] || 0) : 0;
-                            
-                            // Adjust current debt by the price difference to account for previous payments
-                            const adjustedDebt = client.amountDue + (recommendedPrice - oldPlanPrice);
-                            currentBalance = Math.max(0, adjustedDebt);
-                        }
-                    }
-                } else {
-                    // New customer
-                    currentBalance = recommendedPrice; // Initial due is the plan price
-                }
-
-                document.getElementById('custDue').value = currentBalance.toFixed(2);
-
-                let arrears = 0;
-                arrears = Math.max(0, currentBalance - recommendedPrice); // Arrears is simply current balance minus current plan price
-                document.getElementById('custArrears').value = arrears.toFixed(2);
+                
+                const totalDue = editingArrears + recommendedPrice;
+                document.getElementById('custDue').value = totalDue.toFixed(2);
+                document.getElementById('custArrears').value = editingArrears.toFixed(2);
 
                 // Sync Renew Date in UI
                 const currentStartDate = document.getElementById('custStartDate').value;
                 if (currentStartDate) {
-                    const nextDate = calculateNextRenewDate(currentStartDate, rawTerm);
+                    const nextDate = calculateNextRenewDate(currentStartDate, term);
                     document.getElementById('custRenewDate').value = nextDate;
                 }
-
-                const typeLabel = typeKey === 'veg' ? 'Vegetarian' : 'Non-Vegetarian';
-                const periodLabel = termKey === 'daily' ? 'Single Meal' : (termKey === 'weekly' ? 'Weekly (5 tiffins)' : 'Monthly (20 tiffins)');
-                document.getElementById('modalPriceBreakdown').innerText = `* Recommended price for ${sizeKey} ${typeLabel} ${periodLabel}: $${recommendedPrice.toFixed(2)}`;
+                document.getElementById('modalPriceBreakdown').innerText = `* Calculated price for ${size} ${type} ${term}: $${recommendedPrice.toFixed(2)}`;
             }
         }
         window.onload = async function() {
