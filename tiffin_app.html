@@ -892,12 +892,14 @@
                         </div>
 
                         <div class="space-y-4">
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <div>
-                                    <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Dietary Preference</label>
-                                    <select id="custCalcType" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main">
-                                        <option value="veg">Vegetarian</option>
-                                        <option value="nonveg">Non-Vegetarian (+$2.00)</option>
+                                    <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Plan Profile</label>
+                                    <select id="custCalcProfile" class="w-full border border-gray-200 rounded-lg p-2.5 text-sm outline-none focus:border-tiffin-main font-bold">
+                                        <option value="veg">Pure Vegetarian</option>
+                                        <option value="hybrid">Standard (3 Meat / 2 Veg)</option>
+                                        <option value="meat_only">Chicken Days Only (3/wk)</option>
+                                        <option value="everyday_meat">Every Day Meat (5/wk)</option>
                                     </select>
                                 </div>
                                 <div>
@@ -907,22 +909,44 @@
                                         <option value="12oz">Large (12oz) - $5.00</option>
                                     </select>
                                 </div>
+                                <div>
+                                    <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Plan Sides</label>
+                                    <div class="flex gap-2">
+                                        <label class="flex-1 flex items-center p-2 border border-gray-200 rounded-lg cursor-pointer hover:bg-stone-50 transition">
+                                            <input type="checkbox" id="custCalcSalad" class="rounded text-tiffin-main h-3 w-3">
+                                            <span class="ml-1.5 text-[10px] text-gray-700 font-bold uppercase">Salad</span>
+                                        </label>
+                                        <label class="flex-1 flex items-center p-2 border border-gray-200 rounded-lg cursor-pointer hover:bg-stone-50 transition">
+                                            <input type="checkbox" id="custCalcDessert" class="rounded text-tiffin-main h-3 w-3">
+                                            <span class="ml-1.5 text-[10px] text-gray-700 font-bold uppercase">Dessert</span>
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
+                            
                             <div class="space-y-2">
                                 <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Itemized Content Selection</label>
-                                <div class="grid grid-cols-3 gap-3">
-                                    <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
-                                        <input type="checkbox" id="custCalcDal" checked class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
-                                        <span class="ml-2.5 text-sm text-gray-700 font-semibold">Dal</span>
-                                    </label>
-                                    <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
-                                        <input type="checkbox" id="custCalcSabji" checked class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
-                                        <span class="ml-2.5 text-sm text-gray-700 font-semibold">Sabji</span>
-                                    </label>
-                                    <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
-                                        <input type="checkbox" id="custCalcSides" class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
-                                        <span class="ml-2.5 text-sm text-gray-700 font-semibold">Sides ($1)</span>
-                                    </label>
+                                <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+                                    <div class="col-span-1">
+                                        <label class="block text-[10px] font-black uppercase text-gray-400 mb-1">Dal Qty</label>
+                                        <input type="number" id="custCalcDalQty" value="1" min="0" class="w-full border border-gray-200 rounded-lg p-2 text-sm">
+                                    </div>
+                                    <div class="col-span-1">
+                                        <label class="block text-[10px] font-black uppercase text-gray-400 mb-1">Sabji Qty</label>
+                                        <input type="number" id="custCalcSabjiQty" value="1" min="0" class="w-full border border-gray-200 rounded-lg p-2 text-sm">
+                                    </div>
+                                    <div class="col-span-1">
+                                        <label class="block text-[10px] font-black uppercase text-gray-400 mb-1">Rice (RG)</label>
+                                        <input type="number" id="custCalcRgRice" value="0" min="0" class="w-full border border-gray-200 rounded-lg p-2 text-sm">
+                                    </div>
+                                    <div class="col-span-1">
+                                        <label class="block text-[10px] font-black uppercase text-gray-400 mb-1">Rice (LG)</label>
+                                        <input type="number" id="custCalcLgRice" value="0" min="0" class="w-full border border-gray-200 rounded-lg p-2 text-sm">
+                                    </div>
+                                    <div class="col-span-1">
+                                        <label class="block text-[10px] font-black uppercase text-gray-400 mb-1">Rice (XL)</label>
+                                        <input type="number" id="custCalcXlRice" value="0" min="0" class="w-full border border-gray-200 rounded-lg p-2 text-sm">
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -932,10 +956,15 @@
                     <div class="space-y-3 pt-2">
                         <label class="block text-xs font-bold text-gray-400 uppercase tracking-wider">A La Carte Service Options</label>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <label class="flex items-center p-3 border border-gray-200 rounded-xl cursor-pointer hover:bg-tiffin-light/50 transition">
-                                <input type="checkbox" id="addOnDeliveryCheck" class="rounded text-tiffin-main focus:ring-tiffin-main h-4 w-4">
-                                <span class="ml-2.5 text-sm text-gray-700 font-semibold">Daily Delivery ($1.00/day)</span>
-                            </label>
+                            <div class="flex items-center p-3 border border-gray-200 rounded-xl">
+                                <span class="text-sm text-gray-700 font-semibold mr-2">Delivery:</span>
+                                <select id="addOnDeliveryRate" class="flex-1 bg-transparent border-none text-sm font-semibold outline-none text-tiffin-dark">
+                                    <option value="0">No Delivery</option>
+                                    <option value="1.00">$1.00 / day</option>
+                                    <option value="1.50">$1.50 / day</option>
+                                    <option value="2.00">$2.00 / day</option>
+                                </select>
+                            </div>
                             <div class="flex items-center p-3 border border-gray-200 rounded-xl">
                                 <span class="text-sm text-gray-700 font-semibold mr-2">Dahi Size:</span>
                                 <select id="addOnDahiSelect" class="flex-1 bg-transparent border-none text-sm font-semibold outline-none text-tiffin-dark">
@@ -1009,22 +1038,22 @@
                                 </thead>
                                 <tbody class="divide-y divide-stone-50">
                                     <tr class="hover:bg-stone-50/50">
-                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Small Plan</span><br><span class="text-[10px] text-stone-400">1x8oz Dal/Sabji ($6) + 4 Roti ($2)</span></td>
+                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Small Plan</span><br><span class="text-[10px] text-stone-400">1x8oz Dal or Sabji + 4 Roti</span></td>
                                         <td class="p-3 text-center font-bold text-stone-600">$8</td>
                                         <td class="p-3 text-center font-bold text-stone-600">$35</td>
                                         <td class="p-3 text-right font-black text-tiffin-dark">$120</td>
                                     </tr>
                                     <tr class="hover:bg-stone-50/50">
-                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Regular Plan</span><br><span class="text-[10px] text-stone-400">2x8oz Entrees ($10) + 6 Roti ($3)</span></td>
+                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Regular Plan</span><br><span class="text-[10px] text-stone-400">2x8oz Veg Entrees + 6 Roti</span></td>
                                         <td class="p-3 text-center font-bold text-stone-600">$13</td>
                                         <td class="p-3 text-center font-bold text-stone-600">$60</td>
                                         <td class="p-3 text-right font-black text-tiffin-dark">$220</td>
                                     </tr>
                                     <tr class="hover:bg-stone-50/50">
-                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Large Plan</span><br><span class="text-[10px] text-stone-400">2x12oz Entrees ($10.6) + 8 Roti ($4) + Sides ($0.4)</span></td>
+                                        <td class="p-3"><span class="font-bold text-stone-700 uppercase">Large Plan</span><br><span class="text-[10px] text-stone-400">2x12oz Veg Entrees + 8 Roti + Salad/Sweet</span></td>
                                         <td class="p-3 text-center font-bold text-stone-600">$15</td>
-                                        <td class="p-3 text-center font-bold text-stone-600">$68</td>
-                                        <td class="p-3 text-right font-black text-tiffin-dark">$240</td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$70</td>
+                                        <td class="p-3 text-right font-black text-tiffin-dark">$250</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1058,8 +1087,8 @@
                                     <tr class="hover:bg-stone-50/50">
                                         <td class="p-3">
                                             <span class="font-bold text-stone-700 uppercase">Small Plan</span><br>
-                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $10.00</span><br>
-                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $8.00</span><br>
+                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $10.80</span><br>
+                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $8.80</span><br>
                                             <span class="text-[10px] text-stone-400">Incl. 4 Roti</span>
                                         </td>
                                         <td class="p-3 text-center font-bold text-stone-600">$10</td>
@@ -1069,8 +1098,8 @@
                                     <tr class="hover:bg-stone-50/50">
                                         <td class="p-3">
                                             <span class="font-bold text-stone-700 uppercase">Regular Plan</span><br>
-                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $15.00</span><br>
-                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $13.00</span><br>
+                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $15.80</span><br>
+                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $13.80</span><br>
                                             <span class="text-[10px] text-stone-400">Incl. 6 Roti</span>
                                         </td>
                                         <td class="p-3 text-center font-bold text-stone-600">$15</td>
@@ -1080,13 +1109,13 @@
                                     <tr class="hover:bg-stone-50/50">
                                         <td class="p-3">
                                             <span class="font-bold text-stone-700 uppercase">Large Plan</span><br>
-                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $17.00</span><br>
-                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $15.00</span><br>
+                                            <span class="text-[9px] text-red-600 font-bold uppercase tracking-tighter">Chicken Days (M-W-F): $17.80</span><br>
+                                            <span class="text-[9px] text-green-600 font-bold uppercase tracking-tighter">Veg Days (T-Th): $15.80</span><br>
                                             <span class="text-[10px] text-stone-400">Incl. 8 Roti + Sides</span>
                                         </td>
                                         <td class="p-3 text-center font-bold text-stone-600">$17</td>
-                                        <td class="p-3 text-center font-bold text-stone-600">$78</td>
-                                        <td class="p-3 text-right font-black text-tiffin-dark">$270</td>
+                                        <td class="p-3 text-center font-bold text-stone-600">$80</td>
+                                        <td class="p-3 text-right font-black text-tiffin-dark">$280</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -1114,7 +1143,7 @@
                                 </div>
                                 <div>
                                     <p class="text-[10px] text-white/40 font-bold uppercase">Salad/Sides</p>
-                                    <p class="text-sm font-bold">$0.40 <span class="text-[10px] opacity-40">meal</span> <span class="text-[8px] text-tiffin-accent">($2/5d)</span></p>
+                                    <p class="text-sm font-bold">$0.60 <span class="text-[10px] opacity-40">meal</span> <span class="text-[8px] text-tiffin-accent">($3/5d)</span></p>
                                 </div>
                             </div>
                         </div>
@@ -1189,12 +1218,12 @@
             veg: { 
                 small: { daily: 8, weekly: 35, monthly: 120 },
                 regular: { daily: 13, weekly: 60, monthly: 220 }, // Daily changed from 11 to 13
-                large: { daily: 15, weekly: 68, monthly: 240 }    
+                large: { daily: 15, weekly: 70, monthly: 250 }    
             },
             nonveg: { 
                 small: { daily: 10, weekly: 45, monthly: 160 },
                 regular: { daily: 15, weekly: 70, monthly: 250 }, 
-                large: { daily: 17, weekly: 78, monthly: 270 } 
+                large: { daily: 17, weekly: 80, monthly: 280 } 
             }
         };
 
@@ -1256,7 +1285,7 @@
             let periodDays = 1;
             let lineItems = [];
 
-            const hasDelivery = document.getElementById('addOnDeliveryCheck').checked;
+            const deliveryRate = parseFloat(document.getElementById('addOnDeliveryRate').value) || 0;
             const dahiOption = document.getElementById('addOnDahiSelect').value;
 
             if (isStandardCalc) {
@@ -1277,50 +1306,46 @@
                 }
             } else {
                 const period = document.getElementById('custCalcPeriod').value;
-                const dietType = document.getElementById('custCalcType').value;
+                const profile = document.getElementById('custCalcProfile').value;
                 const compSize = document.getElementById('custCalcSize').value;
+                const dalQty = parseInt(document.getElementById('custCalcDalQty').value) || 0;
+                const sabjiQty = parseInt(document.getElementById('custCalcSabjiQty').value) || 0;
                 const rotis = parseInt(document.getElementById('custCalcRoti').value) || 0;
-                const hasDal = document.getElementById('custCalcDal').checked;
-                const hasSabji = document.getElementById('custCalcSabji').checked;
-                const hasSides = document.getElementById('custCalcSides').checked;
+                const rgRice = parseInt(document.getElementById('custCalcRgRice').value) || 0;
+                const lgRice = parseInt(document.getElementById('custCalcLgRice').value) || 0;
+                const xlRice = parseInt(document.getElementById('custCalcXlRice').value) || 0;
+                const hasSalad = document.getElementById('custCalcSalad').checked;
+                const hasDessert = document.getElementById('custCalcDessert').checked;
 
-                if (period === 'weekly') periodDays = 5;
-                if (period === 'monthly') periodDays = 20;
+                let daysPerWeek = 5;
+                if (profile === 'meat_only') daysPerWeek = 3;
 
-                let singleMealBase = 0;
+                if (period === 'weekly') periodDays = daysPerWeek;
+                if (period === 'monthly') periodDays = daysPerWeek * 4;
+
                 const singleRotiCost = 0.50;
                 
                 // Itemized logic: Meat component costs $2 more than Veg
                 const vegRate = compSize === '12oz' ? 5.00 : 4.00;
-                const meatRate = compSize === '12oz' ? 7.00 : 6.00;
-
-                singleMealBase += (rotis * singleRotiCost);
-                if (rotis > 0) lineItems.push(`<span class="pl-3">└ Roti (${rotis} x $0.50)</span><span>$${(rotis * 0.50).toFixed(2)}</span>`);
+                const riceCost = (rgRice * 1) + (lgRice * 1.5) + (xlRice * 4);
                 
-                // If Non-Veg is selected, one of the entrees (Sabji) is considered a Meat item
-                const mainRate = (dietType === 'nonveg') ? meatRate : vegRate;
+                // Salad is $0.50/day. Dessert is $0.50 once per week.
+                const sidesDailyAvg = (hasSalad ? 0.50 : 0) + (hasDessert ? (0.50 / 5) : 0);
 
-                if (dietType === 'nonveg') {
-                    lineItems.push(`<span class="pl-3 text-red-500 font-bold">└ Meat Day Profile Selected</span><span>-</span>`);
-                }
+                // Since we are fixing Veg Tiffin calculator, entrees are calculated at vegRate
+                // Standard logic still applies for hybrid profiles if meatQty were added back
+                const mealPrice = ((dalQty + sabjiQty) * vegRate) + (rotis * 0.5) + riceCost + sidesDailyAvg;
 
-                if (hasDal) {
-                    singleMealBase += vegRate;
-                    lineItems.push(`<span class="pl-3">└ Dal (${compSize})</span><span>$${vegRate.toFixed(2)}</span>`);
-                }
-                if (hasSabji) {
-                    singleMealBase += mainRate;
-                    lineItems.push(`<span class="pl-3">└ Sabji (${compSize}) ${dietType === 'nonveg' ? '(Meat)' : ''}</span><span>$${mainRate.toFixed(2)}</span>`);
-                }
-                if (hasSides) {
-                    singleMealBase += 0.40;
-                    lineItems.push(`<span class="pl-3">└ Sides (Salad/Dessert)</span><span>$0.40</span>`);
-                }
-
-                basePrice = singleMealBase * periodDays;
+                let weightedAvg = mealPrice;
+                // For this step, we treat Profile as a factor of base items; 
+                // in future steps we can re-inject meatRate logic here.
                 
-                if (singleMealBase > 0) {
+                if (weightedAvg > 0) {
                     lineItems.unshift(`<span>Raw Items Sum (${periodDays} days)</span><span>-</span>`);
+                    if (dalQty > 0) lineItems.push(`<span class="pl-3">└ Dal (${dalQty})</span><span>-</span>`);
+                    if (sabjiQty > 0) lineItems.push(`<span class="pl-3">└ Sabji (${sabjiQty})</span><span>-</span>`);
+                    if (rotis > 0) lineItems.push(`<span class="pl-3">└ Roti (${rotis})</span><span>-</span>`);
+                    if (riceCost > 0) lineItems.push(`<span class="pl-3">└ Rice Add-ons</span><span>$${riceCost.toFixed(2)}</span>`);
                     
                     // Apply Frequency Markups and Bundle Discounts to align with Standard Plan pricing
                     let markup = 0;
@@ -1328,20 +1353,20 @@
                     else if (period === 'weekly') markup = 1.00;
 
                     let discount = 0;
-                    if (hasDal && hasSabji) {
+                    const dietType = (profile === 'veg') ? 'veg' : 'nonveg';
+                    if (dalQty + sabjiQty >= 2) {
                         const tier = compSize === '12oz' ? 'large' : 'regular';
                         const targetMealRate = stdRates[dietType][tier][period] / periodDays;
                         
-                        // Standard raw baselines used to determine the maximum bundle discount offered for each tier
-                        // Regular: 6 Roti + 2x8oz | Large: 8 Roti + 2x12oz + Sides
-                        let stdRaw = (tier === 'regular') ? (dietType === 'nonveg' ? 12.20 : 11.00) : (dietType === 'nonveg' ? 15.60 : 14.40);
+                        // Updated raw baselines: Salad ($0.50) + Avg Dessert ($0.10)
+                        let stdRaw = (tier === 'regular') ? (dietType === 'nonveg' ? 12.20 : 11.00) : (dietType === 'nonveg' ? 16.20 : 15.10);
                         const maxDiscount = Math.max(0, (stdRaw + markup) - targetMealRate);
                         
                         // Capped discount logic: Discount the custom configuration down to the bundle target rate, but not below it
-                        discount = Math.min(maxDiscount, Math.max(0, (singleMealBase + markup) - targetMealRate));
+                        discount = Math.min(maxDiscount, Math.max(0, (weightedAvg + markup) - targetMealRate));
                     }
                     
-                    basePrice = (singleMealBase + markup - discount) * periodDays;
+                    basePrice = (weightedAvg + markup - discount) * periodDays;
 
                     // Add transparency to the quote breakdown
                     if (markup > 0) {
@@ -1349,6 +1374,9 @@
                     }
                     if (discount > 0) {
                         lineItems.push(`<span class="pl-3 text-green-600">└ Bundle Discount Applied</span><span>-$${(discount * periodDays).toFixed(2)}</span>`);
+                    }
+                    if (profile === 'meat_only') {
+                        lineItems.push(`<span class="pl-3 font-bold">└ Schedule: 3 Days/Week Only</span><span>-</span>`);
                     }
                 } else {
                     basePrice = 0;
@@ -1360,9 +1388,9 @@
             if (summaryCard) summaryCard.id = 'quoteSummaryCard';
 
             let addOnsSum = 0;
-            if (hasDelivery) {
-                addOnsSum += (1.00 * periodDays);
-                lineItems.push(`<span>Delivery Add-on ($1.00 x ${periodDays})</span><span>$${(1.00 * periodDays).toFixed(2)}</span>`);
+            if (deliveryRate > 0) {
+                addOnsSum += (deliveryRate * periodDays);
+                lineItems.push(`<span>Delivery ($${deliveryRate.toFixed(2)} x ${periodDays})</span><span>$${(deliveryRate * periodDays).toFixed(2)}</span>`);
             }
 
             if (dahiOption !== 'none') {
@@ -2764,10 +2792,9 @@
                     );
                     editingArrears = Math.max(0, client.amountDue - currentPrice);
                     } else {
-                        custRgRiceCountInput.value = 0; custLgRiceCountInput.value = 0; custXlRiceCountInput.value = 0;
-                    custRgRiceCountInput.value = 0; 
-                    custLgRiceCountInput.value = 0; 
-                    custXlRiceCountInput.value = 0;
+                        custRgRiceCountInput.value = 0; 
+                        custLgRiceCountInput.value = 0; 
+                        custXlRiceCountInput.value = 0;
                     }
                     custInstructionsInput.value = client.special_instructions || "";
 
@@ -2942,8 +2969,9 @@
         // Attach Calculator Event Triggers
         const interactiveTriggerIds = [
             'stdPlanCat', 'stdPlanSize', 'stdPlanFreq',
-            'custCalcPeriod', 'custCalcType', 'custCalcSize', 'custCalcRoti', 
-            'custCalcDal', 'custCalcSabji', 'custCalcSides', 'addOnDeliveryCheck', 'addOnDahiSelect'
+            'custCalcPeriod', 'custCalcProfile', 'custCalcSize', 'custCalcRoti',
+            'custCalcDalQty', 'custCalcSabjiQty', 'custCalcRgRice', 'custCalcLgRice', 'custCalcXlRice',
+            'custCalcSalad', 'custCalcDessert', 'addOnDeliveryRate', 'addOnDahiSelect'
         ];
         interactiveTriggerIds.forEach(id => {
             document.getElementById(id).addEventListener('change', executeCalculator);
