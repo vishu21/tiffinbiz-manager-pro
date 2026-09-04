@@ -424,6 +424,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   // Subscription management state
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused' | 'cancelled'>('active');
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  // Confirmation-modal target: lets the row dropdown reuse the drawer's dialogs
+  // without forcing the edit drawer to open (null → drawer's selectedCustomer).
+  const [confirmCustomer, setConfirmCustomer] = useState<Customer | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [pauseStartDate, setPauseStartDate] = useState('');
@@ -961,17 +965,44 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     else runRowStatusAction(customer, 'cancel');
   };
 
-  // Executes the destructive delete (confirmation is handled by the caller).
-  const handleDeleteCustomer = (customer: Customer) => {
+  const handleUpdateCustomerStatus = (
+    customerId: string,
+    nextStatus: 'active' | 'paused' | 'cancelled'
+  ) => {
+    const customer = initialCustomers.find(c => c.id === customerId);
+    if (customer) handleUpdateStatus(customer, nextStatus);
+  };
+
+  // Executes the destructive delete by customer id (confirmation is handled by the caller).
+  const handleDeleteCustomer = (customerId: string) => {
     setActiveMenuId(null);
+    const customer = initialCustomers.find(c => c.id === customerId);
     startTransition(async () => {
       try {
-        await deleteCustomer(customer.id);
-        showToast(`${customer.full_name} deleted`);
+        await deleteCustomer(customerId);
+        showToast(customer ? `${customer.full_name} deleted` : 'Customer deleted');
       } catch (err) {
         showToast(err instanceof Error ? err.message : 'Failed to delete customer', 'error');
       }
     });
+  };
+
+  // Opens one of the shared confirmation dialogs for a customer (row dropdown or drawer).
+  const openConfirmModalForCustomer = (
+    customer: Customer,
+    type: 'pause' | 'cancel' | 'delete'
+  ) => {
+    setActiveMenuId(null);
+    setConfirmCustomer(customer);
+    // Reset per-dialog inputs.
+    setPauseStartDate('');
+    setPauseEndDate('');
+    setIsIndefinitePause(false);
+    setCancelDate(new Date().toISOString().split('T')[0]);
+    setCancelReason('');
+    if (type === 'pause') setShowPauseModal(true);
+    else if (type === 'cancel') setShowCancelModal(true);
+    else setShowDeleteModal(true);
   };
 
   const formatRiceCellText = (rawRice: string | null | undefined): string => {
@@ -2439,7 +2470,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       </td>
 
                       <td className="py-2 pr-4 align-middle text-right">
-                        <div className="flex items-center justify-end gap-2 relative">
+                        <div className="flex items-center justify-end gap-1.5 relative">
                           {/* Edit Button */}
                           <button
                             type="button"
@@ -2447,78 +2478,90 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               e.stopPropagation();
                               handleEditCustomer(customer);
                             }}
-                            className="text-xs font-semibold text-gray-700 hover:text-indigo-600 px-2 py-1 rounded hover:bg-gray-100 transition-colors cursor-pointer"
+                            className="px-2.5 py-1 text-xs font-semibold text-gray-700 hover:text-indigo-600 hover:bg-gray-100 rounded-md transition-colors"
                           >
                             Edit
                           </button>
 
-                          {/* 3-Dot Trigger */}
-                          <div className="relative inline-block text-left" data-action-menu={customer.id}>
+                          {/* 3-Dot Overflow Menu */}
+                          <div
+                            className="relative inline-block text-left"
+                            data-action-menu={customer.id}
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <button
                               type="button"
+                              className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all shrink-0 cursor-pointer shadow-xs"
+                              title="More options"
                               aria-label="More actions"
-                              title="More actions"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setActiveMenuId(activeMenuId === customer.id ? null : customer.id);
                               }}
-                              className="p-1 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
                             >
-                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                                <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+                              <svg className="w-3.5 h-3.5 fill-current shrink-0" viewBox="0 0 20 20">
+                                <circle cx="10" cy="4" r="1.3" />
+                                <circle cx="10" cy="10" r="1.3" />
+                                <circle cx="10" cy="16" r="1.3" />
                               </svg>
                             </button>
 
-                            {/* Dropdown Menu */}
                             {activeMenuId === customer.id && (
                               <div
-                                className="absolute right-0 mt-1 w-44 bg-white border border-gray-100 rounded-lg shadow-lg py-1 z-50 text-left"
+                                className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-100 rounded-xl shadow-xl py-1.5 z-50 text-left"
                                 onClick={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
                               >
                                 {/* Pause / Resume */}
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    handleUpdateStatus(
-                                      customer,
-                                      (customer.subscription_status || 'active') === 'paused' ? 'active' : 'paused'
-                                    )
-                                  }
-                                  className="w-full px-3 py-1.5 text-xs text-amber-700 hover:bg-amber-50 flex items-center gap-2 font-medium"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuId(null);
+                                    if ((customer.subscription_status || 'active') === 'paused') {
+                                      handleUpdateCustomerStatus(customer.id, 'active');
+                                    } else {
+                                      openConfirmModalForCustomer(customer, 'pause');
+                                    }
+                                  }}
+                                  className="w-full px-3.5 py-2 text-xs font-medium text-amber-800 hover:bg-amber-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
                                 >
-                                  <span>{(customer.subscription_status || 'active') === 'paused' ? '▶️' : '⏸️'}</span>
-                                  <span>{(customer.subscription_status || 'active') === 'paused' ? 'Resume Service' : 'Pause Service'}</span>
+                                  <span className="text-sm shrink-0">
+                                    {(customer.subscription_status || 'active') === 'paused' ? '▶️' : '⏸️'}
+                                  </span>
+                                  <span className="whitespace-nowrap">
+                                    {(customer.subscription_status || 'active') === 'paused' ? 'Resume Service' : 'Pause Service'}
+                                  </span>
                                 </button>
 
-                                {/* Cancel Service */}
+                                {/* Cancel */}
                                 <button
                                   type="button"
-                                  onClick={() => handleUpdateStatus(customer, 'cancelled')}
-                                  className="w-full px-3 py-1.5 text-xs text-orange-700 hover:bg-orange-50 flex items-center gap-2 font-medium"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuId(null);
+                                    openConfirmModalForCustomer(customer, 'cancel');
+                                  }}
+                                  className="w-full px-3.5 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
                                 >
-                                  <span>🛑</span>
-                                  <span>Cancel Service</span>
+                                  <span className="text-sm shrink-0">🛑</span>
+                                  <span className="whitespace-nowrap">Cancel Service</span>
                                 </button>
 
                                 <div className="border-t border-gray-100 my-1" />
 
-                                {/* Delete Customer Record */}
+                                {/* Delete */}
                                 <button
                                   type="button"
-                                  onClick={() => {
+                                  onClick={(e) => {
+                                    e.stopPropagation();
                                     setActiveMenuId(null);
-                                    if (
-                                      window.confirm(
-                                        `Are you sure you want to permanently delete ${customer.full_name}?`
-                                      )
-                                    ) {
-                                      handleDeleteCustomer(customer);
-                                    }
+                                    openConfirmModalForCustomer(customer, 'delete');
                                   }}
-                                  className="w-full px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 flex items-center gap-2 font-medium"
+                                  className="w-full px-3.5 py-2 text-xs font-medium text-red-600 hover:bg-red-50 flex items-center gap-2.5 transition-colors cursor-pointer"
                                 >
-                                  <span>🗑️</span>
-                                  <span>Delete Record</span>
+                                  <span className="text-sm shrink-0">🗑️</span>
+                                  <span className="whitespace-nowrap">Delete Customer</span>
                                 </button>
                               </div>
                             )}
@@ -3326,14 +3369,14 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       </div>
 
       {/* PAUSE SERVICE MODAL */}
-      {showPauseModal && selectedCustomer && (
+      {showPauseModal && (confirmCustomer ?? selectedCustomer) && (
         <>
-          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setShowPauseModal(false)} />
+          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowPauseModal(false); setConfirmCustomer(null); }} />
           <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
             <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
               <h3 className="text-[15px] font-bold text-[#11142D] mb-1">⏸️ Pause Service</h3>
               <p className="text-[12px] text-gray-500 mb-5">
-                Pausing delivery for <strong>{selectedCustomer.full_name}</strong>
+                Pausing delivery for <strong>{(confirmCustomer ?? selectedCustomer)?.full_name}</strong>
               </p>
 
               <div className="space-y-4">
@@ -3377,7 +3420,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               <div className="flex items-center justify-end space-x-2 mt-6">
                 <button
                   type="button"
-                  onClick={() => setShowPauseModal(false)}
+                  onClick={() => { setShowPauseModal(false); setConfirmCustomer(null); }}
                   className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
                 >
                   Cancel
@@ -3386,19 +3429,23 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   type="button"
                   disabled={isPending || !pauseStartDate}
                   onClick={() => startTransition(async () => {
+                    const target = (confirmCustomer ?? selectedCustomer)!;
                     await pauseCustomer(
-                      selectedCustomer.id,
+                      target.id,
                       pauseStartDate,
                       isIndefinitePause ? null : pauseEndDate || null
                     );
                     setShowPauseModal(false);
-                    setSelectedCustomer({
-                      ...selectedCustomer,
-                      subscription_status: 'paused',
-                      pause_start_date: pauseStartDate,
-                      pause_end_date: isIndefinitePause ? null : pauseEndDate || null,
-                    });
-                    closePanelGracefully();
+                    setConfirmCustomer(null);
+                    if (selectedCustomer?.id === target.id) {
+                      setSelectedCustomer({
+                        ...selectedCustomer,
+                        subscription_status: 'paused',
+                        pause_start_date: pauseStartDate,
+                        pause_end_date: isIndefinitePause ? null : pauseEndDate || null,
+                      });
+                      closePanelGracefully();
+                    }
                   })}
                   className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
                 >
@@ -3411,14 +3458,14 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       )}
 
       {/* CANCEL SERVICE MODAL */}
-      {showCancelModal && selectedCustomer && (
+      {showCancelModal && (confirmCustomer ?? selectedCustomer) && (
         <>
-          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => setShowCancelModal(false)} />
+          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowCancelModal(false); setConfirmCustomer(null); }} />
           <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
             <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
               <h3 className="text-[15px] font-bold text-red-600 mb-1">🛑 Cancel Service</h3>
               <p className="text-[12px] text-gray-500 mb-5">
-                This will permanently cancel delivery service for <strong>{selectedCustomer.full_name}</strong>.
+                This will permanently cancel delivery service for <strong>{(confirmCustomer ?? selectedCustomer)?.full_name}</strong>.
                 This action can be undone by reactivating the customer.
               </p>
 
@@ -3450,7 +3497,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               <div className="flex items-center justify-end space-x-2 mt-6">
                 <button
                   type="button"
-                  onClick={() => setShowCancelModal(false)}
+                  onClick={() => { setShowCancelModal(false); setConfirmCustomer(null); }}
                   className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
                 >
                   Keep Active
@@ -3459,23 +3506,65 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   type="button"
                   disabled={isPending}
                   onClick={() => startTransition(async () => {
+                    const target = (confirmCustomer ?? selectedCustomer)!;
                     // Use the picked date at local midnight; fall back to "now" when empty.
                     const cancelledAt = cancelDate
                       ? new Date(`${cancelDate}T00:00:00`).toISOString()
                       : new Date().toISOString();
-                    await cancelCustomer(selectedCustomer.id, cancelReason.trim() || null, cancelledAt);
+                    await cancelCustomer(target.id, cancelReason.trim() || null, cancelledAt);
                     setShowCancelModal(false);
-                    setSelectedCustomer({
-                      ...selectedCustomer,
-                      subscription_status: 'cancelled',
-                      cancellation_reason: cancelReason.trim() || null,
-                      cancelled_at: cancelledAt,
-                    });
-                    closePanelGracefully();
+                    setConfirmCustomer(null);
+                    if (selectedCustomer?.id === target.id) {
+                      setSelectedCustomer({
+                        ...selectedCustomer,
+                        subscription_status: 'cancelled',
+                        cancellation_reason: cancelReason.trim() || null,
+                        cancelled_at: cancelledAt,
+                      });
+                      closePanelGracefully();
+                    }
                   })}
                   className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
                 >
                   {isPending ? 'Cancelling...' : 'Confirm Cancellation'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* DELETE CUSTOMER CONFIRMATION MODAL */}
+      {showDeleteModal && confirmCustomer && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowDeleteModal(false); setConfirmCustomer(null); }} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+            <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
+              <h3 className="text-[15px] font-bold text-red-600 mb-1">🗑️ Delete Customer</h3>
+              <p className="text-[12px] text-gray-500 mb-5">
+                Are you sure you want to permanently delete <strong>{confirmCustomer.full_name}</strong>?
+                This cannot be undone.
+              </p>
+              <div className="flex items-center justify-end space-x-2 mt-6">
+                <button
+                  type="button"
+                  onClick={() => { setShowDeleteModal(false); setConfirmCustomer(null); }}
+                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                >
+                  Keep Record
+                </button>
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={() => {
+                    const customerId = confirmCustomer.id;
+                    setShowDeleteModal(false);
+                    setConfirmCustomer(null);
+                    handleDeleteCustomer(customerId);
+                  }}
+                  className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                >
+                  {isPending ? 'Deleting...' : 'Delete Customer'}
                 </button>
               </div>
             </div>
