@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useTransition, useEffect, useRef, useSyncExternalStore } from 'react';
-import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress } from '@/app/admin/actions';
+import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, renewCustomerCycle, upgradeCustomerPlan } from '@/app/admin/actions';
 
 // Stable no-op subscription for the mount flag below.
 const noopSubscribe = () => () => {};
@@ -40,6 +40,9 @@ type Customer = {
   subscription_status?: string | null;
   plan_tier?: 'trial' | 'weekly' | 'monthly' | null;
   total_tiffin_credits?: number | null;
+  used_credits?: number | null;
+  skipped_days_count?: number | null;
+  payment_status?: 'paid' | 'due' | 'overdue' | null;
   start_date?: string | null;
   pause_start_date?: string | null;
   pause_end_date?: string | null;
@@ -449,6 +452,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   // without forcing the edit drawer to open (null → drawer's selectedCustomer).
   const [confirmCustomer, setConfirmCustomer] = useState<Customer | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showRenewModal, setShowRenewModal] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [showPauseModal, setShowPauseModal] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [pauseStartDate, setPauseStartDate] = useState('');
@@ -1028,6 +1033,47 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     else if (type === 'cancel') setShowCancelModal(true);
     else setShowDeleteModal(true);
   };
+
+  const openRenewModal = (customer: Customer) => {
+    setActiveMenuId(null);
+    setConfirmCustomer(customer);
+    setShowRenewModal(true);
+  };
+
+  const openUpgradeModal = (customer: Customer) => {
+    setActiveMenuId(null);
+    setConfirmCustomer(customer);
+    setShowUpgradeModal(true);
+  };
+
+  const confirmRenewCycle = () => {
+    if (!confirmCustomer) return;
+    startTransition(async () => {
+      try {
+        await renewCustomerCycle(confirmCustomer.id);
+        setShowRenewModal(false);
+        setConfirmCustomer(null);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Failed to renew cycle', 'error');
+      }
+    });
+  };
+
+  const confirmUpgradePlan = (newTier: 'weekly' | 'monthly') => {
+    if (!confirmCustomer) return;
+    startTransition(async () => {
+      try {
+        await upgradeCustomerPlan(confirmCustomer.id, newTier);
+        setShowUpgradeModal(false);
+        setConfirmCustomer(null);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Failed to upgrade plan', 'error');
+      }
+    });
+  };
+
+  const confirmUpgradeToWeekly = () => confirmUpgradePlan('weekly');
+  const confirmUpgradeToMonthly = () => confirmUpgradePlan('monthly');
 
   const formatRiceCellText = (rawRice: string | null | undefined): string => {
     if (!rawRice || rawRice === 'None' || rawRice === '—') return 'None';
@@ -2291,13 +2337,14 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             ) : (
               <>
                 <colgroup>
-              <col className="w-[23%]" />
+              <col className="w-[22%]" />
+              <col className="w-[11%]" />
+              <col className="w-[10%]" />
               <col className="w-[12%]" />
-              <col className="w-[14%]" />
-              <col className="w-[13%]" />
-              <col className="w-[18%]" />
-              <col className="w-[10%]" />
-              <col className="w-[10%]" />
+              <col className="w-[12%]" />
+              <col className="w-[16%]" />
+              <col className="w-[8%]" />
+              <col className="w-[9%]" />
             </colgroup>
             <thead className="sticky top-0 z-30">
               <tr className="text-[#A2A4B0] font-bold uppercase text-[10.5px] tracking-wider select-none h-10">
@@ -2317,6 +2364,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     </span>
                   </div>
                 </th>
+                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Plan</th>
                 <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Carbs</th>
                 <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Schedule</th>
                 <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Notes</th>
@@ -2327,7 +2375,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             <tbody className="divide-y divide-[#F9FBFC]">
               {sortedCustomers.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center">
+                  <td colSpan={8} className="py-16 text-center">
                     <div className="flex flex-col items-center justify-center space-y-3">
                       <div className="w-12 h-12 bg-[#F4F4FE] rounded-full flex items-center justify-center text-xl">👥</div>
                       <h3 className="text-gray-700 font-bold text-[14px]">No customers found matching search</h3>
@@ -2442,6 +2490,42 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             {displayPlanSize}
                           </span>
                         </div>
+                      </td>
+
+                      {/* PLAN: informational credit state (pure props, no actions) */}
+                      <td className="py-2 pr-3 align-top whitespace-nowrap">
+                        {(() => {
+                          const planLabel = customer.plan_tier || 'Monthly';
+                          const used = customer.used_credits ?? 0;
+                          const total = customer.total_tiffin_credits ?? 20;
+                          const isOverdue = used > total;
+                          const isDue = !isOverdue && used >= total;
+                          const pillClass = isOverdue
+                            ? 'bg-rose-50 text-rose-700 border-rose-200'
+                            : isDue
+                              ? 'bg-amber-50 text-amber-800 border-amber-200'
+                              : 'bg-indigo-50 text-indigo-700 border-indigo-100';
+                          const subText = isOverdue
+                            ? `+${used - total} Grace • Overdue`
+                            : isDue
+                              ? `${used}/${total} • Due`
+                              : `${used}/${total} delivered`;
+                          const subClass = isOverdue
+                            ? 'text-rose-600'
+                            : isDue
+                              ? 'text-amber-700'
+                              : 'text-gray-500';
+                          return (
+                            <div className="flex flex-col items-start gap-0.5 min-w-0">
+                              <span
+                                className={`${pillClass} uppercase text-[11px] font-semibold px-2 py-0.5 rounded border inline-block`}
+                              >
+                                {planLabel}
+                              </span>
+                              <span className={`text-[11px] font-medium ${subClass}`}>{subText}</span>
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       <td className="py-2 pr-3 align-top">
@@ -2567,6 +2651,40 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 onClick={(e) => e.stopPropagation()}
                                 onMouseDown={(e) => e.stopPropagation()}
                               >
+                                {/* 💳 Log Payment / Renew Cycle (due, overdue, or fully used) */}
+                                {((customer.payment_status === 'due' ||
+                                  customer.payment_status === 'overdue') ||
+                                  (customer.used_credits ?? 0) >= (customer.total_tiffin_credits ?? 20)) && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openRenewModal(customer);
+                                    }}
+                                    className="w-full px-3.5 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                  >
+                                    <span className="text-sm shrink-0">💳</span>
+                                    <span className="whitespace-nowrap">Log Payment / Renew Cycle</span>
+                                  </button>
+                                )}
+
+                                {/* ⭐ Upgrade Plan (trial or weekly only) */}
+                                {(customer.plan_tier === 'trial' || customer.plan_tier === 'weekly') && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openUpgradeModal(customer);
+                                    }}
+                                    className="w-full px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                  >
+                                    <span className="text-sm shrink-0">⭐</span>
+                                    <span className="whitespace-nowrap">Upgrade Plan</span>
+                                  </button>
+                                )}
+
+                                <div className="border-t border-gray-100 my-1" />
+
                                 {/* Pause / Resume */}
                                 <button
                                   type="button"
@@ -3651,6 +3769,108 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           </div>
         </>
       )}
+
+      {/* 💳 LOG PAYMENT / RENEW CYCLE MODAL */}
+      {showRenewModal &&
+        confirmCustomer &&
+        (() => {
+          const used = confirmCustomer.used_credits || 0;
+          const total = confirmCustomer.total_tiffin_credits || 20;
+          const graceUsed = Math.max(0, used - total);
+          const remaining = Math.max(0, 20 - graceUsed);
+          return (
+            <>
+              <div
+                className="fixed inset-0 z-50 bg-black/30"
+                onClick={() => { setShowRenewModal(false); setConfirmCustomer(null); }}
+              />
+              <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+                <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-[15px] font-bold text-[#11142D] mb-1">💳 Log Payment / Renew Cycle</h3>
+                  <p className="text-[12px] text-gray-500 mb-5">
+                    {graceUsed > 0 ? (
+                      <>
+                        Customer consumed <strong>{graceUsed} grace tiffin{graceUsed > 1 ? 's' : ''}</strong> during
+                        this cycle. Renewing a <strong>Monthly (20)</strong> plan will start them with{' '}
+                        <strong>{remaining} remaining deliver{remaining === 1 ? 'y' : 'ies'}</strong>.
+                      </>
+                    ) : (
+                      <>Reset delivery ledger to <strong>0/20 delivered</strong> for the next cycle.</>
+                    )}
+                  </p>
+                  <div className="flex items-center justify-end space-x-2 mt-6">
+                    <button
+                      type="button"
+                      onClick={() => { setShowRenewModal(false); setConfirmCustomer(null); }}
+                      className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={confirmRenewCycle}
+                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                    >
+                      {isPending ? 'Renewing…' : 'Confirm & Renew'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
+      {/* ⭐ UPGRADE PLAN MODAL */}
+      {showUpgradeModal &&
+        confirmCustomer &&
+        (() => {
+          const currentTier = confirmCustomer.plan_tier || 'monthly';
+          const options =
+            currentTier === 'trial'
+              ? PLAN_OPTIONS.filter(o => o.key === 'weekly' || o.key === 'monthly')
+              : PLAN_OPTIONS.filter(o => o.key === 'monthly');
+          return (
+            <>
+              <div
+                className="fixed inset-0 z-50 bg-black/30"
+                onClick={() => { setShowUpgradeModal(false); setConfirmCustomer(null); }}
+              />
+              <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+                <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-[15px] font-bold text-indigo-700 mb-1">⭐ Upgrade Plan</h3>
+                  <p className="text-[12px] text-gray-500 mb-5">
+                    Choose a new plan for <strong>{confirmCustomer.full_name}</strong>. Address and dietary
+                    preferences are preserved, and credits top up on top of their current usage.
+                  </p>
+                  <div className="space-y-2">
+                    {options.map(opt => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        disabled={isPending}
+                        onClick={opt.key === 'weekly' ? confirmUpgradeToWeekly : confirmUpgradeToMonthly}
+                        className="w-full px-4 py-2.5 rounded-lg text-[13px] font-semibold border bg-indigo-50/60 border-indigo-200 text-indigo-700 hover:bg-indigo-100 flex items-center justify-between disabled:opacity-50 transition-colors"
+                      >
+                        <span>Upgrade to {opt.label} ({opt.credits})</span>
+                        <span>→</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-end space-x-2 mt-6">
+                    <button
+                      type="button"
+                      onClick={() => { setShowUpgradeModal(false); setConfirmCustomer(null); }}
+                      className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          );
+        })()}
 
       {/* DELETE CUSTOMER CONFIRMATION MODAL */}
       {showDeleteModal && confirmCustomer && (

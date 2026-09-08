@@ -235,6 +235,80 @@ export async function resumeCustomer(id: string) {
   revalidatePath('/prep');
 }
 
+// 6b. RENEW CREDIT CYCLE (payment + reset)
+export async function renewCustomerCycle(customerId: string) {
+  const supabase = await createClient();
+
+  const { data: cust } = await supabase
+    .from('customers')
+    .select('used_credits, total_tiffin_credits')
+    .eq('id', customerId)
+    .single<{ used_credits: number | null; total_tiffin_credits: number | null }>();
+
+  if (!cust) throw new Error('Customer not found');
+
+  const used = cust.used_credits || 0;
+  const total = cust.total_tiffin_credits || 20;
+  // Grace tiffins consumed beyond the cycle (used - total).
+  const graceUsed = Math.max(0, used - total);
+  // Carry the grace over as the new cycle's used count, capped by the plan total.
+  const nextUsed = Math.min(graceUsed, 20);
+
+  const { error } = await supabase
+    .from('customers')
+    .update({
+      total_tiffin_credits: 20,
+      used_credits: nextUsed,
+      skipped_days_count: 0,
+      payment_status: 'paid',
+      subscription_status: 'active',
+    })
+    .eq('id', customerId);
+
+  if (error) {
+    console.error('Renew cycle error:', error);
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/admin/customers');
+  revalidatePath('/admin/deliveries');
+}
+
+// 6c. UPGRADE PLAN (top-up credits, keeps used credits + profile data intact)
+export async function upgradeCustomerPlan(customerId: string, newTier: 'weekly' | 'monthly') {
+  const supabase = await createClient();
+
+  const credits = TIER_CREDITS[newTier];
+  if (!credits) throw new Error('Unknown plan tier');
+
+  const { data: cust } = await supabase
+    .from('customers')
+    .select('used_credits')
+    .eq('id', customerId)
+    .single<{ used_credits: number | null }>();
+
+  if (!cust) throw new Error('Customer not found');
+
+  const used = cust.used_credits || 0;
+  const { error } = await supabase
+    .from('customers')
+    .update({
+      plan_tier: newTier,
+      total_tiffin_credits: used + credits,
+      payment_status: 'paid',
+      subscription_status: 'active',
+    })
+    .eq('id', customerId);
+
+  if (error) {
+    console.error('Upgrade plan error:', error);
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/admin/customers');
+  revalidatePath('/admin/deliveries');
+}
+
 // 7. UPDATE CANCELLATION DETAILS (date + reason only — never touches meal/carb prefs)
 export async function updateCancellationDetails(
   id: string,
