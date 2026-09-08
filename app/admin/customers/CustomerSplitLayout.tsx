@@ -6,6 +6,24 @@ import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCu
 // Stable no-op subscription for the mount flag below.
 const noopSubscribe = () => () => {};
 
+// Plan tier options + included credits.
+const PLAN_OPTIONS: { key: 'trial' | 'weekly' | 'monthly'; label: string; credits: number }[] = [
+  { key: 'trial', label: 'Trial', credits: 1 },
+  { key: 'weekly', label: 'Weekly', credits: 5 },
+  { key: 'monthly', label: 'Monthly', credits: 20 },
+];
+const TIER_BADGE_STYLES: Record<string, string> = {
+  trial: 'bg-sky-50 text-sky-700 border-sky-200',
+  weekly: 'bg-blue-50 text-blue-700 border-blue-200',
+  monthly: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+};
+const formatStartDateLabel = (value: string | null | undefined): string => {
+  if (!value) return '';
+  const d = new Date(`${value.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
 type Customer = {
   id: string;
   full_name: string;
@@ -20,6 +38,9 @@ type Customer = {
   rice_count?: string | null;
   delivery_schedule?: string | null;
   subscription_status?: string | null;
+  plan_tier?: 'trial' | 'weekly' | 'monthly' | null;
+  total_tiffin_credits?: number | null;
+  start_date?: string | null;
   pause_start_date?: string | null;
   pause_end_date?: string | null;
   cancellation_reason?: string | null;
@@ -448,6 +469,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [rawNotes, setRawNotes] = useState('');
   const [mealType, setMealType] = useState('');
   const [portionSize, setPortionSize] = useState('');
+  const [planTier, setPlanTier] = useState<'trial' | 'weekly' | 'monthly'>('monthly');
+  const [totalTiffinCredits, setTotalTiffinCredits] = useState<number>(20);
+  const [startDate, setStartDate] = useState('');
   const [rotiCount, setRotiCount] = useState<number | ''>('');
   const [pronthiCount, setPronthiCount] = useState<number | ''>('');
   const [riceCount, setRiceCount] = useState('');
@@ -1122,6 +1146,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setRawNotes('');
     setMealType('');
     setPortionSize('');
+    setPlanTier('monthly');
+    setTotalTiffinCredits(20);
+    setStartDate('');
     setRotiCount('');
     setPronthiCount('');
     setRiceCount('');
@@ -1213,6 +1240,19 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     const restoredPortion = customer.portion_size ? normalizePortionToken(customer.portion_size) : PORTION_RG;
     setPortionSize(restoredPortion);
     applyMealDefaults(customer.meal_type || 'Veg', restoredPortion);
+
+    // Restore subscription plan + optional start date.
+    const restoredTier =
+      customer.plan_tier === 'trial' || customer.plan_tier === 'weekly' || customer.plan_tier === 'monthly'
+        ? customer.plan_tier
+        : 'monthly';
+    setPlanTier(restoredTier);
+    setTotalTiffinCredits(
+      customer.total_tiffin_credits && customer.total_tiffin_credits > 0
+        ? customer.total_tiffin_credits
+        : PLAN_OPTIONS.find(o => o.key === restoredTier)?.credits ?? 20
+    );
+    setStartDate(customer.start_date ? customer.start_date.slice(0, 10) : '');
 
     // ⚠️ Restore DB values AFTER defaults — prevents defaults from overwriting saved data
     if (customer.roti_count !== null && customer.roti_count !== undefined) {
@@ -1660,6 +1700,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       dietary_notes: specialInstructions.trim() || null,
       meal_type: mealType || 'Veg',
       portion_size: finalPortion,
+      plan_tier: planTier,
+      total_tiffin_credits: totalTiffinCredits,
+      start_date: startDate.trim() || null,
       roti_count: rotiCount === '' ? null : Number(rotiCount),
       pronthi_count: pronthiCount === '' ? null : Number(pronthiCount),
       rice_count: builtRice,
@@ -2315,8 +2358,20 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     >
                       <td className="py-2 pl-4 pr-3 rounded-l-xl">
                         <div className="flex flex-col min-w-0">
-                          <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0">
                             <span className="font-bold text-[#11142D] text-[13px] truncate capitalize">{customer.full_name}</span>
+                            <span
+                              className={`px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase rounded border shrink-0 ${
+                                TIER_BADGE_STYLES[customer.plan_tier || 'monthly']
+                              }`}
+                              title={
+                                customer.start_date
+                                  ? `${customer.plan_tier || 'Monthly'} (${customer.total_tiffin_credits ?? (customer.plan_tier === 'trial' ? 1 : customer.plan_tier === 'weekly' ? 5 : 20)}) · Starts ${formatStartDateLabel(customer.start_date)}`
+                                  : undefined
+                              }
+                            >
+                              {customer.plan_tier || 'Monthly'} ({customer.total_tiffin_credits ?? (customer.plan_tier === 'trial' ? 1 : customer.plan_tier === 'weekly' ? 5 : 20)})
+                            </span>
                             {(() => {
                               const subStatus = (customer.subscription_status || 'active').toLowerCase();
                               const isPaused = subStatus === 'paused';
@@ -2732,6 +2787,69 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           Searching...
                         </span>
                       )}
+                    </div>
+                  </div>
+
+                  {/* ═════ COMPACT SUBSCRIPTION PLAN ═════ */}
+                  <div className="space-y-2.5 pt-1 border-t border-gray-100">
+                    <span className="text-[11px] font-bold text-gray-400 tracking-wider uppercase">Subscription Plan</span>
+
+                    {/* 3-Segment Horizontal Pill Selector */}
+                    <div className="grid grid-cols-3 gap-2">
+                      {PLAN_OPTIONS.map(opt => (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => {
+                            setPlanTier(opt.key);
+                            setTotalTiffinCredits(opt.credits);
+                          }}
+                          className={`py-1.5 px-2 rounded-lg text-xs font-semibold border transition-all text-center cursor-pointer ${
+                            planTier === opt.key
+                              ? 'bg-blue-50 border-blue-500 text-blue-700 shadow-xs'
+                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                          }`}
+                        >
+                          <span className="capitalize">{opt.label}</span>
+                          <span className="text-[10px] opacity-75 font-normal ml-1">({opt.credits})</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Side-by-side Credits Stepper + Start Date */}
+                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-1">
+                          Credits (Override)
+                        </label>
+                        <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden h-8 bg-white">
+                          <button
+                            type="button"
+                            onClick={() => setTotalTiffinCredits(Math.max(1, totalTiffinCredits - 1))}
+                            className="px-2.5 h-full bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold border-r border-gray-200"
+                          >−</button>
+                          <span className="flex-1 text-center text-xs font-bold text-gray-800">
+                            {totalTiffinCredits}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setTotalTiffinCredits(totalTiffinCredits + 1)}
+                            className="px-2.5 h-full bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold border-l border-gray-200"
+                          >+</button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-1">
+                          Start Date (Optional)
+                        </label>
+                        <input
+                          type="date"
+                          value={startDate || ''}
+                          onChange={e => setStartDate(e.target.value)}
+                          className="w-full h-8 px-2 text-xs border border-gray-200 rounded-lg text-gray-700 focus:outline-none focus:border-blue-500 bg-white"
+                        />
+                      </div>
                     </div>
                   </div>
 

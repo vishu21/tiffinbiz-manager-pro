@@ -4,15 +4,16 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
+// Static navigation — identical on every server and client render pass.
+const navItems = [
+  { href: '/admin/customers', label: 'Customers', icon: '👥' },
+  { href: '/admin/deliveries', label: 'Deliveries', icon: '📦' },
+  { href: '/prep', label: 'Kitchen Prep', icon: '🍳' },
+  { href: '/billing', label: 'Billing', icon: '💳' }, // Placeholder for the future
+] as const;
+
 export default function Sidebar() {
   const pathname = usePathname();
-
-  const navItems = [
-    { name: 'Customers', path: '/admin/customers', icon: '👥' },
-    { name: 'Kitchen Prep', path: '/prep', icon: '🍳' },
-    { name: 'Dispatch', path: '/dispatch', icon: '🚚' }, // Placeholder for the future
-    { name: 'Billing', path: '/billing', icon: '💳' },   // Placeholder for the future
-  ];
 
   return (
     <div className="w-[260px] h-screen bg-[#11142D] text-white flex flex-col shrink-0">
@@ -26,20 +27,21 @@ export default function Sidebar() {
       {/* Navigation Links */}
       <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
         {navItems.map((item) => {
-          const isActive = pathname.startsWith(item.path);
-          
+          // Active state only affects styling classes — href & content stay identical.
+          const isActive = pathname.startsWith(item.href);
+
           return (
-            <Link 
-              key={item.name} 
-              href={item.path}
+            <Link
+              key={item.href}
+              href={item.href}
               className={`flex items-center gap-3 px-4 py-3 rounded-xl text-[13px] font-bold transition-all duration-200 ${
-                isActive 
-                  ? 'bg-[#5D5FEF] text-white shadow-lg shadow-[#5D5FEF]/20' 
+                isActive
+                  ? 'bg-[#5D5FEF] text-white shadow-lg shadow-[#5D5FEF]/20'
                   : 'text-gray-400 hover:text-white hover:bg-white/5'
               }`}
             >
               <span className="text-base">{item.icon}</span>
-              {item.name}
+              {item.label}
             </Link>
           );
         })}

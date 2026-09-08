@@ -6,6 +6,13 @@ import { revalidatePath } from 'next/cache';
 // Canonical default delivery plan: Mon–Fri as a comma-separated day list.
 const DEFAULT_DELIVERY_SCHEDULE = 'Mon,Tue,Wed,Thu,Fri';
 
+// Plan tier → tiffin credits included per cycle.
+const TIER_CREDITS: Record<string, number> = {
+  trial: 1,
+  weekly: 5,
+  monthly: 20,
+};
+
 type CustomerPayload = {
   full_name: string;
   phone_number: string | null;
@@ -23,6 +30,9 @@ type CustomerPayload = {
   discount_note?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
+  plan_tier?: 'trial' | 'weekly' | 'monthly' | null;
+  total_tiffin_credits?: number | null;
+  start_date?: string | null;
   subscription_status?: string | null;
   pause_start_date?: string | null;
   pause_end_date?: string | null;
@@ -58,6 +68,27 @@ const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => 
   if (clean.curry_config !== undefined && clean.curry_config !== null) {
     const trimmed = clean.curry_config.trim();
     clean.curry_config = trimmed === '' ? null : trimmed;
+  }
+
+  // Plan tier + credit ledger values (default to Monthly / 20 when omitted).
+  if (clean.plan_tier !== undefined && clean.plan_tier !== null) {
+    const tier = clean.plan_tier;
+    clean.plan_tier = tier === 'trial' || tier === 'weekly' || tier === 'monthly' ? tier : 'monthly';
+  } else if (clean.plan_tier === undefined) {
+    clean.plan_tier = 'monthly';
+  }
+  if (clean.total_tiffin_credits !== undefined && clean.total_tiffin_credits !== null) {
+    const credits = Number(clean.total_tiffin_credits);
+    clean.total_tiffin_credits = Number.isFinite(credits)
+      ? Math.max(1, Math.trunc(credits))
+      : TIER_CREDITS[clean.plan_tier || 'monthly'];
+  } else if (clean.total_tiffin_credits === undefined || clean.total_tiffin_credits === null) {
+    clean.total_tiffin_credits = TIER_CREDITS[clean.plan_tier || 'monthly'];
+  }
+  // Optional subscription start date — blank → null.
+  if (clean.start_date !== undefined) {
+    const start = clean.start_date?.trim();
+    clean.start_date = start ? start : null;
   }
 
   (Object.keys(clean) as (keyof CustomerPayload)[]).forEach(key => {
