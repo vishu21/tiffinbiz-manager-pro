@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState, useSyncExternalStore } from 'react';
+import { useRouter } from 'next/navigation';
 import { markDelivered, logSkip, renewPlan } from './actions';
 
 type CustomerRow = {
@@ -11,6 +12,7 @@ type CustomerRow = {
   used_credits: number | null;
   skipped_days_count: number | null;
   subscription_status: string | null;
+  status: string | null;
   delivery_schedule: string | null;
 };
 
@@ -35,9 +37,12 @@ const tierBadge: Record<string, string> = {
 
 export default function DeliveriesClient({
   initialCustomers,
+  todayLoggedIds,
 }: {
   initialCustomers: CustomerRow[];
+  todayLoggedIds: string[];
 }) {
+  const router = useRouter();
   const isMounted = useSyncExternalStore(noopSubscribe, () => true, () => false);
   const [tab, setTab] = useState<'dispatch' | 'ledger'>('dispatch');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -65,11 +70,13 @@ export default function DeliveriesClient({
     () =>
       customers.filter(
         c =>
-          (c.subscription_status || 'active') === 'active' &&
-          (c.used_credits || 0) < (c.total_tiffin_credits || 0) &&
-          isScheduledOn(c.delivery_schedule, todayName)
+          (c.subscription_status || 'active').toLowerCase() === 'active' &&
+          (c.status || 'active').toLowerCase() !== 'paused' &&
+          (c.used_credits || 0) < (c.total_tiffin_credits || 0) + 3 &&
+          isScheduledOn(c.delivery_schedule, todayName) &&
+          !todayLoggedIds.includes(c.id)
       ),
-    [customers, todayName]
+    [customers, todayName, todayLoggedIds]
   );
 
   const ledgerList = useMemo(
@@ -90,6 +97,7 @@ export default function DeliveriesClient({
     setErrorMsg('');
     try {
       await action();
+      router.refresh();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Action failed');
     } finally {
@@ -146,7 +154,7 @@ export default function DeliveriesClient({
                 Scheduled today · {todayName}
               </h2>
               <span className="text-[11px] text-gray-400">
-                {dispatchList.length} active with credits remaining
+                {dispatchList.length} scheduled today
               </span>
             </div>
 
@@ -155,7 +163,7 @@ export default function DeliveriesClient({
                 <div className="text-3xl mb-2">🎉</div>
                 <p className="text-gray-500 text-sm font-medium">No customers scheduled for delivery today</p>
                 <p className="text-gray-400 text-xs mt-1">
-                  Customers whose status is active and still have credits will appear here.
+                  Active, non-paused customers with paid credits or grace remaining appear here once per day.
                 </p>
               </div>
             ) : (

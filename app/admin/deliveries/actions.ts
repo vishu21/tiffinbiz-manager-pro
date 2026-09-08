@@ -50,27 +50,69 @@ export async function renewPlan(customerId: string) {
   revalidatePath('/admin/deliveries');
 }
 
-// Marks today's delivery as consumed (+1 used_credits). Auto-expires the plan when the
-// new used count reaches the plan's total credits.
+const todayIso = () => new Date().toISOString().split('T')[0];
+
+// Ensures a customer is only fulfilled once per calendar day.
+// Returns true when the log was newly inserted; false if already logged.
+async function ensureDailyLog(
+  customerId: string,
+  event: 'delivered' | 'skipped'
+): Promise<boolean> {
+  const supabase = await createClient();
+  const { data: existing } = await supabase
+    .from('customer_deliveries')
+    .select('id')
+    .eq('customer_id', customerId)
+    .eq('delivery_date', todayIso())
+    .maybeSingle<{ id: string }>();
+
+  if (existing) return false;
+
+  const { error } = await supabase.from('customer_deliveries').insert({
+    customer_id: customerId,
+    delivery_date: todayIso(),
+    event,
+  });
+
+  if (error) {
+    // Unique (customer_id, delivery_date) collision = already logged.
+    if (error.code === '23505') return false;
+    console.error('Delivery log error:', error);
+    throw new Error(error.message);
+  }
+  return true;
+}
+
+// Marks today's delivery as consumed (+1 used_credits) with ledger transitions:
+//   next === total              → payment_status 'due'
+//   next > total                → payment_status 'overdue'
+//   next > total + 3 (grace)    → subscription_status 'expired'
 export async function markDelivered(customerId: string) {
   const supabase = await createClient();
 
+  const inserted = await ensureDailyLog(customerId, 'delivered');
+  if (!inserted) {
+    revalidatePath('/admin/deliveries');
+    revalidatePath('/admin/customers');
+    return; // Already marked today — do not double-charge a credit.
+  }
+
   const { data: cust } = await supabase
     .from('customers')
-    .select('id, total_tiffin_credits, used_credits, skipped_days_count, plan_tier')
+    .select('id, total_tiffin_credits, used_credits, plan_tier, subscription_status')
     .eq('id', customerId)
     .single<CreditCustomer>();
 
   if (!cust) throw new Error('Customer not found');
 
   const total = cust.total_tiffin_credits || CREDITS_PER_TIER[cust.plan_tier || 'weekly'] || 5;
-  const used = (cust.used_credits || 0) + 1;
+  const next = (cust.used_credits || 0) + 1;
 
-  const update: Partial<CreditCustomer> = { used_credits: used };
-  if (used >= total) {
-    // Plan fully consumed → mark expired so it drops out of today's dispatch list.
-    update.subscription_status = 'expired';
-  }
+  const update: Partial<CreditCustomer> & { payment_status?: string } = {
+    used_credits: next,
+    payment_status: next === total ? 'due' : next > total ? 'overdue' : 'paid',
+    subscription_status: next > total + 3 ? 'expired' : 'active',
+  };
 
   const { error } = await supabase.from('customers').update(update).eq('id', customerId);
   if (error) {
@@ -82,9 +124,16 @@ export async function markDelivered(customerId: string) {
   revalidatePath('/admin/customers');
 }
 
-// Logs a skipped (non-delivered) day without consuming a credit.
+// Logs a skipped (non-delivered) day — no credit consumed.
 export async function logSkip(customerId: string) {
   const supabase = await createClient();
+
+  const inserted = await ensureDailyLog(customerId, 'skipped');
+  if (!inserted) {
+    revalidatePath('/admin/deliveries');
+    revalidatePath('/admin/customers');
+    return;
+  }
 
   const { data: current } = await supabase
     .from('customers')
@@ -106,4 +155,5 @@ export async function logSkip(customerId: string) {
   }
 
   revalidatePath('/admin/deliveries');
+  revalidatePath('/admin/customers');
 }

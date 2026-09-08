@@ -9,6 +9,7 @@ type CustomerRow = {
   used_credits: number | null;
   skipped_days_count: number | null;
   subscription_status: string | null;
+  status: string | null;
   delivery_schedule: string | null;
 };
 
@@ -16,13 +17,14 @@ export default async function DeliveriesPage() {
   const supabase = await createClient();
 
   let customers: CustomerRow[] = [];
+  let todayLoggedIds: string[] = [];
 
   try {
     // Requires migrations 00006 + 00007; falls back to legacy fields if not applied yet.
     const { data, error } = await supabase
       .from('customers')
       .select(
-        'id, full_name, plan_tier, total_tiffin_credits, used_credits, skipped_days_count, subscription_status, delivery_schedule'
+        'id, full_name, plan_tier, total_tiffin_credits, used_credits, skipped_days_count, subscription_status, status, delivery_schedule'
       )
       .order('full_name', { ascending: true });
 
@@ -31,7 +33,7 @@ export default async function DeliveriesPage() {
   } catch {
     const { data } = await supabase
       .from('customers')
-      .select('id, full_name, subscription_status, delivery_schedule')
+      .select('id, full_name, subscription_status, status, delivery_schedule')
       .order('full_name', { ascending: true });
     customers = (data || []).map(c => ({
       ...c,
@@ -42,5 +44,14 @@ export default async function DeliveriesPage() {
     }));
   }
 
-  return <DeliveriesClient initialCustomers={customers} />;
+  // Optional daily log (migration 00010). Safe to skip when not applied yet.
+  const { data: dailyLogs } = await supabase
+    .from('customer_deliveries')
+    .select('customer_id')
+    .eq('delivery_date', new Date().toISOString().split('T')[0]);
+  todayLoggedIds = ((dailyLogs as { customer_id: string }[] | null) || []).map(r => r.customer_id);
+
+  return (
+    <DeliveriesClient initialCustomers={customers} todayLoggedIds={todayLoggedIds} />
+  );
 }
