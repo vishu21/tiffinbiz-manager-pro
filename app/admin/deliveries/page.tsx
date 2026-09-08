@@ -17,7 +17,6 @@ export default async function DeliveriesPage() {
   const supabase = await createClient();
 
   let customers: CustomerRow[] = [];
-  let todayLoggedIds: string[] = [];
 
   try {
     // Requires migrations 00006 + 00007; falls back to legacy fields if not applied yet.
@@ -47,11 +46,11 @@ export default async function DeliveriesPage() {
   // Optional daily log (migration 00010). Safe to skip when not applied yet.
   const { data: dailyLogs } = await supabase
     .from('customer_deliveries')
-    .select('customer_id')
+    .select('customer_id, event')
     .eq('delivery_date', new Date().toISOString().split('T')[0]);
-  todayLoggedIds = ((dailyLogs as { customer_id: string }[] | null) || []).map(r => r.customer_id);
-
-  return (
-    <DeliveriesClient initialCustomers={customers} todayLoggedIds={todayLoggedIds} />
+  const todayLogs = ((dailyLogs as { customer_id: string; event: 'delivered' | 'skipped' }[] | null) || []).map(
+    r => ({ customerId: r.customer_id, event: r.event })
   );
+
+  return <DeliveriesClient initialCustomers={customers} todayLogs={todayLogs} />;
 }

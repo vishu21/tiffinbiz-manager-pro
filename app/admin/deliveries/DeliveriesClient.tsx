@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
-import { markDelivered, logSkip, renewPlan } from './actions';
+import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction } from './actions';
 
 type CustomerRow = {
   id: string;
@@ -35,12 +35,14 @@ const tierBadge: Record<string, string> = {
   monthly: 'bg-indigo-50 text-indigo-700 border-indigo-200',
 };
 
+type DailyLog = { customerId: string; event: 'delivered' | 'skipped' };
+
 export default function DeliveriesClient({
   initialCustomers,
-  todayLoggedIds,
+  todayLogs,
 }: {
   initialCustomers: CustomerRow[];
-  todayLoggedIds: string[];
+  todayLogs: DailyLog[];
 }) {
   const router = useRouter();
   const isMounted = useSyncExternalStore(noopSubscribe, () => true, () => false);
@@ -64,6 +66,20 @@ export default function DeliveriesClient({
         skipped_days_count: c.skipped_days_count ?? 0,
       })),
     [initialCustomers]
+  );
+
+  const todayLoggedIds = useMemo(() => todayLogs.map(l => l.customerId), [todayLogs]);
+
+  const completedList = useMemo(
+    () =>
+      todayLogs
+        .map(log => {
+          const customer = customers.find(c => c.id === log.customerId);
+          return customer ? { ...log, customer } : null;
+        })
+        .filter((x): x is { customerId: string; event: 'delivered' | 'skipped'; customer: CustomerRow } => x !== null)
+        .sort((a, b) => a.customer.full_name.localeCompare(b.customer.full_name)),
+    [customers, todayLogs]
   );
 
   const dispatchList = useMemo(
@@ -214,6 +230,51 @@ export default function DeliveriesClient({
                   );
                 })}
               </ul>
+            )}
+
+            {completedList.length > 0 && (
+              <div className="border-t border-[#F0F2F5]">
+                <div className="px-5 py-3 border-b border-[#F0F2F5] flex items-center justify-between">
+                  <h3 className="text-[12.5px] font-bold text-gray-700 uppercase tracking-wide">
+                    ✓ Completed Today
+                  </h3>
+                  <span className="text-[11px] text-gray-400">
+                    Undo reverses the credit/skip and re-queues today&apos;s delivery
+                  </span>
+                </div>
+                <ul className="divide-y divide-[#F5F5F5]">
+                  {completedList.map(({ customerId, event, customer: c }) => (
+                    <li key={customerId} className="px-5 py-3 flex items-center justify-between gap-4">
+                      <div className="min-w-0 flex items-center gap-2">
+                        <span className="text-[13.5px] font-bold text-[#11142D] capitalize truncate">
+                          {c.full_name}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase border ${tierBadge[c.plan_tier || 'weekly']}`}>
+                          {planTier(c.plan_tier)}
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1 text-[10.5px] font-bold uppercase ${
+                            event === 'delivered' ? 'text-emerald-600' : 'text-amber-600'
+                          }`}
+                        >
+                          {event === 'delivered' ? '✓ Delivered' : '⏭ Skipped'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busyId === customerId}
+                        onClick={() => {
+                          setBusyId(customerId);
+                          run(() => undoTodayDispatchAction(customerId));
+                        }}
+                        className="text-xs font-semibold text-gray-400 hover:text-red-500 disabled:opacity-50 transition-colors shrink-0"
+                      >
+                        {busyId === customerId ? 'Undoing…' : '↩ Undo'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
         )}
