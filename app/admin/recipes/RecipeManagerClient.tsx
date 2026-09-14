@@ -425,9 +425,12 @@ export default function RecipeManagerClient({
       {isDrawerOpen && (
         <>
           <div className="fixed inset-0 z-50 bg-black/30" onClick={closeDrawer} aria-hidden="true" />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 pointer-events-none">
             <div
-              className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-full max-w-[640px] max-h-[88vh] flex flex-col pointer-events-auto"
+              className={`bg-white shadow-2xl border border-[#EEEEEE] w-full flex flex-col pointer-events-auto
+                rounded-t-2xl h-[92vh] sm:h-auto sm:max-h-[88vh] sm:rounded-xl sm:max-w-[640px]
+                transform transition-transform duration-300 ease-out
+                ${isDrawerOpen ? 'translate-y-0 sm:translate-x-0' : 'translate-y-full sm:translate-x-full'}`}
               onClick={e => e.stopPropagation()}
             >
               {/* Drawer Header */}
@@ -494,55 +497,67 @@ export default function RecipeManagerClient({
                         onDragStart={e => handleDragStart(e, index)}
                         onDragOver={e => handleDragOver(e, index)}
                         onDragEnd={handleDragEnd}
-                        className={`flex items-center gap-2 p-1 rounded-lg border transition-all ${
+                        className={`flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-2 p-2 rounded-lg border transition-all ${
                           draggedIndex === index
                             ? 'opacity-40 bg-gray-100 border-dashed border-[#5D5FEF]'
                             : 'bg-white border-transparent hover:border-gray-200'
                         }`}
                       >
-                        {/* Drag Handle */}
-                        <span
-                          title="Drag to rearrange"
-                          className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-700 px-1 select-none text-base font-bold shrink-0"
-                        >
-                          ⠿
-                        </span>
+                        <div className="flex items-center gap-2 w-full">
+                          {/* Drag Handle */}
+                          <span
+                            title="Drag to rearrange"
+                            className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-700 px-1 select-none text-base font-bold shrink-0"
+                          >
+                            ⠿
+                          </span>
 
-                        <input
-                          type="text"
-                          value={row.name}
-                          onChange={e => updateIngredient(row.key, { name: e.target.value })}
-                          placeholder={`Ingredient ${index + 1} (e.g. Diced Onions)`}
-                          className="flex-1 min-w-0 text-[12px] px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
-                        />
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={row.raw8}
-                          onChange={e => updateIngredient(row.key, { raw8: e.target.value })}
-                          placeholder="8 oz"
-                          title="Raw oz per 8 oz (RG) container"
-                          className="w-[76px] shrink-0 text-[12px] px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
-                        />
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={row.raw12}
-                          onChange={e => updateIngredient(row.key, { raw12: e.target.value })}
-                          placeholder="12 oz"
-                          title="Raw oz per 12 oz (LG) container"
-                          className="w-[76px] shrink-0 text-[12px] px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeIngredient(row.key)}
-                          title="Remove ingredient"
-                          className="shrink-0 w-7 h-7 flex items-center justify-center text-red-500 hover:bg-red-50 rounded-md transition-colors"
-                        >
-                          🗑️
-                        </button>
+                          <input
+                            type="text"
+                            value={row.name}
+                            onChange={e => updateIngredient(row.key, { name: e.target.value })}
+                            placeholder={`Ingredient ${index + 1} (e.g. Diced Onions)`}
+                            className="flex-1 min-w-0 text-[12px] px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                          />
+
+                          <button
+                            type="button"
+                            onClick={() => removeIngredient(row.key)}
+                            title="Remove ingredient"
+                            className="shrink-0 w-7 h-7 flex items-center justify-center text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                          >
+                            🗑️
+                          </button>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 w-full sm:w-auto mt-2 sm:mt-0">
+                          <label className="flex flex-col items-start">
+                            <span className="text-[9.5px] font-bold text-gray-500">8 oz (RG)</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row.raw8}
+                              onChange={e => updateIngredient(row.key, { raw8: e.target.value })}
+                              placeholder="8 oz"
+                              title="Raw oz per 8 oz (RG) container"
+                              className="w-[76px] shrink-0 text-[12px] px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-10"
+                            />
+                          </label>
+                          <label className="flex flex-col items-start">
+                            <span className="text-[9.5px] font-bold text-gray-500">12 oz (LG)</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row.raw12}
+                              onChange={e => updateIngredient(row.key, { raw12: e.target.value })}
+                              placeholder="12 oz"
+                              title="Raw oz per 12 oz (LG) container"
+                              className="w-[76px] shrink-0 text-[12px] px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-10"
+                            />
+                          </label>
+                        </div>
                       </div>
                     ))}
                   </div>

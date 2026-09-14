@@ -1398,25 +1398,23 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
       {/* HEADER SECTION */}
       <div className="bg-white border-b border-[#EEEEEE] shrink-0 print:hidden">
-        <div className="px-8 py-5 flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-[22px] font-bold text-[#11142D]">Kitchen Prep and Packaging</h1>
-              <span className="px-3 py-1 rounded-md text-[11px] font-black bg-gray-100 text-gray-700 border border-gray-200 uppercase tracking-wider">
-                🚚 {metrics.totalMeals} deliveries
+        <div className="px-8 py-5 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-[22px] font-bold text-[#11142D]">Kitchen Prep and Packaging</h1>
+            <span className="px-3 py-1 rounded-md text-[11px] font-black bg-gray-100 text-gray-700 border border-gray-200 uppercase tracking-wider">
+              🚚 {metrics.totalMeals} deliveries
+            </span>
+            <span className="text-base text-gray-500 font-semibold border-l border-gray-200 pl-3">
+              For Delivery: {formattedTargetDate}
+            </span>
+            {isPreppingTomorrow && (
+              <span className="text-xs bg-indigo-50 text-indigo-700 font-medium px-2 py-0.5 rounded-full">
+                🌙 Prepping for Tomorrow
               </span>
-              <span className="text-base text-gray-500 font-semibold border-l border-gray-200 pl-3">
-                For Delivery: {formattedTargetDate}
-              </span>
-              {isPreppingTomorrow && (
-                <span className="text-xs bg-indigo-50 text-indigo-700 font-medium px-2 py-0.5 rounded-full">
-                  🌙 Prepping for Tomorrow
-                </span>
-              )}
-            </div>
-            <p className="text-[13px] text-gray-500 mt-1">Real-time production metrics for line chefs.</p>
+            )}
           </div>
-          <div className="flex items-center space-x-4">
+          <p className="text-[13px] text-gray-500 mt-1">Real-time production metrics for line chefs.</p>
+          <div className="flex flex-wrap items-center space-x-4 gap-2">
             <span className={`px-3 py-1 rounded-md text-[11px] font-black tracking-wider uppercase border shadow-sm ${isChickenDay
                 ? 'bg-red-600 text-white border-red-700 animate-pulse'
                 : 'bg-green-600 text-white border-green-700'
@@ -1424,7 +1422,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               {isChickenDay ? '🍗 Non-Veg Day' : '🥬 Veg Day'}
             </span>
 
-            <div className="flex bg-[#F4F4FE] p-1 rounded-lg border border-[#EFEEFC]">
+            <div className="flex flex-wrap bg-[#F4F4FE] p-1 rounded-lg border border-[#EFEEFC] gap-2">
               {DAYS_OF_WEEK.map(day => (
                 <button
                   key={day}
@@ -1725,7 +1723,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 <select
                   value={selectedDalId}
                   onChange={e => handleSelectDal(e.target.value)}
-                  className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                  className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-10"
                 >
                   <option value="">— Not selected —</option>
                   {activeDalRecipes.map(r => (
@@ -1743,7 +1741,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 <select
                   value={selectedSabjiId}
                   onChange={e => handleSelectSabji(e.target.value)}
-                  className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                  className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-10"
                 >
                   <option value="">— Not selected —</option>
                   {activeSabjiRecipes.map(r => (
@@ -1866,7 +1864,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         </div>
 
         {/* 3-STATION GRID */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 print:hidden items-stretch">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 print:hidden items-stretch">
 
           <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-3 flex flex-col">
             <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide mb-2">🍞 Breads &amp; Sides</span>
@@ -2026,8 +2024,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               🖨️ Print Checklist
             </button>
           </div>
-          <div className="overflow-x-auto print:overflow-visible">
-            <table className="w-full text-left text-[13px]">
+          <div className="w-full overflow-x-auto -mx-2 sm:mx-0 px-2 sm:px-0">
+            <table className="min-w-[650px] w-full text-left text-[13px]">
               <thead>
                 <tr className="text-[#A2A4B0] font-bold border-b border-[#F5F5F5] uppercase text-[10.5px] tracking-wider bg-gray-50/60 h-9 break-inside-avoid print:border-slate-300" style={{ pageBreakInside: 'avoid' }}>
                   <th className="hidden print:table-cell w-8 text-center print:py-1 print:px-1.5 print:text-[11px]">[ ]</th>
