@@ -3,6 +3,7 @@
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
 import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction } from './actions';
+import { isPickupOnDay } from '@/app/utils/customerPickup';
 
 type CustomerRow = {
   id: string;
@@ -14,6 +15,15 @@ type CustomerRow = {
   subscription_status: string | null;
   status: string | null;
   delivery_schedule: string | null;
+  // Pickup-day columns (migration 00011). delivery_address doubles as the legacy
+  // PICKUP-marker source for records created before pickup_days existed.
+  delivery_address?: string | null;
+  is_pickup?: boolean | null;
+  pickup_days?: string[] | null;
+  // Optional: upcoming-start (migration 00008) + scheduled end (migration 00014) gates
+  // used to decide whether a customer belongs on today's dispatch list.
+  start_date?: string | null;
+  scheduled_cancel_date?: string | null;
 };
 
 const noopSubscribe = () => () => {};
@@ -56,6 +66,15 @@ export default function DeliveriesClient({
     return d.toLocaleDateString('en-US', { weekday: 'long' });
   }, []);
 
+  // Local calendar "today" key (YYYY-MM-DD) used for start_date / scheduled_cancel_date
+  // comparisons on the dispatch list (avoids UTC rollover skew).
+  const todayKey = useMemo(() => {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${d.getFullYear()}-${m}-${day}`;
+  }, []);
+
   const customers = useMemo(
     () =>
       initialCustomers.map(c => ({
@@ -73,11 +92,10 @@ export default function DeliveriesClient({
   const completedList = useMemo(
     () =>
       todayLogs
-        .map(log => {
+        .flatMap(log => {
           const customer = customers.find(c => c.id === log.customerId);
-          return customer ? { ...log, customer } : null;
+          return customer ? [{ ...log, customer }] : [];
         })
-        .filter((x): x is { customerId: string; event: 'delivered' | 'skipped'; customer: CustomerRow } => x !== null)
         .sort((a, b) => a.customer.full_name.localeCompare(b.customer.full_name)),
     [customers, todayLogs]
   );
@@ -88,11 +106,19 @@ export default function DeliveriesClient({
         c =>
           (c.subscription_status || 'active').toLowerCase() === 'active' &&
           (c.status || 'active').toLowerCase() !== 'paused' &&
+          // Upcoming subscriptions (start_date still in the future) are not dispatched
+          // until their start date arrives.
+          (!c.start_date || c.start_date <= todayKey) &&
+          // Scheduled end: the customer is served through their scheduled_cancel_date
+          // and dropped once it has passed (even before the scheduled transition runs).
+          (!c.scheduled_cancel_date || c.scheduled_cancel_date >= todayKey) &&
           (c.used_credits || 0) < (c.total_tiffin_credits || 0) + 3 &&
           isScheduledOn(c.delivery_schedule, todayName) &&
+          // Customers picking up from the kitchen today don't need a driver.
+          !isPickupOnDay(c, todayName) &&
           !todayLoggedIds.includes(c.id)
       ),
-    [customers, todayName, todayLoggedIds]
+    [customers, todayName, todayKey, todayLoggedIds]
   );
 
   const ledgerList = useMemo(

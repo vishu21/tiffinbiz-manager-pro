@@ -1,7 +1,14 @@
 'use client';
 
-import React, { useState, useTransition, useEffect, useRef, useSyncExternalStore } from 'react';
-import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, renewCustomerCycle, upgradeCustomerPlan } from '@/app/admin/actions';
+import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
+import { useRouter } from 'next/navigation';
+import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation } from '@/app/admin/actions';
+import {
+  isLegacyPickupCustomer,
+  normalizePickupDays,
+  parseActiveScheduleDays,
+  pickupDaysForCustomer,
+} from '@/app/utils/customerPickup';
 
 // Stable no-op subscription for the mount flag below.
 const noopSubscribe = () => () => {};
@@ -12,22 +19,52 @@ const PLAN_OPTIONS: { key: 'trial' | 'weekly' | 'monthly'; label: string; credit
   { key: 'weekly', label: 'Weekly', credits: 5 },
   { key: 'monthly', label: 'Monthly', credits: 20 },
 ];
-const TIER_BADGE_STYLES: Record<string, string> = {
-  trial: 'bg-sky-50 text-sky-700 border-sky-200',
-  weekly: 'bg-blue-50 text-blue-700 border-blue-200',
-  monthly: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+
+// Delivery-day options for the schedule grid: `short` is the visible button label and
+// `full` is the canonical day token used by selectedDays / toggleScheduleDay / serialization.
+const SCHEDULE_DAYS = [
+  { short: 'Mon', full: 'Monday' },
+  { short: 'Tue', full: 'Tuesday' },
+  { short: 'Wed', full: 'Wednesday' },
+  { short: 'Thu', full: 'Thursday' },
+  { short: 'Fri', full: 'Friday' },
+  { short: 'Sat', full: 'Saturday' },
+];
+
+// First-class referral channels offered as instant-tap pills directly under the Profile
+// tab's "Referred By" label. Each pill writes `referred_by` in one tap.
+const REFERRAL_QUICK_PILLS = ['Instagram', 'WhatsApp', 'Flyer', 'Word of mouth'];
+
+// Local YYYY-MM-DD key (avoids the UTC rollover of toISOString() so "today" always matches
+// the user's own calendar day). Used by the Last-Service-Date scheduling comparisons.
+const toLocalDateKey = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 };
-const formatStartDateLabel = (value: string | null | undefined): string => {
-  if (!value) return '';
-  const d = new Date(`${value.slice(0, 10)}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+// "Fri, Sep 11" style label for the scheduled-end (amber) badges.
+const formatShortLastDay = (dateKey: string): string => {
+  const date = new Date(`${dateKey}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return dateKey;
+  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+};
+
+// "Sep 11" style label (no weekday) for the compact ⏳ Ends status badge.
+const formatShortDate = (dateKey: string): string => {
+  const date = new Date(`${dateKey}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return dateKey;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
 type Customer = {
   id: string;
   full_name: string;
   phone_number: string | null;
+  // Optional: referred_by (free-text referral source) landed in migration 00012 and may be
+  // absent on rows fetched before the schema upgrade (optional keeps the type honest).
+  referred_by?: string | null;
   delivery_address: string;
   dietary_notes: string | null;
   delivery_instructions: string | null;
@@ -37,6 +74,10 @@ type Customer = {
   pronthi_count?: number | null;
   rice_count?: string | null;
   delivery_schedule?: string | null;
+  // Optional: per-day pickup flags (full day names) + legacy all-days pickup boolean.
+  // Both landed in migration 00011 and may be absent on older schemas.
+  is_pickup?: boolean | null;
+  pickup_days?: string[] | null;
   subscription_status?: string | null;
   plan_tier?: 'trial' | 'weekly' | 'monthly' | null;
   total_tiffin_credits?: number | null;
@@ -48,12 +89,62 @@ type Customer = {
   pause_end_date?: string | null;
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
+  // Optional: scheduled (future) cancel/pause support (migration 00014). The customer stays
+  // active until scheduled_cancel_date (their "Last Service Date") has passed.
+  scheduled_cancel_date?: string | null;
+  scheduled_status?: 'cancelled' | 'paused' | null;
   discount_type?: 'flat' | 'percent' | null;
   discount_value?: number | null;
   discount_note?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
   created_at: string;
+};
+
+// Fulfillment classification for the Customer-table name cell:
+//   pure_pickup   → 100% of active days are pickup  → single 🛍️ Kitchen Pickup badge
+//   pure_delivery → no pickup days at all           → destination address + map link
+//   hybrid        → mix of delivery + pickup days   → destination address + a compact
+//                                                    🛍️ Pickup: … pill underneath
+// Classification is driven by the per-day pickup_days list vs. the active
+// delivery_schedule — NOT the legacy `is_pickup` convenience flag. Modern saves set
+// is_pickup = true whenever ANY day is pickup, so a hybrid customer (e.g. pickup
+// Tue/Wed/Thu + delivery Mon/Fri) must still keep their address visible.
+type CustomerFulfillment =
+  | { mode: 'pure_pickup'; pickupDays: string[] }
+  | { mode: 'pure_delivery'; pickupDays: string[] }
+  | { mode: 'hybrid'; pickupDays: string[] };
+
+const getCustomerFulfillment = (customer: Customer): CustomerFulfillment => {
+  const activeDays = parseActiveScheduleDays(customer.delivery_schedule);
+  const pickupDays = pickupDaysForCustomer(customer);
+  const pickupSet = new Set(pickupDays);
+  // Pickup only counts on days the customer is actually scheduled; the order follows the
+  // schedule so the pill reads left → right exactly like the Schedule column.
+  const scheduledPickupDays = activeDays.filter(day => pickupSet.has(day));
+
+  if (activeDays.length > 0) {
+    if (scheduledPickupDays.length === activeDays.length) {
+      return { mode: 'pure_pickup', pickupDays: scheduledPickupDays };
+    }
+    if (scheduledPickupDays.length > 0) {
+      return { mode: 'hybrid', pickupDays: scheduledPickupDays };
+    }
+    return { mode: 'pure_delivery', pickupDays: [] };
+  }
+
+  // No parseable active schedule — fall back to the legacy all-days pickup signals so
+  // records created under the old Kitchen Pickup flow (is_pickup flag and/or a PICKUP
+  // marker in the address or name, no stored pickup_days) keep rendering the badge
+  // instead of an address. A real typed destination wins over the flag.
+  const addressText = (customer.delivery_address || '').trim();
+  const markerText = `${addressText} ${customer.full_name ?? ''}`.toUpperCase();
+  const hasRealDeliveryAddress =
+    addressText !== '' && !markerText.includes('PICKUP');
+  if (isLegacyPickupCustomer(customer) && !hasRealDeliveryAddress) {
+    return { mode: 'pure_pickup', pickupDays: [] };
+  }
+  return { mode: 'pure_delivery', pickupDays: [] };
 };
 
 type SideCounts = {
@@ -72,6 +163,17 @@ const PORTION_RG = 'RG';
 const PORTION_LG = 'LG';
 const PORTION_HALF_RG = 'Half RG';
 const PORTION_HALF_LG = 'Half LG';
+
+// Standard Roti baselines per portion tier: LG → 8 · RG → 6 · Half LG → 5 · Half RG → 4.
+// Used to auto-fill a brand-new customer's Roti count (until the stepper is manually
+// touched) and to power the "[Set to standard]" hint below the Roti counter in the
+// meal-config drawer.
+const PORTION_ROTI_DEFAULTS: Record<string, number> = {
+  [PORTION_LG]: 8,
+  [PORTION_RG]: 6,
+  [PORTION_HALF_LG]: 5,
+  [PORTION_HALF_RG]: 4,
+};
 
 const normalizePortionToken = (value: string | null | undefined): string => {
   const v = (value || '').trim().toUpperCase().replace(/\s+/g, ' ');
@@ -93,15 +195,15 @@ const formatSideAddon = (count: number, label: string): string =>
   count > 1 ? `${count}x ${label}` : label;
 
 // Human-readable summary of a curry/side allocation (e.g. "1 Dal + 1 Sabji + Salad").
-const formatSideSummary = (counts: SideCounts): string => {
+const formatSideSummary = (counts: SideCounts, planDefaults?: SideCounts): string => {
   const parts: string[] = [];
   if (counts.dal > 0) parts.push(`${counts.dal} Dal`);
   if (counts.sabji > 0) parts.push(`${counts.sabji} Sabji`);
   if (counts.gravy > 0) parts.push(`${counts.gravy} Gravy`);
   if (counts.chicken > 0) parts.push(`${counts.chicken} Chicken`);
   let summary = parts.join(' + ');
-  if (counts.salad > 0) summary += ` + ${formatSideAddon(counts.salad, 'Salad')}`;
-  if (counts.dessert > 0) summary += ` + ${formatSideAddon(counts.dessert, 'Dessert')}`;
+  if (counts.salad > 0 && (!planDefaults || counts.salad > planDefaults.salad)) summary += ` + ${formatSideAddon(counts.salad, 'Salad')}`;
+  if (counts.dessert > 0 && (!planDefaults || counts.dessert > planDefaults.dessert)) summary += ` + ${formatSideAddon(counts.dessert, 'Dessert')}`;
   return summary;
 };
 
@@ -135,7 +237,7 @@ const formatHalfContainerNote = (
 };
 
 // The built-in "standard" curry profile for a meal type + portion.
-const defaultSideCounts = (mealType: string, portion: string): SideCounts => {
+const defaultSideCounts = (mealType: string, portion: string, planType: 'trial' | 'weekly' | 'monthly' | null): SideCounts => {
   const isNonVeg = mealType === 'Non-veg';
   const p = normalizePortionToken(portion);
   if (isHalfPortion(p)) {
@@ -152,8 +254,8 @@ const defaultSideCounts = (mealType: string, portion: string): SideCounts => {
       sabji: 1,
       gravy: 0,
       chicken: 1,
-      salad: p === PORTION_LG ? 1 : 0,
-      dessert: p === PORTION_LG ? 1 : 0,
+      salad: (p === PORTION_LG || planType === 'monthly') ? 1 : 0,
+      dessert: (p === PORTION_LG || planType === 'monthly') ? 1 : 0,
     };
   }
   return {
@@ -161,8 +263,8 @@ const defaultSideCounts = (mealType: string, portion: string): SideCounts => {
     sabji: 1,
     gravy: 0,
     chicken: 0,
-    salad: p === PORTION_LG ? 1 : 0,
-    dessert: p === PORTION_LG ? 1 : 0,
+    salad: (p === PORTION_LG || planType === 'monthly') ? 1 : 0,
+    dessert: (p === PORTION_LG || planType === 'monthly') ? 1 : 0,
   };
 };
 
@@ -173,8 +275,8 @@ const curryFieldsEqual = (a: SideCounts, b: SideCounts): boolean =>
   a.chicken === b.chicken;
 
 // Curry-only deviation check: Salad / Dessert counts NEVER affect curry preset detection.
-const deviatesCurryFromDefault = (mealType: string, portion: string, counts: SideCounts): boolean =>
-  !curryFieldsEqual(counts, defaultSideCounts(mealType, portion));
+const deviatesCurryFromDefault = (mealType: string, portion: string, planType: 'trial' | 'weekly' | 'monthly' | null, counts: SideCounts): boolean =>
+  !curryFieldsEqual(counts, defaultSideCounts(mealType, portion, planType));
 
 // ── Structured weekly curry configuration (stored in the `curry_config` TEXT column) ──
 // All container allotments are day-grouped: Mon/Wed/Fri (non-veg days) + Tue/Thu (veg days).
@@ -407,6 +509,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const router = useRouter();
 
   // Portion-size weights so "Meal Plan" sorts by volume:
   // Full LG (4) > Half LG (3) > Full RG (2) > Half RG (1).
@@ -428,7 +531,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   // Sort cycles: Default → active direction → back to Default (per column).
   const [nameSort, setNameSort] = useState<'default' | 'asc' | 'desc'>('default');
   const [portionSort, setPortionSort] = useState<'default' | 'asc' | 'desc'>('default');
-  const [kitchenMode, setKitchenMode] = useState(false);
+  // Kitchen Dispatch / Packing Order is the landing sort for the kitchen staff, so it
+  // starts ON (active button + kitchen-sequenced table) and can still be toggled off.
+  const [kitchenMode, setKitchenMode] = useState(true);
   const [isPanelRendered, setIsPanelRendered] = useState(false);
   const [isSlideInActive, setIsSlideInActive] = useState(false);
   const [isAccordionExpanded, setIsAccordionExpanded] = useState(false);
@@ -444,6 +549,23 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   // Toast notification state (e.g. success after reactivating a cancelled customer)
   const [toast, setToast] = useState<{ message: string; kind: 'success' | 'error' } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Post-save feedback: id of the row just created/edited → drives the pulse highlight
+  // + auto-scroll, then is cleared 3s after the save completes.
+  const [lastModifiedCustomerId, setLastModifiedCustomerId] = useState<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Locally prepended rows created during this session (shown above the server rows at
+  // index 0 until a server refresh adopts them into initialCustomers).
+  const [newlyAddedCustomers, setNewlyAddedCustomers] = useState<Customer[]>([]);
+  // Rows patched right after an update save so the list/drawer reflect the change even
+  // before router.refresh() re-renders with the fresh server rows. Each patch remembers
+  // the JSON signature of the stale server row it replaced: customersForDisplay only lets
+  // the patch win while the server row is still unchanged (pre-refresh), and automatically
+  // falls back to the authoritative server row once a refresh adopts the save.
+  const [rowPatches, setRowPatches] = useState<Record<string, { updated: Customer; staleSignature: string }>>({});
+
+  // Calendar "today" in the user's local timezone (used by scheduled-end date logic).
+  const todayKey = toLocalDateKey(new Date());
 
   // Subscription management state
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused' | 'cancelled'>('active');
@@ -470,6 +592,37 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [fullName, setFullName] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [contactChannel, setContactChannel] = useState<ContactChannel>('phone');
+  const [referredBy, setReferredBy] = useState('');
+  // Referral typeahead suggestion pool: every existing customer full name so the
+  // "Referred By" combobox can autocomplete a referring customer. When editing an
+  // existing customer the record itself is excluded (no self-referral suggestions).
+  const referralSuggestions = useMemo(() => {
+    const selfId = !isAddingNew ? selectedCustomer?.id ?? null : null;
+    const names = Array.from(
+      new Set(
+        initialCustomers
+          .filter(c => c.id !== selfId)
+          .map(c => c.full_name.trim())
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    return names;
+  }, [initialCustomers, isAddingNew, selectedCustomer?.id]);
+  // The typeahead menu stays CLOSED by default — a dropdown of matching customer names
+  // renders only once 2+ characters are typed and is capped at 5 rows so it never feels
+  // oversized. Free-form text is still allowed: whatever is typed (or left in the input)
+  // is saved as `referred_by` when no suggestion is clicked.
+  const visibleReferralSuggestions = useMemo(() => {
+    const q = referredBy.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return referralSuggestions
+      .filter(name => name.toLowerCase().includes(q))
+      .slice(0, 5);
+  }, [referredBy, referralSuggestions]);
+  // Explicit open flag (not derived from text length alone) so tapping a pill or picking
+  // a suggestion never re-opens the menu for the now-matching text.
+  const [isReferralMenuOpen, setIsReferralMenuOpen] = useState(false);
+  const referralContainerRef = useRef<HTMLDivElement>(null);
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [rawNotes, setRawNotes] = useState('');
   const [mealType, setMealType] = useState('');
@@ -479,9 +632,86 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [startDate, setStartDate] = useState('');
   const [rotiCount, setRotiCount] = useState<number | ''>('');
   const [pronthiCount, setPronthiCount] = useState<number | ''>('');
+  // Bread-count ownership guard: while FALSE on a brand-new customer, toggling the Portion
+  // Size keeps Roti synced to the selected tier's standard default. Any manual stepper /
+  // input change (or restoring a stored count) flips it TRUE, after which Portion Size and
+  // Meal Type toggles never silently overwrite the Roti count again.
+  const [isRotiCountCustom, setIsRotiCountCustom] = useState(false);
   const [riceCount, setRiceCount] = useState('');
   const ALL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const [selectedDays, setSelectedDays] = useState<string[]>(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+
+  // Drawer (Add/Edit) 3-tab navigation state + smart-validation errors.
+  // NOTE: named `activeDrawerTab` (not `activeTab`) because `activeTab` is already
+  // the customer-list filter state ('all' | 'veg' | 'non-veg') declared above.
+  const [activeDrawerTab, setActiveDrawerTab] = useState<'profile' | 'plan' | 'meal'>('profile');
+  // Per-day pickup mode: which active schedule days are marked '🛍️ Pickup' instead of
+  // '🚗 Delivery'. Persisted to the customers.pickup_days column (full day names).
+  const [pickupDays, setPickupDays] = useState<string[]>([]);
+  const [formErrors, setFormErrors] = useState<{ fullName?: string; deliveryAddress?: string }>({});
+  const fullNameInputRef = useRef<HTMLInputElement>(null);
+  const deliveryAddressInputRef = useRef<HTMLInputElement>(null);
+  // Set when "Duplicate Customer" opens the drawer so Full Name gets focused/selected
+  // immediately for a quick name tweak before saving.
+  const [focusFullNameOnDuplicate, setFocusFullNameOnDuplicate] = useState(false);
+
+  // The Profile-tab "Kitchen Pickup" switch is a global convenience derived from the
+  // per-day pills in the Delivery Schedule block below the address: ON ⇔ every active
+  // day is pickup, so toggling individual pills flips the switch automatically.
+  const allDaysArePickup =
+    selectedDays.length > 0 && selectedDays.every(d => pickupDays.includes(d));
+  // Address is only mandatory when at least one active day is a real Delivery day.
+  const hasDeliveryDay = selectedDays.some(d => !pickupDays.includes(d));
+  const pickupDayCount = selectedDays.filter(d => pickupDays.includes(d)).length;
+
+  // Subtitle under the master Kitchen Pickup switch — keeps mixed schedules obvious so a
+  // Delivery-only day makes it clear a destination address is required.
+  const pickupModeSubtitle =
+    selectedDays.length === 0
+      ? 'No active days selected yet.'
+      : allDaysArePickup
+        ? 'Every active day is Pickup — delivery address optional.'
+        : pickupDayCount > 0
+          ? 'Mixed schedule: Deliveries require destination address.'
+          : 'All active days are Delivery — destination address required.';
+
+  // Roster rendered in the table = locally created rows (prepended at index 0) + server
+  // rows. Rows already adopted by a server refresh are dropped from the local prefix so
+  // the table never shows the same record twice (the row id stays identical either way).
+  const customersForDisplay = useMemo(() => {
+    const serverIds = new Set(initialCustomers.map(c => c.id));
+    const localPrefix = newlyAddedCustomers.filter(c => !serverIds.has(c.id));
+    const patchedServerRows =
+      Object.keys(rowPatches).length > 0
+        ? initialCustomers.map(c => {
+            const patch = rowPatches[c.id];
+            if (!patch) return c;
+            // The patch only applies until the server copy differs from the stale row it
+            // replaced (i.e. until router.refresh() delivers the adopted record).
+            return patch.staleSignature !== JSON.stringify(c) ? c : patch.updated;
+          })
+        : initialCustomers;
+    return [...localPrefix, ...patchedServerRows];
+  }, [newlyAddedCustomers, initialCustomers, rowPatches]);
+
+  // Post-save feedback: gently bring the just-saved row into view so its pulse is seen.
+  useEffect(() => {
+    if (!lastModifiedCustomerId) return;
+    const scrollTimer = setTimeout(() => {
+      document
+        .getElementById(`customer-row-${lastModifiedCustomerId}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 250); // brief delay: lets the drawer close + the fresh row mount first
+    return () => clearTimeout(scrollTimer);
+  }, [lastModifiedCustomerId]);
+
+  // Clear a pending 3s pulse timer if the component unmounts before it fires.
+  useEffect(
+    () => () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    },
+    []
+  );
 
   const formatSchedule = (days: string[]): string => {
     if (days.length === 0) return '';
@@ -558,19 +788,39 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     // Friday cannot be removed while Saturday (Fri double-pack) is selected.
     if (day === 'Friday' && fridayDoublePack) return;
 
+    let nextDays: string[];
     if (day === 'Saturday') {
       if (selectedDays.includes('Saturday')) {
-        setSelectedDays(selectedDays.filter(d => d !== 'Saturday'));
+        nextDays = selectedDays.filter(d => d !== 'Saturday');
       } else {
         // Selecting Saturday forces Friday on so the double pack can be delivered.
-        setSelectedDays([...new Set([...selectedDays, 'Friday', 'Saturday'])]);
+        nextDays = [...new Set([...selectedDays, 'Friday', 'Saturday'])];
       }
-      return;
+    } else {
+      nextDays = selectedDays.includes(day)
+        ? selectedDays.filter(d => d !== day)
+        : [...selectedDays, day];
     }
 
-    setSelectedDays(prev =>
-      prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]
+    setSelectedDays(nextDays);
+    // A deactivated day can no longer carry a pickup flag.
+    setPickupDays(prev => prev.filter(p => nextDays.includes(p)));
+  };
+
+  // Toggles one active schedule day between Delivery (default) and Pickup.
+  const togglePickupDay = (day: string) => {
+    const wasPickup = pickupDays.includes(day);
+    setPickupDays(prev =>
+      wasPickup ? prev.filter(d => d !== day) : [...prev, day]
     );
+    // A day flipped to Delivery means the customer now needs a real drop-off address;
+    // drop the legacy placeholder marker so validation forces a real address.
+    if (
+      wasPickup &&
+      deliveryAddress.trim().toUpperCase() === 'KITCHEN PICKUP'
+    ) {
+      setDeliveryAddress('');
+    }
   };
 
   const [sideNotes, setSideNotes] = useState('');
@@ -604,29 +854,29 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [discountValue, setDiscountValue] = useState('');
   const [discountNote, setDiscountNote] = useState('');
 
+  // Curry container occupancy only — Salad / Dessert are sides and must never
+  // inflate the "(n/2 containers/day)" limit or disable curry + buttons.
   const totalCurryCount = dalCount + sabjiCount + gravyCount + chickenCount;
   const curryContainerLimit = isHalfPortion(portionSize) ? 1 : 2;
 
-  const getDefaultRotiCount = (portion: string): number => {
-    const p = normalizePortionToken(portion);
-    if (isHalfPortion(p)) return 4; // single-container half plan
-    return p === PORTION_LG ? 8 : 6; // RG → 6 rotis, LG → 8 rotis
-  };
+  const getDefaultRotiCount = (portion: string): number =>
+    PORTION_ROTI_DEFAULTS[normalizePortionToken(portion)] ?? PORTION_ROTI_DEFAULTS[PORTION_RG];
 
   const isStandardNonVegProfile = (dal: number, sabji: number, gravy: number, chicken: number): boolean =>
     dal === 0 && sabji === 1 && gravy === 0 && chicken === 1;
 
   // ═══════════════════════════════════════════════════════════════
-  // Applies the automatic defaults when Meal Type or Portion Size toggles:
-  //   Veg (RG/LG) → 1 Dal + 1 Sabji (RG 6 roti / LG 8 roti)
+  // Applies the automatic curry (side-dish) defaults when Meal Type or Portion Size
+  // toggles. Bread counts (Roti / Pronthi) are deliberately NOT touched here — bread
+  // re-baselining happens only in the create flow and only until the operator manually
+  // adjusts the count (see handlePortionChange / handleSetRotiToStandard).
+  //   Veg (RG/LG) → 1 Dal + 1 Sabji
   //   Non-Veg (RG/LG) → 1 Sabji + Chicken Mon/Wed/Fri + veg Tue/Thu
   //   Half (RG/LG) → single container/day
   // ═══════════════════════════════════════════════════════════════
   const applyMealDefaults = (type: string, portion: string) => {
     const isNonVeg = type === 'Non-veg';
     const p = normalizePortionToken(portion);
-    setRotiCount(getDefaultRotiCount(p));
-    setPronthiCount(0);
 
     const largeAddonDefault = p === PORTION_LG ? 1 : 0;
 
@@ -674,6 +924,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setMealType(newType);
     const activePortion = portionSize ? normalizePortionToken(portionSize) : PORTION_RG;
     if (!portionSize) setPortionSize(PORTION_RG);
+    // Only the meal type + its curry profile change here. Veg ⇄ Non-veg never touches the
+    // Roti / Pronthi bread counts (manual customizations stay put).
     applyMealDefaults(newType, activePortion);
   };
 
@@ -683,7 +935,34 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     const activeMealType = mealType || 'Veg';
     if (!mealType) setMealType('Veg');
     applyMealDefaults(activeMealType, canonicalPortion);
+
+    // Bread safety: only auto-sync Roti for a brand-new customer that is still on the
+    // automatic baseline (no manual stepper/input yet). Existing customers (edit mode)
+    // and any manually-customized count keep their Roti value when the portion changes.
+    if (isAddingNew && !isRotiCountCustom) {
+      setRotiCount(getDefaultRotiCount(canonicalPortion));
+    }
   };
+
+  // Explicitly snaps the Roti count back to the selected tier's standard baseline. Wired
+  // only to the "[Set to standard]" hint — Portion Size toggles themselves never call it.
+  const handleSetRotiToStandard = () => {
+    setRotiCount(getDefaultRotiCount(portionSize || PORTION_RG));
+  };
+
+  // True while the drawer is editing a persisted customer (has an id), as opposed to
+  // creating a new one — used to decide when Roti auto-baselining is permitted.
+  const editingExistingCustomer = !isAddingNew && !!selectedCustomer?.id;
+  const selectedPortionForRoti = normalizePortionToken(portionSize || PORTION_RG);
+  const defaultRotiForPortion = getDefaultRotiCount(selectedPortionForRoti);
+  // Subtle "Standard for X is Y rotis. [Set to standard]" hint under the Roti counter.
+  // Shown when the operator owns the bread count (editing an existing customer, or a
+  // manual customization during create) and the current value has drifted from the
+  // selected tier's standard baseline.
+  const showRotiStandardHint =
+    (editingExistingCustomer || isRotiCountCustom) &&
+    rotiCount !== '' &&
+    Number(rotiCount) !== defaultRotiForPortion;
 
   // Apply a single side-dish stepper change (used by the Veg curry steppers and
   // legacy Small single-select UI).
@@ -703,6 +982,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       setIsAccordionExpanded(false);
       setIsEditingParams(false);
       setAddressSuggestions([]);
+      setIsReferralMenuOpen(false);
+      // Every drawer open starts on the Profile tab with a clean validation slate.
+      setActiveDrawerTab('profile');
+      setFormErrors({});
       const timer = setTimeout(() => setIsSlideInActive(true), 10);
       return () => clearTimeout(timer);
     } else {
@@ -711,6 +994,19 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       return () => clearTimeout(timer);
     }
   }, [selectedCustomer, isAddingNew]);
+
+  // "Duplicate Customer" opens the drawer in create mode pre-filled from the source row;
+  // once the Profile tab mounts, select the Full Name field so it can be tweaked right
+  // away (e.g. append " (copy)") before the operator clicks Save Customer.
+  useEffect(() => {
+    if (!focusFullNameOnDuplicate || !isAddingNew) return;
+    const timer = setTimeout(() => {
+      setFocusFullNameOnDuplicate(false);
+      fullNameInputRef.current?.focus();
+      fullNameInputRef.current?.select();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [focusFullNameOnDuplicate, isAddingNew]);
 
   // ═══════════════════════════════════════════════════════════════
   // Custom curry detection — drives the "⚡ Custom" pill and is saved
@@ -733,13 +1029,15 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     deviatesCurryFromDefault(
       mealType || 'Veg',
       normalizePortionToken(portionSize || PORTION_RG),
+      planTier,
       liveSideCounts
     );
 
   // Extra add-ons beyond the plan's default allowance are tracked separately.
   const planDefaults = defaultSideCounts(
     mealType || 'Veg',
-    normalizePortionToken(portionSize || PORTION_RG)
+    normalizePortionToken(portionSize || PORTION_RG),
+    planTier
   );
   const addonFlags: string[] = [];
   if (saladCount > planDefaults.salad) addonFlags.push(formatSideAddon(saladCount, 'Salad'));
@@ -806,8 +1104,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (addressContainerRef.current && !addressContainerRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (addressContainerRef.current && !addressContainerRef.current.contains(target)) {
         setAddressSuggestions([]);
+      }
+      if (referralContainerRef.current && !referralContainerRef.current.contains(target)) {
+        setIsReferralMenuOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -969,7 +1271,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     startTransition(async () => {
       try {
         if (action === 'pause') {
-          await pauseCustomer(customer.id, new Date().toISOString().split('T')[0], null);
+          await pauseCustomer(customer.id, toLocalDateKey(new Date()), null);
           showToast(`${customer.full_name} paused`);
         } else if (action === 'resume') {
           await resumeCustomer(customer.id);
@@ -998,14 +1300,14 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     customerId: string,
     nextStatus: 'active' | 'paused' | 'cancelled'
   ) => {
-    const customer = initialCustomers.find(c => c.id === customerId);
+    const customer = customersForDisplay.find(c => c.id === customerId);
     if (customer) handleUpdateStatus(customer, nextStatus);
   };
 
   // Executes the destructive delete by customer id (confirmation is handled by the caller).
   const handleDeleteCustomer = (customerId: string) => {
     setActiveMenuId(null);
-    const customer = initialCustomers.find(c => c.id === customerId);
+    const customer = customersForDisplay.find(c => c.id === customerId);
     startTransition(async () => {
       try {
         await deleteCustomer(customerId);
@@ -1023,11 +1325,11 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   ) => {
     setActiveMenuId(null);
     setConfirmCustomer(customer);
-    // Reset per-dialog inputs.
-    setPauseStartDate('');
+    // Reset per-dialog inputs. Dates default to today (pause/cancel take effect immediately).
+    setPauseStartDate(toLocalDateKey(new Date()));
     setPauseEndDate('');
     setIsIndefinitePause(false);
-    setCancelDate(new Date().toISOString().split('T')[0]);
+    setCancelDate(toLocalDateKey(new Date()));
     setCancelReason('');
     if (type === 'pause') setShowPauseModal(true);
     else if (type === 'cancel') setShowCancelModal(true);
@@ -1135,7 +1437,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
 
 
-  const filteredCustomers = initialCustomers.filter(c => {
+  const filteredCustomers = customersForDisplay.filter(c => {
     const term = searchTerm.toLowerCase();
     const matchesSearch =
       c.full_name.toLowerCase().includes(term) ||
@@ -1184,19 +1486,61 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     return 0;
   });
 
+  // Column subtotals for the Roti / Rice headers — always computed from the
+  // rows currently displayed (status / meal-type / search filters) so each
+  // header total matches exactly the rows beneath it.
+  let totalRotis = 0;
+  let totalPronthis = 0;
+  let riceRgCount = 0;
+  let riceLgCount = 0;
+  let riceXlCount = 0;
+  for (const c of sortedCustomers) {
+    if (typeof c.roti_count === "number" && c.roti_count > 0) totalRotis += c.roti_count;
+    if (typeof c.pronthi_count === "number" && c.pronthi_count > 0) totalPronthis += c.pronthi_count;
+    const rawRice = (c.rice_count || "").toLowerCase();
+    if (rawRice === "" || rawRice === "none" || rawRice === "—") continue;
+    for (const token of rawRice.split("+")) {
+      const m = token.trim().match(/^(\d+)\s*(rg|lg|xl)$/);
+      if (!m) continue;
+      const qty = parseInt(m[1], 10);
+      if (m[2] === "rg") riceRgCount += qty;
+      else if (m[2] === "lg") riceLgCount += qty;
+      else if (m[2] === "xl") riceXlCount += qty;
+    }
+  }
+  const riceTotalParts: string[] = [];
+  if (riceRgCount > 0) riceTotalParts.push(`${riceRgCount} Rg`);
+  if (riceLgCount > 0) riceTotalParts.push(`${riceLgCount} Lg`);
+  if (riceXlCount > 0) riceTotalParts.push(`${riceXlCount} Xl`);
+  const riceHeaderTotal = riceTotalParts.join(" + ");
+  // Bread header mirrors the Rice column's split style (`3 Rg + 1 Lg`): plain Roti and
+  // Pronthi stay in separate buckets so Pronthis are never folded into the Roti total.
+  const breadTotalParts: string[] = [];
+  if (totalRotis > 0) breadTotalParts.push(`${totalRotis} Roti`);
+  if (totalPronthis > 0) breadTotalParts.push(`${totalPronthis} Pronthi`);
+  const breadHeaderTotal = breadTotalParts.join(" + ");
+
   const handleOpenAddForm = () => {
     setFullName('');
     setPhoneNumber('');
     setContactChannel('phone');
+    setReferredBy('');
     setDeliveryAddress('');
     setRawNotes('');
-    setMealType('');
-    setPortionSize('');
+    // Default meal settings for every new customer (Meal Config tab):
+    // meal_type 'Veg' · portion_size 'RG' · roti_count 6 · pronthi_count 0
+    setMealType('Veg');
+    setPortionSize(PORTION_RG);
     setPlanTier('monthly');
     setTotalTiffinCredits(20);
     setStartDate('');
-    setRotiCount('');
-    setPronthiCount('');
+    // RG baseline = 6 Roti (tier map: LG 8 · RG 6 · Half LG 5 · Half RG 4). MUST be the RG
+    // standard, not LG — Portion Size toggles re-sync until the stepper is manually touched.
+    setRotiCount(getDefaultRotiCount(PORTION_RG));
+    setPronthiCount(0);
+    // Brand-new customers open on the automatic Roti-baseline path: toggling Portion Size
+    // keeps Roti matched to the tier default until the operator adjusts it manually.
+    setIsRotiCountCustom(false);
     setRiceCount('');
     setRiceRg(0);
     setRiceLg(0);
@@ -1214,6 +1558,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setSaladCount(0);
     setDessertCount(0);
     setSelectedDays(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+    setPickupDays([]);
     setSideNotes('');
     setSpecialInstructions('');
     setDiscountType('none');
@@ -1221,6 +1566,15 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setDiscountNote('');
     setCancelReason('');
     setCancelDate('');
+
+    // Fill the standard Veg curry profile (1 Dal + 1 Sabji) for the RG default. Bread
+    // counts are already at the RG standard above — applyMealDefaults no longer touches
+    // Roti / Pronthi (bread re-baselining is handled by the portion-toggle logic).
+    applyMealDefaults('Veg', PORTION_RG);
+    // Open the drawer on the Profile tab with pickup off and a clean error state.
+    setActiveDrawerTab('profile');
+    setFormErrors({});
+
     setIsAddingNew(true);
   };
 
@@ -1272,14 +1626,16 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     return result;
   };
 
-  const handleRowClick = (customer: Customer) => {
-    setIsAddingNew(false);
-    setSelectedCustomer(customer);
+  // Populates every drawer field from an existing customer row. Shared by the row's
+  // Edit action and the "Duplicate Customer" create-mode prefill.
+  const applyCustomerToForm = (customer: Customer) => {
     setFullName(customer.full_name || '');
     const parsedContact = parseStoredContact(customer.phone_number);
     setPhoneNumber(parsedContact.value);
     setContactChannel(parsedContact.channel);
+    setReferredBy(customer.referred_by || '');
     setDeliveryAddress(customer.delivery_address || '');
+    setFormErrors({});
     setRawNotes(customer.dietary_notes || '');
     setMealType(customer.meal_type || '');
 
@@ -1300,12 +1656,22 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     );
     setStartDate(customer.start_date ? customer.start_date.slice(0, 10) : '');
 
-    // ⚠️ Restore DB values AFTER defaults — prevents defaults from overwriting saved data
+    // ⚠️ Restore DB values AFTER defaults — prevents defaults from overwriting saved data.
+    // When the row has no stored bread count, fall back to the selected tier's standard
+    // Roti baseline (never inherit a stale count from a previous drawer session) and clear
+    // Pronthi. A stored count is operator-owned: it is flagged custom so later Portion Size
+    // / Meal Type toggles never silently reset it (see handlePortionChange).
     if (customer.roti_count !== null && customer.roti_count !== undefined) {
       setRotiCount(customer.roti_count);
+      setIsRotiCountCustom(true);
+    } else {
+      setRotiCount(getDefaultRotiCount(restoredPortion));
+      setIsRotiCountCustom(false);
     }
     if (customer.pronthi_count !== null && customer.pronthi_count !== undefined) {
       setPronthiCount(customer.pronthi_count);
+    } else {
+      setPronthiCount(0);
     }
 
     const riceCounters = parseRiceIntoCounters(customer.rice_count);
@@ -1317,7 +1683,22 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     // Restore schedule under current rules (no Sunday; Saturday keeps Friday on).
     // Records without a stored schedule open on the standard Mon–Fri default.
     const restoredDays = normalizeScheduleDays(parseScheduleDays(customer.delivery_schedule));
-    setSelectedDays(restoredDays.length > 0 ? restoredDays : [...WEEKDAY_DELIVERY_DAYS]);
+    const scheduleDaysForEdit = restoredDays.length > 0 ? restoredDays : [...WEEKDAY_DELIVERY_DAYS];
+    setSelectedDays(scheduleDaysForEdit);
+
+    // Restore per-day pickup flags. Records created under the legacy all-days Kitchen
+    // Pickup flow (is_pickup true and/or a PICKUP marker) with no pickup_days yet are
+    // treated as pickup on every active schedule day (backward compatibility).
+    const storedPickupDays = normalizePickupDays(customer.pickup_days).filter(d =>
+      scheduleDaysForEdit.includes(d)
+    );
+    const effectivePickupDays =
+      storedPickupDays.length > 0
+        ? storedPickupDays
+        : isLegacyPickupCustomer(customer)
+          ? [...scheduleDaysForEdit]
+          : [];
+    setPickupDays(effectivePickupDays);
 
     // Parse existing delivery_instructions — restores ALL side dish state
     const sideDish = parseSideDishAll(customer.delivery_instructions);
@@ -1408,6 +1789,34 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setCancelDate('');
   };
 
+  // Opens the drawer in edit mode for a customer (row click / row Edit action).
+  const handleRowClick = (customer: Customer) => {
+    setIsAddingNew(false);
+    setSelectedCustomer(customer);
+    applyCustomerToForm(customer);
+  };
+
+  // "Duplicate Customer" (row overflow menu): opens the drawer in create (Add Customer)
+  // mode pre-filled from the source row. Nothing persists to Supabase until the user
+  // explicitly clicks "Save Customer" — this handler only stages the form.
+  const handleDuplicateCustomer = (customer: Customer) => {
+    setActiveMenuId(null);
+    setSelectedCustomer(null); // never let a stale edit target hijack create mode
+    applyCustomerToForm(customer);
+    // Copy the plan tier but reset financials to clean create defaults: fresh credit
+    // balance for the tier and no copied start date (0 delivered is guaranteed because
+    // the create path never carries used_credits / delivery history over).
+    const tier =
+      customer.plan_tier === 'trial' || customer.plan_tier === 'weekly' || customer.plan_tier === 'monthly'
+        ? customer.plan_tier
+        : 'monthly';
+    setTotalTiffinCredits(PLAN_OPTIONS.find(o => o.key === tier)?.credits ?? 20);
+    setStartDate('');
+    setFormErrors({});
+    setFocusFullNameOnDuplicate(true);
+    setIsAddingNew(true);
+  };
+
   const triggerAiParser = async () => {
     if (!rawNotes.trim()) return;
     setAiLoading(true);
@@ -1472,6 +1881,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       defaultRoti = parseInt(explicitRotiMatch[1], 10);
     }
     setRotiCount(defaultRoti);
+    // A bread count resolved from the notes is operator-owned — never overwrite it later.
+    setIsRotiCountCustom(true);
 
     // ═══════════════════════════════════════════════════════════════
     // STEP 5 — Detect Rice Portion
@@ -1669,6 +2080,26 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const handleFormSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
+    // ── Smart validation ──────────────────────────────────────────────
+    // Full Name is always required. The Delivery Destination Address is only required
+    // when at least one active schedule day is a real Delivery day (all-Pickup
+    // schedules make it optional). If the offending field lives on an inactive tab,
+    // auto-switch to that tab, focus the invalid input, and halt submission.
+    const requiredErrors: { fullName?: string; deliveryAddress?: string } = {};
+    if (!fullName.trim()) requiredErrors.fullName = 'Full name is required';
+    if (hasDeliveryDay && !deliveryAddress.trim()) {
+      requiredErrors.deliveryAddress =
+        'Delivery address is required — at least one scheduled day is a Delivery day (or mark every day as Pickup)';
+    }
+    setFormErrors(requiredErrors);
+    if (requiredErrors.fullName || requiredErrors.deliveryAddress) {
+      if (activeDrawerTab !== 'profile') setActiveDrawerTab('profile');
+      const focusRef = requiredErrors.fullName ? fullNameInputRef : deliveryAddressInputRef;
+      // Wait for the Profile tab content to mount before focusing its input.
+      setTimeout(() => focusRef.current?.focus(), 60);
+      return; // halt submission — drawer stays open until valid
+    }
+
     // Store canonical portion tokens: RG / LG / Half RG / Half LG.
     const finalPortion = portionSize ? normalizePortionToken(portionSize) : PORTION_RG;
 
@@ -1739,10 +2170,19 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       (structuredSideDish || '1 Dal + 1 Sabji') +
       (fridayDoublePack ? ' [NOTE: Pack 2 Tiffins on Friday for Saturday meal]' : '');
 
+    // Per-day pickup flags persist only for active schedule days. Fully-pickup records
+    // with no typed address keep the legacy "Kitchen Pickup" marker so older views
+    // (customers list badge, prep manifest) keep recognising the record.
+    const finalPickupDays = selectedDays.filter(d => pickupDays.includes(d));
+    const finalAddress =
+      deliveryAddress.trim() ||
+      (allDaysArePickup ? 'Kitchen Pickup' : '');
+
     const payload = {
       full_name: fullName.trim(),
       phone_number: formatContactValue(contactChannel, phoneNumber) || null,
-      delivery_address: deliveryAddress.trim(),
+      referred_by: referredBy.trim() || null,
+      delivery_address: finalAddress,
       dietary_notes: specialInstructions.trim() || null,
       meal_type: mealType || 'Veg',
       portion_size: finalPortion,
@@ -1754,6 +2194,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       rice_count: builtRice,
       delivery_schedule: serializeSchedule(selectedDays) || DEFAULT_DELIVERY_SCHEDULE,
       delivery_instructions: finalInstructions,
+      is_pickup: finalPickupDays.length > 0,
+      pickup_days: finalPickupDays,
       // Structured custom-curry metadata lives in its own columns — never dietary_notes.
       ...(curryIsCustom || hasStoredCustomCurry
         ? {
@@ -1771,13 +2213,58 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         : {})
     };
 
+    // Log the exact payload before firing so persistence issues (e.g. missing pickup_days
+    // in the DB schema or in the network request) are visible in the browser console.
+    console.log('Saving customer payload:', payload);
+
     startTransition(async () => {
       try {
+        let savedCustomerId: string | null = null;
+
         if (isAddingNew) {
-          await createCustomer(payload);
+          const created = (await createCustomer(payload)) as unknown as Customer | null;
+          if (created) {
+            savedCustomerId = created.id;
+            // Prepends the new record at index 0 so it appears at the very top.
+            setNewlyAddedCustomers(prev => [created, ...prev]);
+            showToast(
+              `${created.full_name || fullName.trim()} added to ${created.plan_tier || planTier || 'monthly'} plan`
+            );
+          }
         } else if (selectedCustomer) {
-          await updateCustomer(selectedCustomer.id, payload);
+          // updateCustomer returns the refreshed Supabase row so the list can be patched
+          // immediately (no waiting on the router refresh) — this is what makes per-day
+          // pickup flags rehydrate correctly on a fast close → re-open of the drawer.
+          const updated = (await updateCustomer(
+            selectedCustomer.id,
+            payload
+          )) as unknown as Customer | null;
+          savedCustomerId = selectedCustomer.id;
+          if (updated) {
+            setRowPatches(prev => ({
+              ...prev,
+              [updated.id]: {
+                updated,
+                // Snapshot of the row that was opened pre-save — used to detect when the
+                // router refresh adopts this save (see customersForDisplay above).
+                staleSignature: JSON.stringify(selectedCustomer),
+              },
+            }));
+          }
+          showToast(`Changes saved for ${fullName.trim()}`);
         }
+
+        // Post-save feedback: pulse + auto-scroll the row, then clear after 3s.
+        if (savedCustomerId) {
+          if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+          setLastModifiedCustomerId(savedCustomerId);
+          highlightTimerRef.current = setTimeout(() => setLastModifiedCustomerId(null), 3000);
+        }
+
+        // Refetch the server rows so the table reflects the save (and any locally
+        // prepended new row is adopted & de-duplicated by customersForDisplay above).
+        router.refresh();
+
         closePanelGracefully();
       } catch (err: any) {
         console.error("Submission rejected by database:", err);
@@ -1860,12 +2347,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     return pieces.length > 0 ? pieces.join(' • ') : 'No parameters populated yet';
   };
 
-  const totalVegCount = initialCustomers.filter(c => {
+  const totalVegCount = customersForDisplay.filter(c => {
     const meal = (c.meal_type || '').toLowerCase();
     return meal.includes('veg') && !meal.includes('non');
   }).length;
 
-  const totalNonVegCount = initialCustomers.filter(c => {
+  const totalNonVegCount = customersForDisplay.filter(c => {
     const meal = (c.meal_type || '').toLowerCase();
     return meal.includes('non');
   }).length;
@@ -1880,17 +2367,17 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     }
 
     const side = parseSideDishAll(customer.delivery_instructions);
-    const sideSummary = formatSideSummary(side);
+    // Extra add-ons beyond this plan's default allowance (flagged independently of curries).
+    const planDefaults = defaultSideCounts(
+      customer.meal_type || 'Veg',
+      normalizePortionToken(customer.portion_size),
+      customer.plan_tier || 'weekly'
+    );
+    const sideSummary = formatSideSummary(side, planDefaults);
 
     // Half plans always get their own "⚡ Custom" badge describing the single container.
     const isHalfCustomer = isHalfPortion(customer.portion_size);
     const halfNote = isHalfCustomer ? formatHalfContainerNote(side, customer.portion_size) : null;
-
-    // Extra add-ons beyond this plan's default allowance (flagged independently of curries).
-    const planDefaults = defaultSideCounts(
-      customer.meal_type || 'Veg',
-      normalizePortionToken(customer.portion_size)
-    );
     const addonParts: string[] = [];
     if (side.salad > planDefaults.salad) addonParts.push(formatSideAddon(side.salad, 'Salad'));
     if (side.dessert > planDefaults.dessert) addonParts.push(formatSideAddon(side.dessert, 'Dessert'));
@@ -1916,12 +2403,24 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         const storedConfig = (customer.curry_config || '').trim();
         customText = storedConfig || sideSummary || null;
       }
+      if (customText) {
+        // Strip out default "Salad" and "Dessert" from custom curry badges
+        customText = customText
+          .replace(/\s*\+\s*Salad\b/gi, '')
+          .replace(/\s*\+\s*Dessert\b/gi, '')
+          .trim();
+        // If the customText becomes empty after stripping, set it to null
+        if (customText === '') {
+          customText = null;
+        }
+      }
     } else if (
       sideSummary !== '' &&
       !isHalfPortion(customer.portion_size) &&
       deviatesCurryFromDefault(
         customer.meal_type || 'Veg',
         normalizePortionToken(customer.portion_size),
+        customer.plan_tier || 'weekly',
         side
       )
     ) {
@@ -2077,15 +2576,21 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   };
 
   const renderCancelledRow = (customer: Customer): React.ReactNode => {
+    const isLastModified = customer.id === lastModifiedCustomerId;
     return (
       <tr
         key={customer.id}
+        id={`customer-row-${customer.id}`}
         onClick={() => openCancellationDetails(customer)}
         className={`group transition-all duration-150 cursor-pointer ${
-          selectedCustomer?.id === customer.id ? 'bg-[#F4F4FE]' : 'hover:bg-[#FAF9FF] bg-white'
+          isLastModified
+            ? 'bg-blue-50/70 border-l-4 border-l-blue-500 transition-colors duration-700 ease-out'
+            : selectedCustomer?.id === customer.id
+              ? 'bg-[#F4F4FE]'
+              : 'hover:bg-[#FAF9FF] bg-white'
         }`}
       >
-        <td className="py-2 pl-4 pr-3 rounded-l-xl">
+        <td className="py-2 pl-4 pr-3 rounded-l-xl align-top">
           <div className="flex flex-col min-w-0">
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="font-bold text-[#11142D] text-[13px] truncate capitalize">{customer.full_name}</span>
@@ -2099,6 +2604,15 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             ) : (
               <span className="text-[11px] text-gray-300 italic mt-0.5">No destination configured</span>
             )}
+            {customer.referred_by ? (
+              <span
+                title={`Referred by ${customer.referred_by}`}
+                className="text-[11px] text-[#7A7C87] font-medium truncate mt-1 flex items-center"
+              >
+                <span className="text-[9px] mr-1 opacity-70">🤝</span>
+                Referred by: {customer.referred_by}
+              </span>
+            ) : null}
           </div>
         </td>
 
@@ -2285,7 +2799,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       <div className="px-8 pt-3 pb-3 shrink-0 border-b border-[#EEEEEE] flex items-center justify-between gap-4">
         <div className="flex items-center gap-6 text-[13px] font-medium text-[#7A7C87] whitespace-nowrap">
           <button onClick={() => setActiveTab('all')} className={`pb-1 border-b-2 transition-colors ${activeTab === 'all' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
-            All Customers <span className="text-xs text-[#B5B7C0]">({initialCustomers.length})</span>
+            All Customers <span className="text-xs text-[#B5B7C0]">({customersForDisplay.length})</span>
           </button>
           <button onClick={() => setActiveTab('veg')} className={`pb-1 border-b-2 transition-colors ${activeTab === 'veg' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
             Vegetarian <span className="text-xs text-[#B5B7C0]">({totalVegCount})</span>
@@ -2300,10 +2814,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           <span className="text-[11px] font-semibold text-[#A2A4B0] uppercase tracking-wider mr-1">Status:</span>
           {(['all', 'active', 'paused', 'cancelled'] as const).map(status => {
             const statusCounts: Record<string, number> = {
-              all: initialCustomers.length,
-              active: initialCustomers.filter(c => (c.subscription_status || 'active') === 'active').length,
-              paused: initialCustomers.filter(c => c.subscription_status === 'paused').length,
-              cancelled: initialCustomers.filter(c => c.subscription_status === 'cancelled').length,
+              all: customersForDisplay.length,
+              active: customersForDisplay.filter(c => (c.subscription_status || 'active') === 'active').length,
+              paused: customersForDisplay.filter(c => c.subscription_status === 'paused').length,
+              cancelled: customersForDisplay.filter(c => c.subscription_status === 'cancelled').length,
             };
             return (
               <button
@@ -2337,16 +2851,18 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             ) : (
               <>
                 <colgroup>
-              <col className="w-[22%]" />
-              <col className="w-[11%]" />
-              <col className="w-[10%]" />
-              <col className="w-[12%]" />
-              <col className="w-[12%]" />
-              <col className="w-[16%]" />
-              <col className="w-[8%]" />
-              <col className="w-[9%]" />
-            </colgroup>
-            <thead className="sticky top-0 z-30">
+                  <col className="w-[20%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[9%]" />
+                  <col className="w-[11%]" />
+                  <col className="w-[15%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[9%]" />
+                </colgroup>
+            {/* SECTION: CUSTOMERS_TABLE_HEAD */}
+            <thead className="sticky top-0 z-30" data-section="customers-table-head">
               <tr className="text-[#A2A4B0] font-bold uppercase text-[10.5px] tracking-wider select-none h-10">
                 <th onClick={cycleNameSort} className="sticky top-0 z-30 bg-[#FCFCFD] pl-4 pb-1 border-b border-[#EAEBED] cursor-pointer select-none hover:text-indigo-600 transition-colors group">
                   <div className="flex items-center space-x-1">
@@ -2365,7 +2881,22 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   </div>
                 </th>
                 <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Plan</th>
-                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Carbs</th>
+                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">
+                  <div className="flex flex-col items-start gap-0.5 leading-tight">
+                    <span>Roti / Bread</span>
+                    <span className="text-[10px] font-black normal-case tracking-normal text-amber-700">
+                      {breadHeaderTotal !== "" ? breadHeaderTotal : "—"}
+                    </span>
+                  </div>
+                </th>
+                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">
+                  <div className="flex flex-col items-start gap-0.5 leading-tight">
+                    <span>Rice</span>
+                    <span className="text-[10px] font-black normal-case tracking-normal text-blue-700">
+                      {riceHeaderTotal !== "" ? riceHeaderTotal : "—"}
+                    </span>
+                  </div>
+                </th>
                 <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Schedule</th>
                 <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Notes</th>
                 <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED] text-xs font-semibold text-gray-500 uppercase tracking-wider text-center">Discount</th>
@@ -2375,7 +2906,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             <tbody className="divide-y divide-[#F9FBFC]">
               {sortedCustomers.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center">
+                  <td colSpan={9} className="py-16 text-center">
                     <div className="flex flex-col items-center justify-center space-y-3">
                       <div className="w-12 h-12 bg-[#F4F4FE] rounded-full flex items-center justify-center text-xl">👥</div>
                       <h3 className="text-gray-700 font-bold text-[14px]">No customers found matching search</h3>
@@ -2390,84 +2921,124 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 sortedCustomers.map(customer => {
                   const displayPlanSize = normalizePortionToken(customer.portion_size || PORTION_RG);
 
-                  // Pickup orders (address or name contains "PICKUP") show a badge instead of a map link.
-                  const isPickupOrder =
-                    (customer.delivery_address || '').toUpperCase().includes('PICKUP') ||
-                    (customer.full_name || '').toUpperCase().includes('PICKUP');
+                  // Fulfillment mode drives the sub-cell below the customer name:
+                  // pure pickup → single Kitchen Pickup badge; delivery-only → address +
+                  // map link; hybrid (e.g. Harshpreet) → address + map link with a compact
+                  // pickup-day pill underneath so partial pickup days stay visible.
+                  const fulfillment = getCustomerFulfillment(customer);
+
+                  const isLastModified = customer.id === lastModifiedCustomerId;
 
                   return (
                     <tr
                       key={customer.id}
+                      id={`customer-row-${customer.id}`}
                       onClick={() => handleRowClick(customer)}
-                      className={`group transition-colors cursor-pointer ${selectedCustomer?.id === customer.id
-                        ? 'bg-[#F4F4FE]'
-                        : 'bg-white hover:bg-slate-50/80'
-                        }`}
+                      className={`group transition-colors cursor-pointer ${
+                        isLastModified
+                          ? 'bg-blue-50/70 border-l-4 border-l-blue-500 transition-colors duration-700 ease-out'
+                          : selectedCustomer?.id === customer.id
+                            ? 'bg-[#F4F4FE]'
+                            : 'bg-white hover:bg-slate-50/80'
+                      }`}
                     >
-                      <td className="py-2 pl-4 pr-3 rounded-l-xl">
+                      {/* SECTION: TABLE_ROW_CUSTOMER_CELL */}
+                      <td
+                        className={`py-2 pl-4 pr-3 rounded-l-xl align-top ${isLastModified ? 'border-l-4 border-l-blue-500' : ''}`}
+                        data-section="table-row-customer-cell"
+                      >
                         <div className="flex flex-col min-w-0">
                           <div className="flex items-center gap-2 min-w-0">
                             <span className="font-bold text-[#11142D] text-[13px] truncate capitalize">{customer.full_name}</span>
-                            <span
-                              className={`px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase rounded border shrink-0 ${
-                                TIER_BADGE_STYLES[customer.plan_tier || 'monthly']
-                              }`}
-                              title={
-                                customer.start_date
-                                  ? `${customer.plan_tier || 'Monthly'} (${customer.total_tiffin_credits ?? (customer.plan_tier === 'trial' ? 1 : customer.plan_tier === 'weekly' ? 5 : 20)}) · Starts ${formatStartDateLabel(customer.start_date)}`
-                                  : undefined
-                              }
-                            >
-                              {customer.plan_tier || 'Monthly'} ({customer.total_tiffin_credits ?? (customer.plan_tier === 'trial' ? 1 : customer.plan_tier === 'weekly' ? 5 : 20)})
-                            </span>
                             {(() => {
                               const subStatus = (customer.subscription_status || 'active').toLowerCase();
                               const isPaused = subStatus === 'paused';
                               const isCancelled = subStatus === 'cancelled';
+                              const isUpcoming = !isPaused && !isCancelled && !!customer.start_date && customer.start_date > todayKey;
                               const statusLabel = isCancelled
                                 ? `Cancelled${customer.cancellation_reason ? ` — ${customer.cancellation_reason}` : ''}`
                                 : isPaused
                                   ? `Paused${customer.pause_start_date ? ` until ${customer.pause_end_date || 'Indefinite'}` : ''}`
-                                  : 'Active';
+                                  : isUpcoming
+                                    ? `Upcoming — starts ${formatShortLastDay(customer.start_date!)}`
+                                    : 'Active';
                               return (
                                 <span
                                   title={statusLabel}
                                   className={`inline-block w-2 h-2 rounded-full shrink-0 ${
-                                    isCancelled ? 'bg-red-500' : isPaused ? 'bg-amber-400' : 'bg-green-500'
+                                    isCancelled ? 'bg-red-500' : isPaused ? 'bg-amber-400' : isUpcoming ? 'bg-blue-500' : 'bg-green-500'
                                   }`}
                                 />
                               );
                             })()}
                           </div>
-                          {isPickupOrder ? (
+                          {customer.start_date && customer.start_date > todayKey ? (
+                            <span
+                              title={`Subscription starts ${formatShortLastDay(customer.start_date)}`}
+                              className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold mt-0.5 whitespace-nowrap"
+                            >
+                              🗓️ Starts {formatShortLastDay(customer.start_date)}
+                            </span>
+                          ) : null}
+                          {customer.scheduled_cancel_date &&
+                          (customer.subscription_status || 'active') === 'active' ? (
+                            <span
+                              title={`Last service day — service will be ${customer.scheduled_status === 'paused' ? 'paused' : 'cancelled'} after this date.`}
+                              className="inline-flex items-center self-start max-w-full px-2 py-0.5 text-xs font-semibold rounded bg-amber-100 text-amber-800 border border-amber-300 mt-0.5 whitespace-nowrap"
+                            >
+                              ⏳ Ends {formatShortDate(customer.scheduled_cancel_date)}
+                            </span>
+                          ) : null}
+                          {fulfillment.mode === 'pure_pickup' ? (
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-0.5">
                               🛍️ Kitchen Pickup
                             </span>
-                          ) : customer.delivery_address ? (
-                            <div className="flex items-center min-w-0 mt-0.5 max-w-full">
-                              <span
-                                className="text-[11px] text-[#7A7C87] font-medium truncate"
-                                title={customer.delivery_address}
-                              >
-                                {customer.delivery_address.split(',')[0]}
-                              </span>
-                              <a
-                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customer.delivery_address)}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title="Open in Google Maps"
-                                aria-label="Open in Google Maps"
-                                onClick={(e) => e.stopPropagation()}
-                                className="ml-1 p-0.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors inline-flex items-center"
-                              >
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                </svg>
-                              </a>
-                            </div>
                           ) : (
-                            <span className="text-[11px] text-gray-300 italic mt-0.5">No destination configured</span>
+                            <>
+                              {customer.delivery_address ? (
+                                <div className="flex items-center min-w-0 mt-0.5 max-w-full">
+                                  <span
+                                    className="text-[11px] text-[#7A7C87] font-medium truncate"
+                                    title={customer.delivery_address}
+                                  >
+                                    {customer.delivery_address.split(',')[0]}
+                                  </span>
+                                  <a
+                                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customer.delivery_address)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title="Open in Google Maps"
+                                    aria-label="Open in Google Maps"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="ml-1 p-0.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors inline-flex items-center"
+                                  >
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                    </svg>
+                                  </a>
+                                </div>
+                              ) : (
+                                <span className="text-[11px] text-gray-300 italic mt-0.5">No destination configured</span>
+                              )}
+                              {fulfillment.mode === 'hybrid' && fulfillment.pickupDays.length > 0 && (
+                                <span
+                                  title={fulfillment.pickupDays.join(', ')}
+                                  className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-1"
+                                >
+                                  🛍️ Pickup: {fulfillment.pickupDays.map(day => day.substring(0, 3)).join(', ')}
+                                </span>
+                              )}
+                            </>
                           )}
+                          {customer.referred_by ? (
+                            <span
+                              title={`Referred by ${customer.referred_by}`}
+                              className="text-[11px] text-[#7A7C87] font-medium truncate mt-1 flex items-center max-w-full"
+                            >
+                              <span className="text-[9px] mr-1 opacity-70">🤝</span>
+                              Referred by: {customer.referred_by}
+                            </span>
+                          ) : null}
                         </div>
                       </td>
 
@@ -2492,8 +3063,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         </div>
                       </td>
 
+                      {/* SECTION: TABLE_ROW_PLAN_CELL */}
                       {/* PLAN: informational credit state (pure props, no actions) */}
-                      <td className="py-2 pr-3 align-top whitespace-nowrap">
+                      <td className="py-2 pr-3 align-top whitespace-nowrap" data-section="table-row-plan-cell">
                         {(() => {
                           const planLabel = customer.plan_tier || 'Monthly';
                           const used = customer.used_credits ?? 0;
@@ -2538,34 +3110,41 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             customer.pronthi_count !== null &&
                             customer.pronthi_count !== undefined &&
                             customer.pronthi_count > 0;
-                          const rawRice = (customer.rice_count || '').trim().toLowerCase();
-                          const hasRice =
-                            rawRice !== '' &&
-                            rawRice !== 'none' &&
-                            rawRice !== '—' &&
-                            rawRice !== '0' &&
-                            !rawRice.includes('0 rg');
-                          if (!hasRoti && !hasPronthi && !hasRice) {
+                          if (!hasRoti && !hasPronthi) {
                             return <span className="text-gray-300 font-mono">—</span>;
                           }
                           return (
                             <div className="flex flex-col items-start gap-1">
                               {hasRoti && (
-                                <span className="px-1.5 py-0.5 bg-amber-50/80 text-amber-800 border border-amber-100 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
+                                <span className="px-1.5 py-0.5 bg-white text-gray-600 border border-gray-200 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
                                   {customer.roti_count} Roti
                                 </span>
                               )}
                               {hasPronthi && (
-                                <span className="px-1.5 py-0.5 bg-orange-50 text-orange-800 border border-orange-200 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
+                                <span className="px-1.5 py-0.5 bg-amber-300 text-amber-950 border border-amber-400 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
                                   {customer.pronthi_count} Pronthi
                                 </span>
                               )}
-                              {hasRice && (
-                                <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-100/70 rounded text-[10.5px] font-bold font-mono uppercase whitespace-nowrap">
-                                  {formatRiceCellText(customer.rice_count)} Rice
-                                </span>
-                              )}
                             </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="py-2 pr-3 align-top">
+                        {(() => {
+                          const rawRice = (customer.rice_count || "").trim().toLowerCase();
+                          const hasRice =
+                            rawRice !== "" &&
+                            rawRice !== "none" &&
+                            rawRice !== "—" &&
+                            rawRice !== "0" &&
+                            !rawRice.includes("0 rg");
+                          if (!hasRice) {
+                            return <span className="text-gray-300 font-mono">—</span>;
+                          }
+                          return (
+                            <span className="inline-block px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-100/70 rounded text-[10.5px] font-bold font-mono uppercase whitespace-nowrap">
+                              {formatRiceCellText(customer.rice_count)}
+                            </span>
                           );
                         })()}
                       </td>
@@ -2592,7 +3171,6 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
                       <td className="py-2 px-3 text-center align-middle whitespace-nowrap">
                         {!customer.discount_type ||
-                        customer.discount_type === 'none' ||
                         !customer.discount_value ||
                         Number(customer.discount_value) === 0 ? (
                           <span className="text-gray-300 font-medium">—</span>
@@ -2608,7 +3186,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         )}
                       </td>
 
-                      <td className="py-2 pr-4 align-middle text-right">
+                      {/* SECTION: TABLE_ROW_ACTIONS_MENU */}
+                      <td className="py-2 pr-4 align-middle text-right" data-section="table-row-actions-menu">
                         <div className="flex items-center justify-end gap-1.5 relative">
                           {/* Edit Button */}
                           <button
@@ -2651,6 +3230,19 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 onClick={(e) => e.stopPropagation()}
                                 onMouseDown={(e) => e.stopPropagation()}
                               >
+                                {/* 📋 Duplicate Customer — create-mode prefill from this row */}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDuplicateCustomer(customer);
+                                  }}
+                                  className="w-full px-3.5 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                >
+                                  <span className="text-sm shrink-0">📋</span>
+                                  <span className="whitespace-nowrap">Duplicate Customer</span>
+                                </button>
+
                                 {/* 💳 Log Payment / Renew Cycle (due, overdue, or fully used) */}
                                 {((customer.payment_status === 'due' ||
                                   customer.payment_status === 'overdue') ||
@@ -2759,12 +3351,16 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               className={`fixed inset-0 z-20 bg-black/10 transition-opacity duration-200 ${isSlideInActive ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
             />
 
+            {/* SECTION: CUSTOMER_EDIT_DRAWER */}
             <div
+              data-section="customer-edit-drawer"
               className={`w-full md:w-[640px] lg:w-[700px] h-full bg-white border-l border-[#EEEEEE] flex flex-col shadow-2xl fixed right-0 top-0 bottom-0 z-30 transform transition-transform duration-200 ease-out ${isSlideInActive ? 'translate-x-0' : 'translate-x-full'
                 }`}
             >
-              <form onSubmit={handleFormSubmit} className="flex-1 flex flex-col overflow-hidden text-[13px]">
+              <form onSubmit={handleFormSubmit} noValidate className="flex-1 flex flex-col overflow-hidden text-[13px]">
 
+                {/* STICKY HEADER REGION — title, badge, actions + tab nav stay pinned */}
+                <div className="sticky top-0 z-10 bg-white border-b border-gray-100 shrink-0">
                 {/* HEAD BAR ACTIONS */}
                 <div className="px-6 py-4 border-b border-[#F5F5F5] flex items-center justify-between bg-[#FCFCFD] shrink-0">
                   <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -2776,17 +3372,38 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         <span className="text-2xl font-bold text-gray-900 capitalize truncate">
                           {fullName}
                         </span>
-                        {selectedCustomer && (
-                          <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase shrink-0 ${
-                            (selectedCustomer.subscription_status || 'active') === 'cancelled'
-                              ? 'bg-red-50 text-red-600 border-red-100/60'
-                              : (selectedCustomer.subscription_status || 'active') === 'paused'
-                                ? 'bg-amber-50 text-amber-600 border-amber-100/60'
-                                : 'bg-green-50 text-green-600 border-green-100/60'
-                          }`}>
-                            {(selectedCustomer.subscription_status || 'active') === 'cancelled' ? '🔴 Cancelled' :
-                             (selectedCustomer.subscription_status || 'active') === 'paused' ? '🟡 Paused' :
-                             '🟢 Active'}
+                        {selectedCustomer && (() => {
+                          const drawerStatus = (selectedCustomer.subscription_status || 'active').toLowerCase();
+                          const isDrawerCancelled = drawerStatus === 'cancelled';
+                          const isDrawerPaused = drawerStatus === 'paused';
+                          const isDrawerUpcoming = !isDrawerPaused && !isDrawerCancelled &&
+                            !!selectedCustomer.start_date && selectedCustomer.start_date > todayKey;
+                          const drawerBadgeClass = isDrawerCancelled
+                            ? 'bg-red-50 text-red-600 border-red-100/60'
+                            : isDrawerPaused
+                              ? 'bg-amber-50 text-amber-600 border-amber-100/60'
+                              : isDrawerUpcoming
+                                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                : 'bg-green-50 text-green-600 border-green-100/60';
+                          const drawerBadgeLabel = isDrawerCancelled
+                            ? '🔴 Cancelled'
+                            : isDrawerPaused
+                              ? '🟡 Paused'
+                              : isDrawerUpcoming
+                                ? '🗓️ UPCOMING'
+                                : '🟢 Active';
+                          return (
+                            <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase shrink-0 ${drawerBadgeClass}`}>
+                              {drawerBadgeLabel}
+                            </span>
+                          );
+                        })()}
+                        {!isAddingNew && referredBy.trim() && (
+                          <span
+                            title="Referred by"
+                            className="shrink-0 px-2.5 py-0.5 rounded-md text-[10px] font-semibold bg-[#EFEEFC] text-[#5D5FEF] border border-[#5D5FEF]/25 tracking-wide"
+                          >
+                            🤝 Referred by: {referredBy.trim()}
                           </span>
                         )}
                       </>
@@ -2823,16 +3440,58 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   </div>
                 </div>
 
-                {/* SCROLLABLE INTERFACE WORKSPACE */}
+                {/* TAB NAVIGATION BAR — Profile / Plan & Billing / Meal Config */}
+                <div className="px-6 pt-3 pb-0 bg-white flex items-center gap-1.5">
+                  {([
+                    { key: 'profile', label: 'Profile', icon: '👤' },
+                    { key: 'plan', label: 'Plan & Billing', icon: '💳' },
+                    { key: 'meal', label: 'Meal Config', icon: '🍱' },
+                  ] as const).map(tab => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setActiveDrawerTab(tab.key)}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border border-b-0 rounded-b-none ${
+                        activeDrawerTab === tab.key
+                          ? 'bg-[#EFEEFC] text-[#5D5FEF] border-[#5D5FEF]/30'
+                          : 'bg-white text-[#7A7C87] border-transparent hover:bg-gray-50 hover:text-[#11142D]'
+                      }`}
+                    >
+                      <span>{tab.icon}</span>
+                      <span>{tab.label}</span>
+                    </button>
+                  ))}
+                </div>
+                </div>
+
+                {/* SCROLLABLE TAB CONTENT WORKSPACE */}
                 <div className="flex-1 overflow-y-auto p-6 space-y-4">
 
-                  {/* BASE DATA INPUT FIELDS — compact 2-row grid */}
-                  <div className="space-y-3">
+                  {/* TAB 1 — PROFILE */}
+                  {activeDrawerTab === 'profile' && (
+                  <div className="space-y-3" data-section="edit-basic-info">
                     {/* Row 1: Full Name + Contact Method (side by side) */}
                     <div className="grid grid-cols-2 gap-3">
                       <div className="min-w-0">
                         <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">Full Name</label>
-                        <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} required className="w-full px-3 py-1.5 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF]" />
+                        <input
+                          ref={fullNameInputRef}
+                          type="text"
+                          value={fullName}
+                          onChange={(e) => {
+                            setFullName(e.target.value);
+                            if (formErrors.fullName) setFormErrors(prev => ({ ...prev, fullName: undefined }));
+                          }}
+                          required
+                          className={`w-full px-3 py-1.5 border rounded-lg outline-none focus:border-[#5D5FEF] ${
+                            formErrors.fullName ? 'border-red-400 bg-red-50/30' : 'border-[#E0E0E0]'
+                          }`}
+                        />
+                        {formErrors.fullName && (
+                          <p className="text-[10.5px] font-semibold text-red-500 mt-1 flex items-center gap-1">
+                            ⚠ {formErrors.fullName}
+                          </p>
+                        )}
                       </div>
 
                       <div className="min-w-0">
@@ -2867,112 +3526,325 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       </div>
                     </div>
 
-                    {/* Row 2: Delivery destination address (full width) */}
+                    {/* Row 1b: Referred By (Optional) — 4 tap-to-set source pills + a
+                        typeahead combobox over existing customer names. The menu stays
+                        closed until 2+ characters are typed; free-form text is still
+                        allowed (whatever is typed or left as the last pill tapped saves). */}
+                    <div ref={referralContainerRef} className="relative">
+                      <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1.5">
+                        Referred By <span className="text-gray-400 font-normal normal-case">(Optional)</span>
+                      </label>
+
+                      {/* QUICK SOURCE PILLS — a tap immediately writes referred_by. */}
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {REFERRAL_QUICK_PILLS.map(pill => {
+                          const isPillActive = referredBy.trim().toLowerCase() === pill.toLowerCase();
+                          return (
+                            <button
+                              key={pill}
+                              type="button"
+                              aria-pressed={isPillActive}
+                              onClick={() => {
+                                setReferredBy(pill);
+                                setIsReferralMenuOpen(false);
+                              }}
+                              className={`h-10 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer border ${
+                                isPillActive
+                                  ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-sm'
+                                  : 'bg-[#EFEEFC] text-[#5D5FEF] border-[#5D5FEF]/25 hover:bg-[#E3E2FB]'
+                              }`}
+                            >
+                              {pill}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* TYPEAHEAD COMBOBOX — menu anchors directly beneath the input so it
+                          never drifts horizontally off-screen on narrow/mobile widths. */}
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={referredBy}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            setReferredBy(next);
+                            setIsReferralMenuOpen(next.trim().length >= 2);
+                          }}
+                          placeholder="e.g. Supratim, Instagram, Flyer..."
+                          className="w-full h-11 rounded-lg border border-[#E0E0E0] text-sm px-3 outline-none focus:border-[#5D5FEF]"
+                        />
+                        {isReferralMenuOpen && visibleReferralSuggestions.length > 0 && (
+                          <ul
+                            aria-label="Customer referral suggestions"
+                            className="absolute left-0 right-0 z-50 mt-1 w-full bg-white border border-[#E0E0E0] rounded-xl shadow-lg max-h-48 overflow-y-auto divide-y divide-gray-50"
+                          >
+                            {visibleReferralSuggestions.map(suggestion => (
+                              <li key={suggestion}>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setReferredBy(suggestion);
+                                    setIsReferralMenuOpen(false);
+                                  }}
+                                  className="w-full min-h-[40px] px-3 py-2 flex items-center gap-1.5 text-left text-[13px] font-medium text-gray-600 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer transition-colors"
+                                >
+                                  <span className="text-[11px] opacity-80 shrink-0">🤝</span>
+                                  <span className="truncate">{suggestion}</span>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Row 2: Delivery destination address (full width). Optional when every
+                        scheduled day is Pickup; required as soon as any day is a Delivery day. */}
                     <div ref={addressContainerRef} className="relative">
                       <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
                         Delivery Destination Address
+                        {!hasDeliveryDay && selectedDays.length > 0 && (
+                          <span className="font-normal normal-case text-gray-400"> (Optional — all scheduled days are Pickup)</span>
+                        )}
                       </label>
                       <input
+                        ref={deliveryAddressInputRef}
                         type="text"
                         value={deliveryAddress}
-                        onChange={(e) => handleAddressChange(e.target.value)}
-                        required
+                        onChange={(e) => {
+                          handleAddressChange(e.target.value);
+                          if (formErrors.deliveryAddress) setFormErrors(prev => ({ ...prev, deliveryAddress: undefined }));
+                        }}
+                        required={hasDeliveryDay}
                         placeholder="Type address..."
-                        className="w-full px-3 py-1.5 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF]"
-                      />
+                          className={`w-full px-3 py-1.5 border rounded-lg outline-none focus:border-[#5D5FEF] ${
+                            formErrors.deliveryAddress ? 'border-red-400 bg-red-50/30' : 'border-[#E0E0E0]'
+                          }`}
+                        />
+                        {formErrors.deliveryAddress && (
+                          <p className="text-[10.5px] font-semibold text-red-500 mt-1 flex items-center gap-1">
+                            ⚠ {formErrors.deliveryAddress}
+                          </p>
+                        )}
 
-                      {/* FLOATING GEOGRAPHIC SUGGESTIONS DROPDOWN BLOCK */}
-                      {addressSuggestions.length > 0 && (
-                        <ul className="absolute left-0 right-0 mt-1 bg-white border border-[#EEEEEE] rounded-lg shadow-xl max-h-48 overflow-y-auto z-50 text-[12px] divide-y divide-gray-50">
-                          {addressSuggestions.map((suggestion, index) => (
-                            <li
-                              key={index}
-                              onClick={() => {
-                                setDeliveryAddress(suggestion);
-                                setAddressSuggestions([]);
-                              }}
-                              className="px-3 py-2 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer truncate transition-colors font-medium text-gray-600"
-                            >
-                              📍 {suggestion}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
+                        {/* FLOATING GEOGRAPHIC SUGGESTIONS DROPDOWN BLOCK */}
+                        {addressSuggestions.length > 0 && (
+                          <ul className="absolute left-0 right-0 mt-1 bg-white border border-[#EEEEEE] rounded-lg shadow-xl max-h-48 overflow-y-auto z-50 text-[12px] divide-y divide-gray-50">
+                            {addressSuggestions.map((suggestion, index) => (
+                              <li
+                                key={index}
+                                onClick={() => {
+                                  setDeliveryAddress(suggestion);
+                                  setAddressSuggestions([]);
+                                  if (formErrors.deliveryAddress) setFormErrors(prev => ({ ...prev, deliveryAddress: undefined }));
+                                }}
+                                className="px-3 py-2 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer truncate transition-colors font-medium text-gray-600"
+                              >
+                                📍 {suggestion}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
 
-                      {/* LOADING SPINNER THREAD BADGE */}
-                      {isAddressLoading && (
-                        <span className="absolute right-3 top-[30px] text-[10px] text-purple-400 animate-pulse font-bold tracking-wider uppercase">
-                          Searching...
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                        {/* LOADING SPINNER THREAD BADGE */}
+                        {isAddressLoading && (
+                          <span className="absolute right-3 top-[30px] text-[10px] text-purple-400 animate-pulse font-bold tracking-wider uppercase">
+                            Searching...
+                          </span>
+                        )}
+                      </div>
 
-                  {/* ═════ COMPACT SUBSCRIPTION PLAN ═════ */}
-                  <div className="space-y-2.5 pt-1 border-t border-gray-100">
-                    <span className="text-[11px] font-bold text-gray-400 tracking-wider uppercase">Subscription Plan</span>
-
-                    {/* 3-Segment Horizontal Pill Selector */}
-                    <div className="grid grid-cols-3 gap-2">
-                      {PLAN_OPTIONS.map(opt => (
+                    {/* Row 3: Delivery Schedule — 6 day buttons + per-day Delivery/Pickup pills.
+                        Unified with the master Kitchen Pickup switch: toggling any pill keeps the
+                        switch in sync (all Pickup ⇒ ON; any Delivery ⇒ OFF). */}
+                    <div>
+                      <div className="flex items-center justify-between gap-3 bg-[#FCFCFD] border border-gray-200 rounded-lg px-3.5 py-2.5 mb-2">
+                        <div className="min-w-0">
+                          <span className="block text-[11px] font-semibold text-[#A2A4B0] uppercase tracking-wide">
+                            🛍️ Kitchen Pickup
+                          </span>
+                          <span className="block text-[10.5px] text-gray-400 mt-0.5 leading-snug">
+                            {pickupModeSubtitle}
+                          </span>
+                        </div>
                         <button
-                          key={opt.key}
                           type="button"
+                          role="switch"
+                          aria-checked={allDaysArePickup}
                           onClick={() => {
-                            setPlanTier(opt.key);
-                            setTotalTiffinCredits(opt.credits);
+                            const next = !allDaysArePickup;
+                            if (next) {
+                              // Global Kitchen Pickup → every active schedule day becomes pickup
+                              // (makes the Delivery Destination Address optional).
+                              setPickupDays([...selectedDays]);
+                              setAddressSuggestions([]);
+                            } else {
+                              // Back to delivery for every day → clear pickup flags (each active
+                              // day defaults back to Delivery) and drop the legacy placeholder
+                              // marker so a real destination address is required again.
+                              setPickupDays([]);
+                              if (deliveryAddress.trim().toUpperCase() === 'KITCHEN PICKUP') {
+                                setDeliveryAddress('');
+                              }
+                            }
+                            if (formErrors.deliveryAddress) setFormErrors(prev => ({ ...prev, deliveryAddress: undefined }));
                           }}
-                          className={`py-1.5 px-2 rounded-lg text-xs font-semibold border transition-all text-center cursor-pointer ${
-                            planTier === opt.key
-                              ? 'bg-blue-50 border-blue-500 text-blue-700 shadow-xs'
-                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#5D5FEF] ${
+                            allDaysArePickup ? 'bg-[#5D5FEF]' : 'bg-gray-300'
                           }`}
                         >
-                          <span className="capitalize">{opt.label}</span>
-                          <span className="text-[10px] opacity-75 font-normal ml-1">({opt.credits})</span>
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                              allDaysArePickup ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
                         </button>
-                      ))}
-                    </div>
+                      </div>
 
-                    {/* Side-by-side Credits Stepper + Start Date */}
-                    <div className="grid grid-cols-2 gap-3 pt-1">
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                        Delivery Schedule
+                      </label>
+                      <div className="grid grid-cols-6 gap-2 sm:gap-3 w-full">
+                        {SCHEDULE_DAYS.map((d) => {
+                          const isDayActive = selectedDays.includes(d.full);
+                          const isPickupDay = pickupDays.includes(d.full);
+                          return (
+                            <div key={d.full} className="flex flex-col items-stretch gap-1.5 min-w-0">
+                              <button
+                                type="button"
+                                onClick={() => toggleScheduleDay(d.full)}
+                                aria-pressed={isDayActive}
+                                className={`w-full h-12 sm:h-11 px-2 sm:px-3 rounded-xl text-xs sm:text-sm border transition-all flex items-center justify-center cursor-pointer touch-manipulation ${
+                                  isDayActive
+                                    ? '!bg-blue-600 !border-blue-600 shadow-sm'
+                                    : 'bg-white border-gray-300 hover:bg-gray-50'
+                                }`}
+                              >
+                                <span className={isDayActive ? '!text-white font-bold' : 'text-gray-800 font-semibold'}>
+                                  {d.short}
+                                </span>
+                              </button>
+                              {isDayActive && (
+                                <button
+                                  type="button"
+                                  onClick={() => togglePickupDay(d.full)}
+                                  aria-pressed={isPickupDay}
+                                  title={
+                                    isPickupDay
+                                      ? `${d.full}: customer picks up from the kitchen`
+                                      : `${d.full}: deliver to the customer's address`
+                                  }
+                                  className={`w-full h-6 px-1 rounded-md border text-[9px] sm:text-[10px] font-bold transition-all flex items-center justify-center cursor-pointer touch-manipulation whitespace-nowrap ${
+                                    isPickupDay
+                                      ? 'bg-purple-50 border-purple-300 text-purple-700'
+                                      : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  {isPickupDay ? '🛍️ Pickup' : '🚗 Delivery'}
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1.5">
+                        {selectedDays?.length
+                          ? `${selectedDays.map((d) => d.substring(0, 3)).join(', ')}${
+                              pickupDayCount > 0 ? ` • ${pickupDayCount} Pickup day${pickupDayCount === 1 ? '' : 's'}` : ''
+                            }`
+                          : 'No delivery days selected'}
+                      </p>
+                    </div>
+                  </div>
+                  )}
+
+                  {/* SECTION: EDIT_SUBSCRIPTION_PLAN */}
+                  {activeDrawerTab === 'plan' && (
+                    <div data-section="edit-subscription-plan" className="w-full space-y-4 pt-2">
+                      {/* Row 1: Plan Selector (Strict 1-Row 3-Column Grid) */}
                       <div>
-                        <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-1">
-                          Credits (Override)
+                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+                          Subscription Plan
                         </label>
-                        <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden h-8 bg-white">
-                          <button
-                            type="button"
-                            onClick={() => setTotalTiffinCredits(Math.max(1, totalTiffinCredits - 1))}
-                            className="px-2.5 h-full bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold border-r border-gray-200"
-                          >−</button>
-                          <span className="flex-1 text-center text-xs font-bold text-gray-800">
-                            {totalTiffinCredits}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setTotalTiffinCredits(totalTiffinCredits + 1)}
-                            className="px-2.5 h-full bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold border-l border-gray-200"
-                          >+</button>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-3 w-full">
+                          {PLAN_OPTIONS.map((plan) => {
+                            const isSelected = planTier === plan.key;
+                            return (
+                              <button
+                                key={plan.key}
+                                type="button"
+                                onClick={() => {
+                                  setPlanTier(plan.key);
+                                  setTotalTiffinCredits(plan.credits);
+                                }}
+                                className={`w-full h-12 sm:h-11 px-3 rounded-xl text-sm border transition-all flex items-center justify-center gap-1.5 cursor-pointer touch-manipulation ${
+                                  isSelected
+                                    ? '!bg-blue-600 !border-blue-600 shadow-sm'
+                                    : 'bg-white border-gray-300 hover:bg-gray-50'
+                                }`}
+                              >
+                                <span className={isSelected ? '!text-white font-bold' : 'text-gray-800 font-semibold'}>
+                                  {plan.label}
+                                </span>
+                                <span className={isSelected ? '!text-blue-100 text-xs' : 'text-gray-500 text-xs'}>
+                                  ({plan.credits})
+                                </span>
+                              </button>
+                            );
+                          })}
                         </div>
                       </div>
 
-                      <div>
-                        <label className="block text-[10px] font-semibold text-gray-400 uppercase mb-1">
-                          Start Date (Optional)
-                        </label>
-                        <input
-                          type="date"
-                          value={startDate || ''}
-                          onChange={e => setStartDate(e.target.value)}
-                          className="w-full h-8 px-2 text-xs border border-gray-200 rounded-lg text-gray-700 focus:outline-none focus:border-blue-500 bg-white"
-                        />
-                      </div>
-                    </div>
-                  </div>
+                      {/* Row 2: Credits Stepper + Start Date (Strict 2-Column Grid) */}
+                      <div className="grid grid-cols-2 gap-3 w-full">
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                            Credits (Override)
+                          </label>
+                          <div className="flex items-center border border-gray-300 rounded-xl overflow-hidden h-12 bg-white">
+                            <button
+                              type="button"
+                              onClick={() => setTotalTiffinCredits((prev: number) => Math.max(1, (Number(prev) || 1) - 1))}
+                              className="w-12 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-r border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center"
+                            >
+                              −
+                            </button>
+                            <span className="flex-1 text-center text-base font-bold text-gray-900">
+                              {totalTiffinCredits ?? 20}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setTotalTiffinCredits((prev: number) => (Number(prev) || 0) + 1)}
+                              className="w-12 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-l border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center"
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
 
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                            Start Date (Optional)
+                          </label>
+                          <input
+                            type="date"
+                            value={startDate || ''}
+                            onChange={(e) => setStartDate(e.target.value)}
+                            className="w-full h-12 px-3 text-base border border-gray-300 rounded-xl text-gray-800 focus:outline-none focus:border-blue-500 bg-white"
+                          />
+                        </div>
+                      </div>
+
+                    </div>
+
+                  )}
+
+                  {/* SECTION: EDIT_DIETARY_CONFIG */}
                   {/* ═════ DIETARY CONFIGURATION — PREMIUM FORM ═════ */}
-                  <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+                  {/* TAB 3 — MEAL CONFIG */}
+                  {activeDrawerTab === 'meal' && (
+                  <div className="bg-white border border-gray-100 rounded-xl overflow-hidden" data-section="edit-dietary-config">
                     <div className="px-5 py-3 bg-gray-50 border-b border-gray-100">
                       <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Dietary Configuration</span>
                       <span className="block text-[11px] text-blue-600 font-medium mt-0.5">
@@ -3040,22 +3912,43 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
-                                onClick={() => setRotiCount(Math.max(0, (rotiCount === '' ? 0 : Number(rotiCount)) - 1))}
+                                onClick={() => {
+                                  setIsRotiCountCustom(true);
+                                  setRotiCount(Math.max(0, (rotiCount === '' ? 0 : Number(rotiCount)) - 1));
+                                }}
                                 className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
                               >−</button>
                               <input
                                 type="number"
                                 min={0}
                                 value={rotiCount}
-                                onChange={(e) => setRotiCount(e.target.value ? parseInt(e.target.value) : '')}
+                                onChange={(e) => {
+                                  setIsRotiCountCustom(true);
+                                  setRotiCount(e.target.value ? parseInt(e.target.value) : '');
+                                }}
                                 className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700"
                               />
                               <button
                                 type="button"
-                                onClick={() => setRotiCount((rotiCount === '' ? 0 : Number(rotiCount)) + 1)}
+                                onClick={() => {
+                                  setIsRotiCountCustom(true);
+                                  setRotiCount((rotiCount === '' ? 0 : Number(rotiCount)) + 1);
+                                }}
                                 className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
                               >+</button>
                             </div>
+                            {showRotiStandardHint && (
+                              <p className="mt-2 text-[10px] leading-snug text-gray-400">
+                                Standard for {portionSize || PORTION_RG} is {defaultRotiForPortion} rotis.{' '}
+                                <button
+                                  type="button"
+                                  onClick={handleSetRotiToStandard}
+                                  className="inline p-0 border-0 bg-transparent text-blue-600 font-semibold hover:underline cursor-pointer align-baseline"
+                                >
+                                  [Set to standard]
+                                </button>
+                              </p>
+                            )}
                           </div>
 
                           {/* Pronthi Stepper */}
@@ -3292,56 +4185,80 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               </div>
                             )}
 
-
-                            {/* Add-ons section — Salad & Dessert count steppers */}
-                            <div className="flex items-center justify-center gap-3 pt-2 border-t border-gray-100">
-                              {/* Salad Stepper */}
-                              <div className="flex items-center border rounded-lg overflow-hidden text-xs bg-white">
-                                <button
-                                  type="button"
-                                  onClick={() => setSaladCount(Math.max(0, saladCount - 1))}
-                                  className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold border-r"
-                                >−</button>
-                                <span className="px-2.5 py-1 font-medium text-emerald-800 bg-emerald-50/50 flex items-center gap-1 select-none">
-                                  🥗 Salad {saladCount > 1 ? `(${saladCount})` : ''}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => setSaladCount(saladCount + 1)}
-                                  className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold border-l"
-                                >+</button>
+                            {customCurryPillText && (
+                              <div className="mt-1 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
+                                ⚡ Custom: {customCurryPillText}
                               </div>
-
-                              {/* Dessert Stepper */}
-                              <div className="flex items-center border rounded-lg overflow-hidden text-xs bg-white">
-                                <button
-                                  type="button"
-                                  onClick={() => setDessertCount(Math.max(0, dessertCount - 1))}
-                                  className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold border-r"
-                                >−</button>
-                                <span className="px-2.5 py-1 font-medium text-pink-800 bg-pink-50/50 flex items-center gap-1 select-none">
-                                  🍰 Dessert {dessertCount > 1 ? `(${dessertCount})` : ''}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => setDessertCount(dessertCount + 1)}
-                                  className="px-2 py-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold border-l"
-                                >+</button>
+                            )}
+                            {customHalfNote && (
+                              <div className="mt-3 px-3.5 py-2 bg-amber-50/90 border border-amber-200 rounded-lg flex items-center gap-1.5 text-xs font-semibold text-amber-800">
+                                <span className="text-amber-500">⚡</span>
+                                <span>{customHalfNote}</span>
                               </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* SIDES — Salad & Dessert live outside Curries / Dal so they never
+                          occupy a curry container slot or change (n/2 containers/day). */}
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                          Sides
+                        </label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Salad</label>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setSaladCount(Math.max(0, saladCount - 1))}
+                                disabled={saladCount === 0}
+                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
+                              >−</button>
+                              <input
+                                type="number"
+                                min={0}
+                                value={saladCount}
+                                onChange={(e) => setSaladCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
+                                className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setSaladCount(saladCount + 1)}
+                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                              >+</button>
                             </div>
                           </div>
-                          {(customCurryPillText || extraAddonNote) && (
-                            <div className="mt-1 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
-                              ⚡ Custom: {customCurryPillText || extraAddonNote}
+                          <div>
+                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Dessert</label>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setDessertCount(Math.max(0, dessertCount - 1))}
+                                disabled={dessertCount === 0}
+                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
+                              >−</button>
+                              <input
+                                type="number"
+                                min={0}
+                                value={dessertCount}
+                                onChange={(e) => setDessertCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
+                                className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setDessertCount(dessertCount + 1)}
+                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                              >+</button>
                             </div>
-                          )}
-                          {customHalfNote && (
-                            <div className="mt-3 px-3.5 py-2 bg-amber-50/90 border border-amber-200 rounded-lg flex items-center gap-1.5 text-xs font-semibold text-amber-800">
-                              <span className="text-amber-500">⚡</span>
-                              <span>{customHalfNote}</span>
-                            </div>
-                          )}
+                          </div>
                         </div>
+                        {extraAddonNote && (
+                          <div className="mt-2 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
+                            ⚡ Custom: {extraAddonNote}
+                          </div>
+                        )}
                       </div>
 
                       {/* ROW 3: Rice Portion */}
@@ -3370,57 +4287,6 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               </div>
                             </div>
                           ))}
-                        </div>
-                      </div>
-
-                      {/* ROW 4: Delivery Schedule — Day Toggle Buttons */}
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Delivery Schedule</label>
-                        <div className="flex flex-wrap gap-1.5">
-                          {ALL_DAYS.filter(day => day !== 'Sunday').map(day => {
-                            const isSelected = selectedDays.includes(day);
-                            // Friday stays locked-on whenever Saturday (Fri double pack) is selected.
-                            const isLockedFriday = day === 'Friday' && fridayDoublePack;
-                            return (
-                              <button
-                                key={day}
-                                type="button"
-                                onClick={() => toggleScheduleDay(day)}
-                                title={
-                                  day === 'Friday' && fridayDoublePack
-                                    ? 'Required while Saturday is selected (double pack on Friday)'
-                                    : day === 'Saturday'
-                                      ? 'Saturday meal is packed and delivered on Friday'
-                                      : ''
-                                }
-                                className={`w-10 h-10 rounded-lg text-[11px] font-semibold border transition-all ${
-                                  isSelected
-                                    ? isLockedFriday
-                                      ? 'bg-blue-50 border-blue-500 text-blue-700 cursor-not-allowed'
-                                      : 'bg-blue-50 border-blue-500 text-blue-700'
-                                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                                }`}
-                              >
-                                {day.substring(0, 3)}
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        {fridayDoublePack && (
-                          <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] font-medium text-amber-700 flex items-start gap-2">
-                            <span className="shrink-0">📦</span>
-                            <span>
-                              <strong>Friday Double Delivery:</strong> 2 tiffins will be packed and
-                              delivered on Friday to cover Saturday.
-                            </span>
-                          </div>
-                        )}
-
-                        <div className="mt-2 text-[11px] text-gray-400 font-medium">
-                          {formatSchedule(selectedDays) || (
-                            <span className="text-amber-500 font-semibold">No Deliveries Scheduled</span>
-                          )}
                         </div>
                       </div>
 
@@ -3493,6 +4359,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       </div>
                     </div>
                   </div>
+                  )}
 
                   {/* SUBSCRIPTION MANAGEMENT SECTION */}
                   {selectedCustomer && !isAddingNew && (
@@ -3513,14 +4380,61 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         </div>
                       )}
 
-                      {/* Action Buttons */}
+                      {/* Scheduled (future) cancel/pause — active cancellation card.
+                          While a schedule is pending the Pause/Cancel buttons are replaced
+                          by this card so the only path forward is Undo (Delete Customer
+                          Record is still available at the bottom of the sheet). */}
+                      {(() => {
+                        const sc = selectedCustomer;
+                        const scheduledDate = sc.scheduled_cancel_date;
+                        const hasScheduled =
+                          sc.scheduled_status === 'cancelled' || !!scheduledDate;
+                        if (!hasScheduled) return null;
+                        const isScheduledPause = sc.scheduled_status === 'paused';
+                        return (
+                          <div className="rounded-lg border border-amber-300 bg-amber-50 text-amber-800 p-3 space-y-1.5">
+                            <p className="text-[11.5px] font-semibold leading-snug">
+                              ⚠️ {isScheduledPause ? 'Pause' : 'Cancellation'} scheduled after{' '}
+                              <strong>{scheduledDate ? formatShortLastDay(scheduledDate) : '—'}</strong> — their last tiffin day.
+                            </p>
+                            <p className="text-[11px] text-amber-700 leading-snug">
+                              Customer will automatically transition to {isScheduledPause ? 'Paused' : 'Cancelled'} the next day.
+                            </p>
+                            <button
+                              type="button"
+                              disabled={isPending}
+                              onClick={() => startTransition(async () => {
+                                try {
+                                  await clearScheduledCancellation(sc.id);
+                                  setSelectedCustomer({
+                                    ...sc,
+                                    scheduled_cancel_date: null,
+                                    scheduled_status: null,
+                                    cancellation_reason: null,
+                                  });
+                                  showToast(`${sc.full_name} — scheduled ${isScheduledPause ? 'pause' : 'cancellation'} cleared`);
+                                } catch (err) {
+                                  showToast(err instanceof Error ? err.message : 'Failed to clear the scheduled cancellation', 'error');
+                                }
+                              })}
+                              className="w-full mt-0.5 px-3 py-2 bg-white text-amber-800 border border-amber-400 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
+                            >
+                              {isPending ? 'Clearing…' : '↩️ Undo Cancellation & Keep Active'}
+                            </button>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Action Buttons — hidden while a scheduled cancel/pause is pending
+                          (the Undo card above owns the only available action). */}
+                      {!(selectedCustomer.scheduled_status === 'cancelled' || selectedCustomer.scheduled_cancel_date) ? (
                       <div className="grid grid-cols-2 gap-2">
                         {(selectedCustomer.subscription_status || 'active') === 'active' && (
                           <>
                             <button
                               type="button"
                               onClick={() => {
-                                setPauseStartDate(new Date().toISOString().split('T')[0]);
+                                setPauseStartDate(toLocalDateKey(new Date()));
                                 setPauseEndDate('');
                                 setIsIndefinitePause(false);
                                 setShowPauseModal(true);
@@ -3533,7 +4447,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               type="button"
                               onClick={() => {
                                 setCancelReason('');
-                                setCancelDate(new Date().toISOString().split('T')[0]);
+                                setCancelDate(toLocalDateKey(new Date()));
                                 setShowCancelModal(true);
                               }}
                               className="px-3 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-[11px] font-bold hover:bg-red-100 transition-colors"
@@ -3560,7 +4474,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               type="button"
                               onClick={() => {
                                 setCancelReason('');
-                                setCancelDate(new Date().toISOString().split('T')[0]);
+                                setCancelDate(toLocalDateKey(new Date()));
                                 setShowCancelModal(true);
                               }}
                               className="px-3 py-2.5 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
@@ -3588,6 +4502,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           </button>
                         )}
                       </div>
+                      ) : null}
                     </div>
                   )}
 
@@ -3604,6 +4519,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         )}
       </div>
 
+      {/* SECTION: MODAL_CONFIRM_ACTIONS */}
       {/* PAUSE SERVICE MODAL */}
       {showPauseModal && (confirmCustomer ?? selectedCustomer) && (
         <>
@@ -3617,13 +4533,16 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">Pause Start Date</label>
+                  <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">Last Service Date</label>
                   <input
                     type="date"
                     value={pauseStartDate}
                     onChange={(e) => setPauseStartDate(e.target.value)}
                     className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px]"
                   />
+                  <p className="text-[10.5px] text-gray-400 mt-1 leading-snug">
+                    The last tiffin day we prepare for them — pause begins the day after. Choose today to pause immediately.
+                  </p>
                 </div>
 
                 <div>
@@ -3666,21 +4585,45 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   disabled={isPending || !pauseStartDate}
                   onClick={() => startTransition(async () => {
                     const target = (confirmCustomer ?? selectedCustomer)!;
-                    await pauseCustomer(
-                      target.id,
-                      pauseStartDate,
-                      isIndefinitePause ? null : pauseEndDate || null
-                    );
-                    setShowPauseModal(false);
-                    setConfirmCustomer(null);
-                    if (selectedCustomer?.id === target.id) {
-                      setSelectedCustomer({
-                        ...selectedCustomer,
-                        subscription_status: 'paused',
-                        pause_start_date: pauseStartDate,
-                        pause_end_date: isIndefinitePause ? null : pauseEndDate || null,
-                      });
-                      closePanelGracefully();
+                    try {
+                      const lastServiceDate = pauseStartDate;
+                      const endDate = isIndefinitePause ? null : pauseEndDate || null;
+                      const isScheduledPause = lastServiceDate > todayKey;
+                      await pauseCustomer(target.id, lastServiceDate, endDate);
+                      setShowPauseModal(false);
+                      setConfirmCustomer(null);
+                      if (selectedCustomer?.id === target.id) {
+                        setSelectedCustomer(
+                          isScheduledPause
+                            ? {
+                                // Stays active through the last tiffin day; pause begins the day after.
+                                ...selectedCustomer,
+                                subscription_status: 'active',
+                                pause_start_date: null,
+                                pause_end_date: endDate,
+                                scheduled_cancel_date: lastServiceDate,
+                                scheduled_status: 'paused',
+                              }
+                            : {
+                                ...selectedCustomer,
+                                subscription_status: 'paused',
+                                pause_start_date: lastServiceDate,
+                                pause_end_date: endDate,
+                                scheduled_cancel_date: null,
+                                scheduled_status: null,
+                              }
+                        );
+                        closePanelGracefully();
+                      }
+                      showToast(
+                        isScheduledPause
+                          ? `${target.full_name} — pause scheduled after ${formatShortLastDay(lastServiceDate)}`
+                          : `${target.full_name} paused`
+                      );
+                    } catch (err) {
+                      // Surfaces migration/schema errors (e.g. missing scheduled_* columns) inline
+                      // instead of throwing past the transition and crashing the page.
+                      showToast(err instanceof Error ? err.message : 'Failed to pause customer', 'error');
                     }
                   })}
                   className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
@@ -3707,14 +4650,17 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
               <div>
                 <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
-                  Cancellation Date
+                  Last Service Date
                 </label>
                 <input
                   type="date"
                   value={cancelDate}
                   onChange={(e) => setCancelDate(e.target.value)}
-                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-slate-700 bg-white mb-3"
+                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-slate-700 bg-white mb-1"
                 />
+                <p className="text-[10.5px] text-gray-400 mb-3 leading-snug">
+                  Today or earlier cancels immediately. Pick a future date to schedule their final tiffin day.
+                </p>
               </div>
 
               <div>
@@ -3743,21 +4689,46 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   disabled={isPending}
                   onClick={() => startTransition(async () => {
                     const target = (confirmCustomer ?? selectedCustomer)!;
-                    // Use the picked date at local midnight; fall back to "now" when empty.
-                    const cancelledAt = cancelDate
-                      ? new Date(`${cancelDate}T00:00:00`).toISOString()
-                      : new Date().toISOString();
-                    await cancelCustomer(target.id, cancelReason.trim() || null, cancelledAt);
-                    setShowCancelModal(false);
-                    setConfirmCustomer(null);
-                    if (selectedCustomer?.id === target.id) {
-                      setSelectedCustomer({
-                        ...selectedCustomer,
-                        subscription_status: 'cancelled',
-                        cancellation_reason: cancelReason.trim() || null,
-                        cancelled_at: cancelledAt,
-                      });
-                      closePanelGracefully();
+                    try {
+                      // Use the picked date at local midnight; fall back to "now" when empty.
+                      const cancelledAt = cancelDate
+                        ? new Date(`${cancelDate}T00:00:00`).toISOString()
+                        : new Date().toISOString();
+                      const isScheduledCancel = !!cancelDate && cancelDate > todayKey;
+                      await cancelCustomer(target.id, cancelReason.trim() || null, cancelledAt);
+                      setShowCancelModal(false);
+                      setConfirmCustomer(null);
+                      if (selectedCustomer?.id === target.id) {
+                        setSelectedCustomer(
+                          isScheduledCancel
+                            ? {
+                                // Stays active through the last tiffin day; cancelled after it.
+                                ...selectedCustomer,
+                                cancellation_reason: cancelReason.trim() || null,
+                                cancelled_at: null,
+                                scheduled_cancel_date: cancelDate,
+                                scheduled_status: 'cancelled',
+                              }
+                            : {
+                                ...selectedCustomer,
+                                subscription_status: 'cancelled',
+                                cancellation_reason: cancelReason.trim() || null,
+                                cancelled_at: cancelledAt,
+                                scheduled_cancel_date: null,
+                                scheduled_status: null,
+                              }
+                        );
+                        closePanelGracefully();
+                      }
+                      showToast(
+                        isScheduledCancel
+                          ? `${target.full_name} — cancellation scheduled after ${formatShortLastDay(cancelDate)}`
+                          : `${target.full_name} cancelled`
+                      );
+                    } catch (err) {
+                      // Surfaces migration/schema errors (e.g. missing scheduled_* columns) inline
+                      // instead of throwing past the transition and crashing the page.
+                      showToast(err instanceof Error ? err.message : 'Failed to cancel customer', 'error');
                     }
                   })}
                   className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"

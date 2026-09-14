@@ -1,0 +1,13 @@
+# Project Optimization & Token Preservation Rules
+
+1. Operational Guardrails:
+   - Exclusions: Treat node_modules/, dist/, build/, .git/, public/, lockfiles (e.g., package-lock.json), and *.log files as strictly ignored from full reads.
+   - Surgical Edits Only: Always use targeted diff replacements rather than rewriting entire files from scratch unless creating a brand-new file.
+   - Selective Reading: Never load entire component or route files if only a slice is needed. Inspect only the relevant line ranges or exported definitions.
+   - Clean Terminal Execution: Never run long-running processes (e.g., `npm run dev`) inside the session terminal. Always append flags to suppress terminal verbosity (pipe to head, use `--silent`, etc.).
+
+2. Mode Conformance:
+   - Respect mode prefixes: [ARCHITECT] (read/plan only, zero file edits or build commands), [ASK] (read-only explanations), [CODE] (direct surgical implementation), and [DEBUG] (root-cause analysis and targeted patches). Default to [CODE] if no tag is provided.
+
+3. Task Lifecycle:
+   - Keep completions tightly focused. When a task milestone is finished, summarize results in 3 brief bullet points (what was done, files touched, next step) and instruct the user to reset task context before starting unrelated work.

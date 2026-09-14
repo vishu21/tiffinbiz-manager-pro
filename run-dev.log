@@ -1,0 +1,266 @@
+nohup: ignoring input
+(node:4048) [DEP0174] DeprecationWarning: Calling promisify on a function that returns a Promise is likely a mistake.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+
+> tiffin-app@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.200.0.19:3000
+- Environments: .env.local
+✓ Ready in 5.1s
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+
+ GET /login 200 in 1785ms (next.js: 1487ms, proxy.ts: 10ms, application-code: 287ms)
+ GET / 307 in 1996ms (next.js: 1720ms, proxy.ts: 191ms, application-code: 85ms)
+ GET /login 200 in 56ms (next.js: 9ms, proxy.ts: 6ms, application-code: 41ms)
+ GET /prep 200 in 1225ms (next.js: 68ms, proxy.ts: 7ms, application-code: 1150ms)
+ GET /prep 200 in 374ms (next.js: 8ms, proxy.ts: 9ms, application-code: 357ms)
+ POST /prep 200 in 137ms (next.js: 8ms, proxy.ts: 9ms, application-code: 121ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 104ms app/prep/actions.ts
+ POST /prep 200 in 86ms (next.js: 11ms, proxy.ts: 4ms, application-code: 71ms)
+  └─ ƒ fetchDailyMenu("2026-09-14") in 62ms app/prep/actions.ts
+ POST /prep 200 in 99ms (next.js: 6ms, proxy.ts: 12ms, application-code: 81ms)
+  └─ ƒ getAvailableRecipes() in 69ms app/prep/actions.ts
+ POST /prep 200 in 300ms (next.js: 9ms, proxy.ts: 8ms, application-code: 283ms)
+  └─ ƒ getRecipesWithIngredients() in 268ms app/admin/recipes/actions.ts
+ POST /prep 200 in 252ms (next.js: 9ms, proxy.ts: 7ms, application-code: 235ms)
+  └─ ƒ getDailyMenuSelection("2026-09-14") in 223ms app/prep/actions.ts
+ POST /prep 200 in 480ms (next.js: 11ms, proxy.ts: 10ms, application-code: 458ms)
+  └─ ƒ saveDailyMenu("2026-09-14", {"chicken_option":"Chicken Curry","veg_option_1":"","veg_option_2":""}) in 164ms app/prep/actions.ts
+✓ Compiled in 513ms
+✓ Compiled in 1198ms
+ GET /prep 200 in 706ms (next.js: 236ms, proxy.ts: 80ms, application-code: 390ms)
+ POST /prep 200 in 1457ms (next.js: 567ms, proxy.ts: 5ms, application-code: 886ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 862ms app/prep/actions.ts
+ POST /prep 200 in 100ms (next.js: 13ms, proxy.ts: 7ms, application-code: 80ms)
+  └─ ƒ getAvailableRecipes() in 70ms app/prep/actions.ts
+✓ Compiled in 149ms
+ GET /prep 200 in 450ms (next.js: 150ms, proxy.ts: 28ms, application-code: 272ms)
+ POST /prep 200 in 211ms (next.js: 35ms, proxy.ts: 65ms, application-code: 111ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 70ms app/prep/actions.ts
+ POST /prep 200 in 76ms (next.js: 8ms, proxy.ts: 7ms, application-code: 61ms)
+  └─ ƒ getAvailableRecipes() in 50ms app/prep/actions.ts
+✓ Compiled in 117ms
+ GET /prep 200 in 299ms (next.js: 144ms, proxy.ts: 29ms, application-code: 127ms)
+ POST /prep 200 in 140ms (next.js: 28ms, proxy.ts: 6ms, application-code: 106ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 74ms app/prep/actions.ts
+ POST /prep 200 in 165ms (next.js: 6ms, proxy.ts: 6ms, application-code: 153ms)
+  └─ ƒ getAvailableRecipes() in 142ms app/prep/actions.ts
+✓ Compiled in 139ms
+ GET /prep 200 in 263ms (next.js: 120ms, proxy.ts: 27ms, application-code: 116ms)
+ POST /prep 200 in 132ms (next.js: 9ms, proxy.ts: 8ms, application-code: 115ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 103ms app/prep/actions.ts
+ POST /prep 200 in 131ms (next.js: 7ms, proxy.ts: 5ms, application-code: 120ms)
+  └─ ƒ getAvailableRecipes() in 107ms app/prep/actions.ts
+✓ Compiled in 375ms
+ POST /prep 200 in 481ms (next.js: 259ms, proxy.ts: 37ms, application-code: 185ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 128ms app/prep/actions.ts
+ POST /prep 200 in 105ms (next.js: 9ms, proxy.ts: 6ms, application-code: 90ms)
+  └─ ƒ getAvailableRecipes() in 77ms app/prep/actions.ts
+ GET /prep 200 in 87ms (next.js: 10ms, proxy.ts: 5ms, application-code: 72ms)
+✓ Compiled in 172ms
+ GET /prep 200 in 474ms (next.js: 185ms, proxy.ts: 28ms, application-code: 262ms)
+ POST /prep 200 in 146ms (next.js: 21ms, proxy.ts: 18ms, application-code: 108ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 91ms app/prep/actions.ts
+ POST /prep 200 in 94ms (next.js: 12ms, proxy.ts: 6ms, application-code: 76ms)
+  └─ ƒ getAvailableRecipes() in 64ms app/prep/actions.ts
+✓ Compiled in 100ms
+ GET /prep 200 in 539ms (next.js: 128ms, proxy.ts: 25ms, application-code: 386ms)
+ POST /prep 200 in 255ms (next.js: 26ms, proxy.ts: 44ms, application-code: 185ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 170ms app/prep/actions.ts
+ POST /prep 200 in 191ms (next.js: 8ms, proxy.ts: 6ms, application-code: 177ms)
+  └─ ƒ getAvailableRecipes() in 162ms app/prep/actions.ts
+✓ Compiled in 199ms
+ GET /prep 200 in 333ms (next.js: 128ms, proxy.ts: 27ms, application-code: 178ms)
+ POST /prep 200 in 269ms (next.js: 16ms, proxy.ts: 17ms, application-code: 236ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 219ms app/prep/actions.ts
+ POST /prep 200 in 191ms (next.js: 7ms, proxy.ts: 5ms, application-code: 179ms)
+  └─ ƒ getAvailableRecipes() in 167ms app/prep/actions.ts
+✓ Compiled in 245ms
+✓ Compiled in 147ms
+✓ Compiled in 105ms
+ GET /prep 200 in 372ms (next.js: 219ms, proxy.ts: 27ms, application-code: 126ms)
+ GET /prep 200 in 697ms (next.js: 8ms, proxy.ts: 4ms, application-code: 686ms)
+✓ Compiled in 157ms
+ GET /prep 200 in 308ms (next.js: 144ms, proxy.ts: 32ms, application-code: 132ms)
+ POST /prep 200 in 732ms (next.js: 25ms, proxy.ts: 11ms, application-code: 697ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 686ms app/prep/actions.ts
+ POST /prep 200 in 84ms (next.js: 7ms, proxy.ts: 5ms, application-code: 72ms)
+  └─ ƒ getAvailableRecipes() in 60ms app/prep/actions.ts
+✓ Compiled in 201ms
+ GET /prep 200 in 341ms (next.js: 134ms, proxy.ts: 24ms, application-code: 183ms)
+ POST /prep 200 in 126ms (next.js: 26ms, proxy.ts: 6ms, application-code: 94ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 84ms app/prep/actions.ts
+ POST /prep 200 in 205ms (next.js: 8ms, proxy.ts: 5ms, application-code: 192ms)
+  └─ ƒ getAvailableRecipes() in 182ms app/prep/actions.ts
+✓ Compiled in 189ms
+ GET /prep 200 in 411ms (next.js: 240ms, proxy.ts: 25ms, application-code: 146ms)
+ POST /prep 200 in 185ms (next.js: 18ms, proxy.ts: 6ms, application-code: 161ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 147ms app/prep/actions.ts
+ POST /prep 200 in 133ms (next.js: 48ms, proxy.ts: 8ms, application-code: 78ms)
+  └─ ƒ getAvailableRecipes() in 66ms app/prep/actions.ts
+✓ Compiled in 204ms
+ GET /prep 200 in 298ms (next.js: 127ms, proxy.ts: 28ms, application-code: 143ms)
+ POST /prep 200 in 189ms (next.js: 14ms, proxy.ts: 5ms, application-code: 169ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 157ms app/prep/actions.ts
+ POST /prep 200 in 169ms (next.js: 11ms, proxy.ts: 4ms, application-code: 154ms)
+  └─ ƒ getAvailableRecipes() in 136ms app/prep/actions.ts
+✓ Compiled in 87ms
+ GET /prep 200 in 257ms (next.js: 125ms, proxy.ts: 30ms, application-code: 102ms)
+ POST /prep 200 in 120ms (next.js: 9ms, proxy.ts: 7ms, application-code: 104ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 93ms app/prep/actions.ts
+ POST /prep 200 in 128ms (next.js: 15ms, proxy.ts: 4ms, application-code: 108ms)
+  └─ ƒ getAvailableRecipes() in 94ms app/prep/actions.ts
+✓ Compiled in 83ms
+ GET /prep 200 in 245ms (next.js: 117ms, proxy.ts: 26ms, application-code: 101ms)
+ POST /prep 200 in 93ms (next.js: 8ms, proxy.ts: 9ms, application-code: 76ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 65ms app/prep/actions.ts
+ POST /prep 200 in 95ms (next.js: 11ms, proxy.ts: 6ms, application-code: 77ms)
+  └─ ƒ getAvailableRecipes() in 65ms app/prep/actions.ts
+ GET /prep 200 in 780ms (next.js: 7ms, proxy.ts: 7ms, application-code: 766ms)
+ GET /prep 200 in 593ms (next.js: 5ms, proxy.ts: 4ms, application-code: 584ms)
+ GET /prep 200 in 530ms (next.js: 7ms, proxy.ts: 6ms, application-code: 517ms)
+✓ Compiled in 141ms
+ GET /prep 200 in 1364ms (next.js: 119ms, proxy.ts: 26ms, application-code: 1218ms)
+ GET /prep 200 in 106ms (next.js: 10ms, proxy.ts: 8ms, application-code: 88ms)
+ POST /prep 200 in 464ms (next.js: 10ms, proxy.ts: 8ms, application-code: 447ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 431ms app/prep/actions.ts
+ POST /prep 200 in 83ms (next.js: 9ms, proxy.ts: 7ms, application-code: 68ms)
+  └─ ƒ getAvailableRecipes() in 57ms app/prep/actions.ts
+ POST /prep 200 in 577ms (next.js: 7ms, proxy.ts: 8ms, application-code: 563ms)
+  └─ ƒ setDailyMenuSelection("2026-09-14", "dc4e9fc5-44eb-40a0-aa8d-69091396d1f3", null) in 265ms app/prep/actions.ts
+ POST /prep 200 in 332ms (next.js: 8ms, proxy.ts: 7ms, application-code: 318ms)
+  └─ ƒ setDailyMenuSelection("2026-09-14", "dc4e9fc5-44eb-40a0-aa8d-69091396d1f3", "b9ba7d93-a27d-4648-a2e5-6390545f0199") in 106ms app/prep/actions.ts
+✓ Compiled in 293ms
+✓ Compiled in 96ms
+✓ Compiled in 174ms
+✓ Compiled in 290ms
+✓ Compiled in 90ms
+✓ Compiled in 98ms
+ GET /prep 200 in 1293ms (next.js: 178ms, proxy.ts: 39ms, application-code: 1075ms)
+ GET /prep 200 in 523ms (next.js: 12ms, proxy.ts: 8ms, application-code: 503ms)
+ GET /prep 200 in 510ms (next.js: 7ms, proxy.ts: 9ms, application-code: 493ms)
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+⚠ Fast Refresh had to perform a full reload due to a runtime error.
+ GET /prep 200 in 203ms (next.js: 8ms, proxy.ts: 7ms, application-code: 188ms)
+⨯ Error: aborted
+    at ignore-listed frames {
+  code: 'ECONNRESET',
+  digest: '3485663598'
+}
+⨯ Error: aborted
+    at ignore-listed frames
+ GET /prep 200 in 1052ms (next.js: 14ms, proxy.ts: 10ms, application-code: 1028ms)
+ POST /prep 200 in 114ms (next.js: 18ms, proxy.ts: 9ms, application-code: 88ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 70ms app/prep/actions.ts
+ POST /prep 200 in 121ms (next.js: 16ms, proxy.ts: 6ms, application-code: 99ms)
+  └─ ƒ fetchDailyMenu("2026-09-14") in 83ms app/prep/actions.ts
+ POST /prep 200 in 87ms (next.js: 11ms, proxy.ts: 6ms, application-code: 69ms)
+  └─ ƒ getAvailableRecipes() in 55ms app/prep/actions.ts
+ POST /prep 200 in 154ms (next.js: 11ms, proxy.ts: 5ms, application-code: 138ms)
+  └─ ƒ getRecipesWithIngredients() in 124ms app/admin/recipes/actions.ts
+ POST /prep 200 in 183ms (next.js: 12ms, proxy.ts: 10ms, application-code: 161ms)
+  └─ ƒ getDailyMenuSelection("2026-09-14") in 141ms app/prep/actions.ts
+ POST /prep 200 in 322ms (next.js: 8ms, proxy.ts: 10ms, application-code: 304ms)
+  └─ ƒ saveDailyMenu("2026-09-14", {"chicken_option":"Chicken Curry","veg_option_1":"","veg_option_2":""}) in 86ms app/prep/actions.ts
+✓ Compiled in 167ms
+ GET /prep 200 in 601ms (next.js: 318ms, proxy.ts: 106ms, application-code: 177ms)
+ POST /prep 200 in 1093ms (next.js: 460ms, proxy.ts: 8ms, application-code: 625ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 611ms app/prep/actions.ts
+ POST /prep 200 in 262ms (next.js: 30ms, proxy.ts: 6ms, application-code: 227ms)
+  └─ ƒ getAvailableRecipes() in 211ms app/prep/actions.ts
+ GET /prep 200 in 533ms (next.js: 8ms, proxy.ts: 5ms, application-code: 520ms)
+✓ Compiled in 177ms
+ GET /prep 200 in 647ms (next.js: 242ms, proxy.ts: 54ms, application-code: 351ms)
+ POST /prep 200 in 1531ms (next.js: 524ms, proxy.ts: 10ms, application-code: 996ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 980ms app/prep/actions.ts
+ POST /prep 200 in 199ms (next.js: 9ms, proxy.ts: 14ms, application-code: 175ms)
+  └─ ƒ getAvailableRecipes() in 159ms app/prep/actions.ts
+✓ Compiled in 177ms
+ GET /prep 200 in 436ms (next.js: 199ms, proxy.ts: 29ms, application-code: 208ms)
+ POST /prep 200 in 154ms (next.js: 54ms, proxy.ts: 8ms, application-code: 92ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 73ms app/prep/actions.ts
+ POST /prep 200 in 95ms (next.js: 7ms, proxy.ts: 5ms, application-code: 83ms)
+  └─ ƒ getAvailableRecipes() in 72ms app/prep/actions.ts
+✓ Compiled in 83ms
+ GET /prep 200 in 332ms (next.js: 173ms, proxy.ts: 27ms, application-code: 132ms)
+ POST /prep 200 in 288ms (next.js: 25ms, proxy.ts: 38ms, application-code: 224ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 208ms app/prep/actions.ts
+ POST /prep 200 in 105ms (next.js: 10ms, proxy.ts: 5ms, application-code: 90ms)
+  └─ ƒ getAvailableRecipes() in 79ms app/prep/actions.ts
+✓ Compiled in 56ms
+ GET /prep 200 in 323ms (next.js: 165ms, proxy.ts: 25ms, application-code: 132ms)
+ POST /prep 200 in 84ms (next.js: 9ms, proxy.ts: 5ms, application-code: 69ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 59ms app/prep/actions.ts
+ POST /prep 200 in 91ms (next.js: 7ms, proxy.ts: 7ms, application-code: 77ms)
+  └─ ƒ getAvailableRecipes() in 67ms app/prep/actions.ts
+✓ Compiled in 105ms
+ GET /prep 200 in 359ms (next.js: 178ms, proxy.ts: 35ms, application-code: 147ms)
+ POST /prep 200 in 88ms (next.js: 10ms, proxy.ts: 10ms, application-code: 68ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 54ms app/prep/actions.ts
+ POST /prep 200 in 84ms (next.js: 10ms, proxy.ts: 5ms, application-code: 70ms)
+  └─ ƒ getAvailableRecipes() in 59ms app/prep/actions.ts
+✓ Compiled in 74ms
+ GET /prep 200 in 329ms (next.js: 168ms, proxy.ts: 23ms, application-code: 138ms)
+ POST /prep 200 in 106ms (next.js: 16ms, proxy.ts: 6ms, application-code: 84ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 68ms app/prep/actions.ts
+ POST /prep 200 in 106ms (next.js: 11ms, proxy.ts: 5ms, application-code: 90ms)
+  └─ ƒ getAvailableRecipes() in 78ms app/prep/actions.ts
+✓ Compiled in 106ms
+ GET /prep 200 in 341ms (next.js: 178ms, proxy.ts: 24ms, application-code: 139ms)
+ POST /prep 200 in 146ms (next.js: 8ms, proxy.ts: 8ms, application-code: 130ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 119ms app/prep/actions.ts
+ POST /prep 200 in 92ms (next.js: 6ms, proxy.ts: 4ms, application-code: 81ms)
+  └─ ƒ getAvailableRecipes() in 71ms app/prep/actions.ts
+✓ Compiled in 53ms
+ GET /prep 200 in 399ms (next.js: 212ms, proxy.ts: 29ms, application-code: 157ms)
+ POST /prep 200 in 115ms (next.js: 13ms, proxy.ts: 8ms, application-code: 95ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 77ms app/prep/actions.ts
+ POST /prep 200 in 220ms (next.js: 9ms, proxy.ts: 6ms, application-code: 204ms)
+  └─ ƒ getAvailableRecipes() in 189ms app/prep/actions.ts
+✓ Compiled in 860ms
+ GET /prep 200 in 355ms (next.js: 191ms, proxy.ts: 28ms, application-code: 136ms)
+ POST /prep 200 in 92ms (next.js: 9ms, proxy.ts: 8ms, application-code: 75ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 63ms app/prep/actions.ts
+ POST /prep 200 in 181ms (next.js: 10ms, proxy.ts: 5ms, application-code: 166ms)
+  └─ ƒ getAvailableRecipes() in 155ms app/prep/actions.ts
+✓ Compiled in 91ms
+ GET /prep 200 in 323ms (next.js: 170ms, proxy.ts: 25ms, application-code: 129ms)
+ POST /prep 200 in 89ms (next.js: 11ms, proxy.ts: 5ms, application-code: 72ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 61ms app/prep/actions.ts
+ POST /prep 200 in 174ms (next.js: 9ms, proxy.ts: 5ms, application-code: 160ms)
+  └─ ƒ getAvailableRecipes() in 150ms app/prep/actions.ts
+✓ Compiled in 77ms
+ GET /prep 200 in 349ms (next.js: 184ms, proxy.ts: 28ms, application-code: 137ms)
+ POST /prep 200 in 234ms (next.js: 11ms, proxy.ts: 8ms, application-code: 215ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 202ms app/prep/actions.ts
+ POST /prep 200 in 173ms (next.js: 12ms, proxy.ts: 8ms, application-code: 152ms)
+  └─ ƒ getAvailableRecipes() in 135ms app/prep/actions.ts
+✓ Compiled in 77ms
+ GET /prep 200 in 338ms (next.js: 176ms, proxy.ts: 25ms, application-code: 136ms)
+ POST /prep 200 in 519ms (next.js: 11ms, proxy.ts: 6ms, application-code: 502ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 488ms app/prep/actions.ts
+ POST /prep 200 in 76ms (next.js: 7ms, proxy.ts: 4ms, application-code: 65ms)
+  └─ ƒ getAvailableRecipes() in 54ms app/prep/actions.ts
+✓ Compiled in 75ms
+ GET /prep 200 in 321ms (next.js: 188ms, proxy.ts: 24ms, application-code: 109ms)
+ POST /prep 200 in 100ms (next.js: 9ms, proxy.ts: 9ms, application-code: 82ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 65ms app/prep/actions.ts
+ POST /prep 200 in 200ms (next.js: 18ms, proxy.ts: 7ms, application-code: 176ms)
+  └─ ƒ getAvailableRecipes() in 160ms app/prep/actions.ts
+✓ Compiled in 489ms
+✓ Compiled in 424ms
+✓ Compiled in 0ms
+ POST /prep 200 in 1555ms (next.js: 865ms, proxy.ts: 135ms, application-code: 555ms)
+ GET /prep 200 in 4.2s (next.js: 893ms, proxy.ts: 685ms, application-code: 2.6s)
+ GET /prep 200 in 2.8s (next.js: 1030ms, proxy.ts: 143ms, application-code: 1590ms)
+ POST /prep 200 in 203ms (next.js: 19ms, proxy.ts: 7ms, application-code: 177ms)
+  └─ ƒ getDailyOverrides("2026-09-14") in 82ms app/prep/actions.ts
+ POST /prep 200 in 162ms (next.js: 48ms, proxy.ts: 6ms, application-code: 108ms)
+  └─ ƒ fetchDailyMenu("2026-09-14") in 82ms app/prep/actions.ts

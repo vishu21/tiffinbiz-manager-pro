@@ -7,8 +7,9 @@ import { usePathname } from 'next/navigation';
 // Static navigation — identical on every server and client render pass.
 const navItems = [
   { href: '/admin/customers', label: 'Customers', icon: '👥' },
+  { href: '/admin/recipes', label: 'Recipes', icon: '📖' },
   { href: '/admin/deliveries', label: 'Deliveries', icon: '📦' },
-  { href: '/prep', label: 'Kitchen Prep', icon: '🍳' },
+  { href: '/prep', label: 'Kitchen Prep and Packaging', icon: '🍳' },
   { href: '/billing', label: 'Billing', icon: '💳' }, // Placeholder for the future
 ] as const;
 

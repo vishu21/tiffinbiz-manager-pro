@@ -25,7 +25,7 @@ import { useRouter } from 'next/navigation';
 import type { MealConfigPayload } from '@/app/admin/actions';
 import PrepQuickEditSheet, { type QuickEditSaveRequest } from './PrepQuickEditSheet';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
-import { computePrepMetrics, resolveSideAddons } from './prepCalculations';
+import { computePrepMetrics } from './prepCalculations';
 
 type Customer = {
   id: string;
@@ -247,136 +247,6 @@ const hasRiceToPack = (value: string | null | undefined): boolean => {
   });
 };
 
-// ── Print-manifest data formatters ──────────────────────────────────────────
-// Everything below feeds the PRINT-ONLY kitchen roster + cook's summary box.
-// The on-screen dashboard keeps its richer badges/columns untouched.
-
-// Canadian province / common US state postal codes dropped from a shortened
-// address ("…, ON", "…, NY").
-const ADDRESS_REGION_CODES = new Set([
-  'ON', 'BC', 'AB', 'SK', 'MB', 'QC', 'NB', 'NS', 'PE', 'NL', 'YT', 'NT', 'NU',
-  'NY', 'WA', 'MI', 'OH', 'CA', 'TX', 'FL',
-]);
-// Country trailers dropped when they trail the address.
-const ADDRESS_COUNTRIES = new Set([
-  'canada', 'usa', 'us', 'u.s.a.', 'united states', 'united states of america',
-  'uk', 'united kingdom', 'india',
-]);
-
-// Common street-type suffixes → compact abbreviations so a printed row reads
-// "1405 Stackhouse Ave" instead of spilling the full "Avenue".
-const STREET_SUFFIX_ABBR: Record<string, string> = {
-  avenue: 'Ave', ave: 'Ave',
-  street: 'St', str: 'St',
-  road: 'Rd',
-  drive: 'Dr',
-  boulevard: 'Blvd', blvd: 'Blvd',
-  crescent: 'Cres', cres: 'Cres',
-  court: 'Crt', crt: 'Crt',
-  lane: 'Ln',
-  place: 'Pl',
-  terrace: 'Terr', terr: 'Terr',
-  circle: 'Cir', cir: 'Cir',
-  square: 'Sq',
-  parkway: 'Pkwy',
-  highway: 'Hwy',
-  trail: 'Trl',
-  close: 'Cl',
-  gardens: 'Gdns',
-  grove: 'Grv',
-  heights: 'Hts',
-  manor: 'Mnr',
-  mews: 'Mws',
-  ridge: 'Rdg',
-  view: 'Vw',
-};
-
-const shortenStreetSuffixes = (line: string): string =>
-  line
-    .split(/\s+/)
-    .map(word => {
-      const key = word.toLowerCase().replace(/[^a-z]/g, '');
-      return STREET_SUFFIX_ABBR[key] ?? word;
-    })
-    .join(' ');
-
-// "1405 Stackhouse Avenue, London, ON N5X 1Z5" → "1405 Stackhouse Ave".
-// Keeps the unit + street line(s) (any segment carrying a street number) and
-// drops the postal code, city, province/state, and country trailers. Falls back
-// to the postal-stripped input when nothing street-like survives.
-const formatShortAddress = (address: string): string => {
-  const raw = String(address || '').trim();
-  if (!raw) return '';
-
-  // 1) Strip postal codes (Canadian A1A 1A1 / A1A1A1, US 5- or 9-digit ZIP).
-  const withoutPostal = raw
-    .replace(/[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d/g, ' ')
-    .replace(/\b\d{5}(?:-\d{4})?\b/g, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+,/g, ',')
-    .trim();
-
-  // 2) Split into comma segments: drop trailing region/country segments, then any
-  //    trailing segment that carries no street number (the city name).
-  const segments = withoutPostal
-    .split(',')
-    .map(part => part.trim())
-    .filter(Boolean);
-
-  while (segments.length > 1) {
-    const last = segments[segments.length - 1];
-    const isRegion = ADDRESS_REGION_CODES.has(last.toUpperCase());
-    const isCountry = ADDRESS_COUNTRIES.has(last.toLowerCase());
-    const hasNumber = /\d/.test(last);
-    const isUnitLike = /\b(unit|apt|suite|ste|#)\b/i.test(last);
-    if (isRegion || isCountry || (!hasNumber && !isUnitLike)) {
-      segments.pop();
-      continue;
-    }
-    break;
-  }
-
-  const kept = segments.length > 0 ? segments.join(', ') : withoutPostal;
-  return shortenStreetSuffixes(kept).replace(/\s{2,}/g, ' ').trim();
-};
-
-// Portion tier → single-clean print badge: L (Large / 12 oz) or R (Regular / 8 oz).
-const formatSizeBadge = (portionSize: string | null | undefined): 'L' | 'R' => {
-  const p = normalizePortionToken(portionSize);
-  return p === PORTION_LG || p === PORTION_HALF_LG ? 'L' : 'R';
-};
-
-// Meal type → single-clean print badge: V (Veg) or NV (Non-Veg).
-const formatTypeBadge = (mealType: string | null | undefined): 'V' | 'NV' =>
-  String(mealType || '').toLowerCase().includes('non') ? 'NV' : 'V';
-
-// Raw-ingredient batch rows → stacked, OUNCES-ONLY lines
-// ("Eggplant (Baingan): 69 oz"). lbs/oz and kg/g conversions are intentionally
-// omitted: the kitchen preps these by weight on the scale.
-const formatBatchBreakdownLines = (
-  rows: Array<{ name: string; totalOz: number }>,
-): string[] =>
-  rows.length === 0
-    ? ['No ingredient standards defined.']
-    : rows.map(row => `${row.name}: ${Math.round(row.totalOz)} oz`);
-
-// Compact rice cell for the printed roster: "1 Lg + 2 Rg" (or "—" when none).
-const formatShortRice = (riceCount: string | null | undefined): string => {
-  if (!hasRiceToPack(riceCount)) return '—';
-  const parts: string[] = [];
-  String(riceCount)
-    .split('+')
-    .forEach(token => {
-      const m = token.trim().match(/^(\d+)\s*(rg|lg|xl)$/i);
-      if (!m) return;
-      const qty = parseInt(m[1], 10);
-      if (qty <= 0) return;
-      const size = m[2].toLowerCase() === 'xl' ? 'XL' : m[2].toLowerCase() === 'lg' ? 'Lg' : 'Rg';
-      parts.push(`${qty} ${size}`);
-    });
-  return parts.length > 0 ? parts.join(' + ') : String(riceCount).trim();
-};
-
 const kitchenDietRank = (mealType: string | null | undefined): number => {
   const t = String(mealType || '').toLowerCase();
   if (t.includes('non')) return 1; // Non-Veg first
@@ -488,15 +358,9 @@ const getCustomInstructionsText = (
       normalizeCurryProfile(parsed.tth),
       parsed.pattern_type
     );
-    const filteredExtras = Array.isArray(parsed.extras)
-      ? parsed.extras.filter(
-          (extra) =>
-            extra !== 'Salad' && extra !== 'Dessert'
-        )
-      : [];
     const extras =
-      filteredExtras.length > 0
-        ? ` + ${filteredExtras.join(' + ')}`
+      Array.isArray(parsed.extras) && parsed.extras.length > 0
+        ? ` + ${parsed.extras.join(' + ')}`
         : '';
     if (!base) return extras || null;
     return `${base}${extras}`;
@@ -669,171 +533,6 @@ const describeTodayOverride = (
   }
 
   return tokens.length > 0 ? tokens.join(' · ') : 'one-time change';
-};
-
-
-// ── Standard subscription package vocabulary ─────────────────────────────────
-// The default plan text ("1 Dal + 1 Sabji + Salad + Dessert (weekly)") describes
-// a STANDARD order and must NEVER raise an alert — so the standard curry counts,
-// a single Salad / Dessert, and the plan boilerplate are stripped from every
-// surface before the ALERTS / SPECIAL column is built.
-const STANDARD_CURRY_TOKEN = /\b(?:1|one)\s*x?\s*(?:dal|daal|sabji|chicken|gravy)\b/gi;
-
-// Removes the standard-package vocabulary from a meal string, returning the
-// leftover deviation text ("" when the string was a clean standard order).
-// A doubled side ("2x Salad") is NOT standard and is preserved.
-const stripStandardMealText = (text: string): string =>
-  String(text || '')
-    .replace(/\(weekly\)/gi, ' ')
-    .replace(STANDARD_CURRY_TOKEN, ' ')
-    .replace(/(\d+)?\s*x?\s*(salad|dessert)\b/gi, (match, count) =>
-      count === undefined || count === '1' ? ' ' : match
-    )
-    .replace(/\bweekly\b/gi, ' ')
-    .replace(/[+·|,]/g, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-// True when a free-text note is nothing BUT standard-package vocabulary — e.g. a
-// mirrored "1 Dal + 1 Sabji + Salad + Dessert (weekly)" string. Such notes carry
-// no operational signal and are dropped from the kitchen sheet.
-const isStandardOnlyNote = (part: string): boolean =>
-  stripStandardMealText(part).replace(/[\s()+.\-]/g, '') === '';
-
-// One SIDE add-on ("salad" / "dessert") read as an explicit DEVIATION from the
-// standard single portion: "2x Salad" → "2x Salad", "No Salad" → "No Salad",
-// while a bare "Salad"/"Dessert" (part of every standard tiffin) or a plain
-// count of 1 resolves to null so default plan items never alarm the kitchen.
-const resolveSideAlert = (text: string, keyword: string, label: string): string | null => {
-  if (new RegExp(`\\bno\\s+${keyword}\\b`).test(text)) return `No ${label}`;
-  const xMatch = text.match(new RegExp(`(\\d+)\\s*x\\s*${keyword}\\b`));
-  const plainMatch = text.match(new RegExp(`(\\d+)\\s*${keyword}\\b`));
-  const count = xMatch
-    ? parseInt(xMatch[1], 10)
-    : plainMatch
-      ? parseInt(plainMatch[1], 10)
-      : null;
-  if (count === null || count === 1) return null;
-  return `${count}x ${label}`;
-};
-
-// Compact per-bag SIDES indicator for the printed roster / on-screen chip:
-// "S" (salad), "D" (dessert), "S+D" (both), "2S+D" (double salad + dessert) and
-// "—" for a bag that includes no add-ons.
-const formatSidesBadge = (salad: number, dessert: number): string => {
-  const parts: string[] = [];
-  if (salad > 0) parts.push(salad > 1 ? `${salad}S` : 'S');
-  if (dessert > 0) parts.push(dessert > 1 ? `${dessert}D` : 'D');
-  return parts.length > 0 ? parts.join('+') : '—';
-};
-
-// ── Printed roster ALERTS / SPECIAL column ───────────────────────────────────
-// Surfaces ONLY the operational deviations worth flagging on the kitchen sheet
-// — special curry counts ("2 Sabji" / "No Daal"), doubled sides ("2x Salad"),
-// allergies ("Lactose intolerant") and prep notes ("Carry Bag"). The standard
-// package ("1 Dal + 1 Sabji + Salad + Dessert (weekly)") is muted, so a clean
-// standard order resolves to null and prints "—".
-const buildAlertSummary = (input: {
-  customRule: string | null;
-  todayOverride: string | null;
-  notes: string | null;
-  deliveryInstructions: string | null;
-  isNonVeg: boolean;
-  isChickenDay: boolean;
-}): string | null => {
-  const tokens: string[] = [];
-  if (input.todayOverride) tokens.push(input.todayOverride);
-  if (input.customRule) tokens.push(input.customRule);
-
-  // Explicit curry counts that deviate from the standard profile for the row's
-  // day/type. Suppressed when a custom rule / today override already summarizes
-  // the deviation (avoids printing the same exception twice).
-  // One normalized haystack (delivery_instructions + notes + custom rule) scanned
-  // for explicit curry / side deviations.
-  const normalized = `${input.deliveryInstructions || ''} ${input.notes || ''} ${
-    input.customRule || ''
-  }`
-    .toLowerCase()
-    .replace(/daal/g, 'dal');
-
-  if (!input.customRule && !input.todayOverride) {
-    // Standard profile: non-veg on a chicken day = 1 Sabji + 1 Chicken; every
-    // other case (veg customer / veg day) = 1 Dal + 1 Sabji.
-    const baseline = input.isNonVeg && input.isChickenDay
-      ? { dal: 0, sabji: 1, chicken: 1, gravy: 0 }
-      : { dal: 1, sabji: 1, chicken: 0, gravy: 0 };
-    const labelFor: Record<keyof typeof baseline, string> = {
-      dal: 'Daal', sabji: 'Sabji', chicken: 'Chicken', gravy: 'Gravy',
-    };
-    // Only EXPLICITLY-numbered items are compared: an item the text never
-    // mentions (e.g. a Half plan's single container) is not a "missing" alert.
-    const explicitCount = (keyword: string): number | null => {
-      const xMatch = normalized.match(new RegExp(`(\\d+)\\s*x\\s*${keyword}\\b`));
-      if (xMatch) return parseInt(xMatch[1], 10);
-      const plainMatch = normalized.match(new RegExp(`(\\d+)\\s*${keyword}\\b`));
-      if (plainMatch) return parseInt(plainMatch[1], 10);
-      return null;
-    };
-    (Object.keys(labelFor) as Array<keyof typeof baseline>).forEach(key => {
-      const count = explicitCount(key);
-      if (count === null || count === baseline[key]) return;
-      tokens.push(count === 0 ? `No ${labelFor[key]}` : `${count} ${labelFor[key]}`);
-    });
-    // Explicit "No Daal" / "No Sabji" exclusions carry no number.
-    for (const match of normalized.matchAll(/\bno\s+(dal|sabji|chicken|gravy)\b/g)) {
-      tokens.push(`No ${labelFor[match[1] as keyof typeof baseline]}`);
-    }
-  }
-
-  // Free-text notes / dietary flags ("Lactose intolerant", "Need onion in
-  // salad"). Standard-package phrasing is dropped so the default plan text never
-  // leaks into the kitchen sheet.
-  if (input.notes) {
-    input.notes
-      .split(/[·|\n]+/)
-      .map(part => part.trim())
-      .filter(Boolean)
-      .filter(part => !isStandardOnlyNote(part))
-      .forEach(part => tokens.push(part));
-  }
-
-  // SIDE add-ons: only doubled / excluded portions raise an alert. A standard
-  // single Salad / Dessert that ships with every tiffin stays silent so default
-  // plan items never fill up the column.
-  const saladAlert = resolveSideAlert(normalized, 'salad', 'Salad');
-  if (saladAlert) tokens.push(saladAlert);
-  const dessertAlert = resolveSideAlert(normalized, 'dessert', 'Dessert');
-  if (dessertAlert) tokens.push(dessertAlert);
-
-  // Prep markers anywhere in the merged meal text.
-  if (/\bextra\s+roti\b/.test(normalized)) tokens.push('Extra Roti');
-  if (/\bcarry\s*bag\b/.test(normalized)) tokens.push('Carry Bag');
-
-  // Dedupe (case-insensitive), then drop any token already contained in a richer
-  // one — so "2x Salad" is never re-listed after a custom rule that already
-  // spells out "… + 2x Salad" (the "2 SABJI + SALAD + DESSERT · SALAD" bug).
-  const seen = new Set<string>();
-  const unique = tokens.filter(token => {
-    const key = token.toLowerCase().replace(/\s+/g, ' ').trim();
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  const collapsed = unique.filter(token => {
-    const key = token.toLowerCase().replace(/\s+/g, ' ').trim();
-    return !unique.some(
-      other =>
-        other !== token &&
-        other.toLowerCase().replace(/\s+/g, ' ').includes(key)
-    );
-  });
-  
-  // Strip standard plan strings from each token (e.g., "2 SABJI + SALAD + DESSERT" → "2 SABJI")
-  const cleaned = collapsed.map(token => {
-    return stripStandardMealText(token).trim() || token;
-  });
-  
-  return cleaned.length > 0 ? cleaned.join(' · ') : null;
 };
 
 
@@ -1654,25 +1353,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const dalBatchRows = buildBatchRows(selectedDalRecipe, metrics.dalPackRG, metrics.dalPackLG);
   const sabjiBatchRows = buildBatchRows(selectedSabjiRecipe, metrics.sabjiPackRG, metrics.sabjiPackLG);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // PRINT MANIFEST DERIVED VALUES — headline names pulled from the selected
-  // daily menu, cooked-rice volume, and the raw-ingredient breakdown lines for
-  // the cook's batch-scaling box.
-  // ─────────────────────────────────────────────────────────────────────────
-  const printDalName = selectedDalRecipe?.name || (veg1 || '').trim() || '—';
-  const printSabjiName = selectedSabjiRecipe?.name || (veg2 || '').trim() || '—';
-  const printChickenName = isChickenDay ? (nonVeg || '').trim() || 'Chicken Curry' : null;
-
-  // Explicit sides line for the printed summary: omit zero counts (else "—") so
-  // zeros never clutter the sheet.
-  const printedSideParts: string[] = [];
-  if (metrics.saladCount > 0) printedSideParts.push(`Salad: ${metrics.saladCount}`);
-  if (metrics.dessertCount > 0) printedSideParts.push(`Dessert: ${metrics.dessertCount}`);
-  const printSidesLabel = printedSideParts.length > 0 ? printedSideParts.join(', ') : '—';
-
-  const sabjiBreakdownLines = formatBatchBreakdownLines(sabjiBatchRows);
-  const dalBreakdownLines = formatBatchBreakdownLines(dalBatchRows);
-
   return (
     <div className="flex flex-col h-screen bg-[#F9FBFC] overflow-hidden font-sans text-[#292D32] print:h-auto print:overflow-visible print:bg-white">
       
@@ -1736,225 +1416,87 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       {/* DASHBOARD GRID WORKSPACE (relaxed for print so the manifest paginates) */}
       <div className="flex-1 overflow-y-auto p-8 space-y-6 print:flex-none print:h-auto print:overflow-visible print:p-3">
 
-        {/* ═══ PRINT-ONLY KITCHEN MANIFEST — HEADLINE + COOK'S BOX ═══
+        {/* ═══ PRINT-ONLY KITCHEN PREP & PACKING MANIFEST HEADER + STATION STRIP ═══
             `hidden print:block` — this block exists ONLY in the browser's print
             output (sidebar, KPI cards, dark production menu, day switcher, and
-            schema-reload banners are all print:hidden). It reproduces the physical
-            prep notebook: a large date + menu headline, a batch-scaling cook's box,
-            then the compact packing roster below. Never split this block across
-            pages. */}
-        <div
-          className="hidden print:block mb-3 border border-black break-inside-avoid"
-          style={{ pageBreakInside: 'avoid' }}
-        >
-          {/* Headline: a clean flex row — large date on the left, order-count
-              badge on the right. Dish names live in their batch cards below. */}
-          <div className="flex items-center justify-between gap-4 px-3 py-2 border-b border-black">
-            <h2 className="text-2xl font-black tracking-tight leading-none text-black">
-              {printDeliveryDateLabel}
-            </h2>
-            <span className="shrink-0 text-xl font-black tracking-wide text-black whitespace-nowrap">
-              {metrics.totalMeals} TOTAL ORDERS
-            </span>
-          </div>
-
-          {/* Kitchen Batch Scaling & Cook's Summary — scaled raw weights in oz */}
-          <div className="grid grid-cols-4 divide-x divide-black border-b border-black">
-            {/* Sabji — total cooked oz + explicit container split + raw breakdown */}
-            <div className="p-2 min-w-0">
-              <span className="block text-[10px] font-black uppercase tracking-wide text-black">
-                Sabji · {printSabjiName}
-              </span>
-              <span className="mt-0.5 block text-2xl font-black text-black">
-                {metrics.sabjiOz} oz
-              </span>
-              <p className="text-[11px] font-bold leading-snug text-black">
-                Regular: {metrics.sabjiPackRG}, Large: {metrics.sabjiPackLG}
+            schema-reload banners are all print:hidden). */}
+        <div className="hidden print:block mb-3 border border-black">
+          {/* Title row: KITCHEN PREP & PACKING MANIFEST + delivery date + order count */}
+          <div className="flex items-end justify-between gap-6 px-4 pt-3 pb-2">
+            <div className="min-w-0">
+              <h2 className="text-[22px] font-black uppercase tracking-widest leading-none text-black">
+                Kitchen Prep &amp; Packing Manifest
+              </h2>
+              <p className="mt-1.5 text-[13px] font-bold text-black">
+                Delivery Date: {printDeliveryDateLabel}
               </p>
-              <div className="mt-1 space-y-0.5 text-[10px] font-medium leading-snug text-black">
-                {sabjiBreakdownLines.map((line, index) => (
-                  <div key={index} className="break-words">• {line}</div>
-                ))}
-              </div>
             </div>
-
-            {/* Daal — total cooked oz + explicit container split + raw breakdown */}
-            <div className="p-2 min-w-0">
-              <span className="block text-[10px] font-black uppercase tracking-wide text-black">
-                Daal · {printDalName}
+            <div className="shrink-0 rounded-sm border-2 border-black px-3 py-1 text-center">
+              <span className="text-[13px] font-black uppercase tracking-wide text-black whitespace-nowrap">
+                {metrics.totalMeals} Total Orders
               </span>
-              <span className="mt-0.5 block text-2xl font-black text-black">
-                {metrics.dalOz} oz
-              </span>
-              <p className="text-[11px] font-bold leading-snug text-black">
-                Regular: {metrics.dalPackRG}, Large: {metrics.dalPackLG}
-              </p>
-              <div className="mt-1 space-y-0.5 text-[10px] font-medium leading-snug text-black">
-                {dalBreakdownLines.map((line, index) => (
-                  <div key={index} className="break-words">• {line}</div>
-                ))}
-              </div>
-            </div>
-
-            {/* Chicken — leg / piece count (or the idle veg-day state) */}
-            <div className="p-2 min-w-0">
-              <span className="block text-[10px] font-black uppercase tracking-wide text-black">
-                Chicken · {printChickenName || 'Veg Day'}
-              </span>
-              {isChickenDay ? (
-                <>
-                  <span className="mt-0.5 block text-xl font-bold text-black">
-                    {metrics.chickenLegs} Legs
-                  </span>
-                  <p className="text-[11px] font-bold leading-snug text-black">
-                    Regular: {chickenStationPackRG}, Large: {chickenStationPackLG}
-                  </p>
-                </>
-              ) : (
-                <p className="mt-1 text-[10.5px] font-bold leading-snug text-black">
-                  Veg Day — chicken station idle.
-                </p>
-              )}
-            </div>
-
-            {/* Breads & Sides — Roti / cooked rice / side totals */}
-            <div className="p-2 min-w-0">
-              <span className="block text-[10px] font-black uppercase tracking-wide text-black">
-                Breads &amp; Sides
-              </span>
-              <span className="mt-0.5 block text-2xl font-black text-black">
-                {metrics.totalRoti} Roti
-                {metrics.totalPronthi > 0 ? ` + ${metrics.totalPronthi} Pronthi` : ''}
-              </span>
-              <p className="text-[11px] font-bold leading-snug text-black">
-                Rice — Regular: {metrics.rice.rg}, Large: {metrics.rice.lg}
-                {metrics.rice.xl > 0 ? `, XL: ${metrics.rice.xl}` : ''}
-              </p>
-              <p className="mt-1 text-[11px] font-bold leading-snug text-black break-words">
-                {printSidesLabel}
-              </p>
             </div>
           </div>
-        </div>
 
-        {/* ═══ PRINT-ONLY COMPACT PACKING ROSTER ═══
-            `.print-sheet` scopes the globals.css print rules (clean black borders,
-            high density, per-row pagination). Exact kitchen-notebook column order:
-            [ ] · ALERTS / SPECIAL · CUSTOMER · STREET / BLDG · SIZE · TYPE · ROTI · RICE · SIDES. */}
-        <div className="hidden print:block print-sheet">
-          <table className="w-full">
-            <thead>
-              <tr>
-                <th className="w-[24px] text-center">[ ]</th>
-                <th className="text-left">CUSTOMER</th>
-                <th className="text-left">STREET / BLDG</th>
-                <th className="w-[34px] text-center">SIZE</th>
-                <th className="w-[38px] text-center">TYPE</th>
-                <th className="w-[44px] text-center">ROTI</th>
-                <th className="w-[58px] text-center">RICE</th>
-                <th className="text-left">ALERTS / SPECIAL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {manifestCustomers.filter(c => !c.isSkipped).length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="text-center">
-                    No active kitchen deliveries routed for {activeDay}.
-                  </td>
-                </tr>
-              ) : (
-                manifestCustomers
-                  .filter(c => !c.isSkipped)
-                  .map(customer => {
-                    // Mirror the on-screen notes cell so the printed ALERTS column
-                    // carries the exact same deviation vocabulary.
-                    const override = dailyOverrides[customer.id];
-                    const baseRow = baseCustomerById.get(customer.id);
-                    const todayDeviation =
-                      override && baseRow && overrideHasMealSnapshot(override)
-                        ? describeTodayOverride(baseRow, override)
-                        : null;
-                    const hasTodayOverride =
-                      todayDeviation !== null && todayDeviation !== 'one-time change';
-                    const todayOverrideLabel = hasTodayOverride
-                      ? `⚡ Today: ${todayDeviation}`
-                      : null;
-                    const customRule = hasTodayOverride
-                      ? null
-                      : getCustomInstructionsText(customer);
-                    const rawNotes = [
-                      customer.dietary_notes,
-                      customer.notes,
-                      customer.side_notes,
-                      customer.custom_instructions,
-                    ].filter(
-                      (v): v is string =>
-                        typeof v === 'string' &&
-                        v.trim() !== '' &&
-                        v.trim() !== '—' &&
-                        v.trim() !== 'None'
-                    );
-                    const noteText =
-                      rawNotes.length > 0
-                        ? [...new Set(rawNotes.map(v => v.trim()))].join(' · ')
-                        : null;
-                    const alertText = buildAlertSummary({
-                      customRule,
-                      todayOverride: todayOverrideLabel,
-                      notes: noteText,
-                      deliveryInstructions: customer.delivery_instructions,
-                      isNonVeg: (customer.meal_type || '').toLowerCase().includes('non'),
-                      isChickenDay,
-                    });
-                    // Pickup orders have no routable address → printed as "PU".
-                    const street = isPickupOnDay(customer, activeDay)
-                      ? 'PU'
-                      : formatShortAddress(customer.delivery_address) || '—';
-                    const hasPronthi =
-                      typeof customer.pronthi_count === 'number' && customer.pronthi_count > 0;
-                    const rotiText =
-                      typeof customer.roti_count === 'number' && customer.roti_count > 0
-                        ? `${customer.roti_count}${hasPronthi ? ` +${customer.pronthi_count}P` : ''}`
-                        : hasPronthi
-                          ? `${customer.pronthi_count}P`
-                          : '—';
-                    const riceText = formatShortRice(customer.rice_count);
-                    return (
-                      <tr
-                        key={customer.id}
-                        className="break-inside-avoid"
-                        style={{ pageBreakInside: 'avoid' }}
-                      >
-                        {/* 1) [ ] pen-check target for the packers */}
-                        <td className="text-center align-middle">
-                          <span className="inline-block w-3.5 h-3.5 border border-black align-middle" />
-                        </td>
-                        {/* 2) CUSTOMER */}
-                        <td className="text-left font-bold break-words">{customer.full_name}</td>
-                        {/* 3) STREET / BLDG — shortened address (or "PU") */}
-                        <td className="text-left break-words">{street}</td>
-                        {/* 4) SIZE — L (Large/12oz) or R (Regular/8oz) */}
-                        <td className="text-center font-black">
-                          {formatSizeBadge(customer.portion_size)}
-                        </td>
-                        {/* 5) TYPE — V or NV */}
-                        <td className="text-center font-black">
-                          {formatTypeBadge(customer.meal_type)}
-                        </td>
-                        {/* 6) ROTI — count (+ Pronthi marker when present) */}
-                        <td className="text-center font-bold">{rotiText}</td>
-                        {/* 7) RICE — Rg / Lg / — */}
-                        <td className="text-center font-bold">{riceText}</td>
-                        {/* 8) ALERTS / SPECIAL — blank ("—") for standard orders */}
-                        <td className="text-left font-black uppercase break-words">
-                          {alertText ?? '—'}
-                        </td>
-                      </tr>
-                    );
-                  })
+          {/* Menu strip: plain text of today's Dal / Sabji / Non-Veg selections */}
+          <div className="border-y border-slate-300 px-4 py-1.5 text-[12px] font-semibold text-black">
+            Today&apos;s Menu — Dal: {(veg1 || '').trim() || '—'} · Sabji:{' '}
+            {(veg2 || '').trim() || '—'} · Non-Veg:{' '}
+            {isChickenDay ? (nonVeg || '').trim() || '—' : 'None (Veg Day)'}
+          </div>
+
+          {/* Print summary panels — BATCH COOKING TOTALS (line cooks) and CONTAINER
+              STAGING COUNTS (empty containers to pull) stack full-width so each
+              station reads its numbers top-to-bottom like a scale ticket. */}
+          <div className="px-4 py-3">
+            {/* a) BATCH COOKING TOTALS */}
+            <div className="print:grid print:grid-cols-2 border border-black p-2 mb-2 text-[12px]">
+              <h3 className="col-span-2 text-[10.5px] font-black uppercase tracking-widest text-black border-b border-black pb-1 mb-1.5">
+                Batch Cooking Totals
+              </h3>
+              <div className="font-medium leading-snug text-black">
+                <span className="font-black">Breads:</span> {metrics.totalRoti} Roti |{' '}
+                {metrics.totalPronthi} Pronthi ({metrics.totalRoti + metrics.totalPronthi} Total)
+              </div>
+              <div className="font-medium leading-snug text-black">
+                <span className="font-black">Sabji:</span> {metrics.sabjiOz} oz |{' '}
+                <span className="font-black">Dal:</span> {metrics.dalOz} oz |{' '}
+                <span className="font-black">Chicken:</span>{' '}
+                {isVegDay ? '0 oz (Veg Day)' : `${metrics.chickenOz} oz`}
+              </div>
+            </div>
+            {/* b) CONTAINER STAGING COUNTS */}
+            <div className="print:grid print:grid-cols-2 border border-black p-2 mb-3 text-[12px]">
+              <h3 className="col-span-2 text-[10.5px] font-black uppercase tracking-widest text-black border-b border-black pb-1 mb-1.5">
+                Container Staging Counts{' '}
+                <span className="text-[9px] font-bold tracking-wider">
+                  (Empty containers to pull)
+                </span>
+              </h3>
+              <div className="font-medium leading-snug text-black">
+                <span className="font-black">Sabji Packs:</span> {metrics.sabjiPackLG}x LG,{' '}
+                {metrics.sabjiPackRG}x RG
+              </div>
+              <div className="font-medium leading-snug text-black">
+                <span className="font-black">Dal Packs:</span> {metrics.dalPackLG}x LG,{' '}
+                {metrics.dalPackRG}x RG
+              </div>
+              <div className="font-medium leading-snug text-black">
+                <span className="font-black">Rice Packs:</span> {metrics.rice.lg}x LG,{' '}
+                {metrics.rice.rg}x RG, {metrics.rice.xl || 0}x XL
+              </div>
+              <div className="font-medium leading-snug text-black">
+                <span className="font-black">Cold Sides:</span> {metrics.saladCount}x Salad,{' '}
+                {metrics.dessertCount}x Dessert
+              </div>
+              {isChickenDay && (
+                <div className="col-span-2 font-medium leading-snug text-black">
+                  <span className="font-black">Chicken Packs:</span> {chickenStationPackLG}x LG,{' '}
+                  {chickenStationPackRG}x RG
+                </div>
               )}
-            </tbody>
-          </table>
+            </div>
+          </div>
         </div>
 
         {/* Degraded-persistence banner (customer_daily_overrides missing/stale) */}
@@ -2330,10 +1872,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
         </div>
 
-        {/* FULL-WIDTH PACKING MANIFEST — SCREEN ONLY. The printable sheet is the
-            dedicated print-only roster above (`.print-sheet`); this richer,
-            interactive table is hidden in the browser's print output. */}
-        <div className="bg-white border border-[#EEEEEE] rounded-xl shadow-sm overflow-hidden w-full print:hidden">
+        {/* FULL-WIDTH PACKING MANIFEST — `.print-sheet` is the scoped print region
+            (see globals.css @media print) that drives contrast + row pagination */}
+        <div className="bg-white border border-[#EEEEEE] rounded-xl shadow-sm overflow-hidden w-full print-sheet print:rounded-none print:border-slate-300 print:overflow-visible">
           <div className="px-5 py-3 border-b border-[#F5F5F5] bg-[#FCFCFD] flex justify-between items-center print:hidden">
             <h3 className="text-[12px] font-bold text-[#11142D] uppercase tracking-wide">Kitchen Packing Manifest</h3>
             <button onClick={() => window.print()} className="text-[11.5px] font-bold text-[#5D5FEF] bg-[#F4F4FE] border border-[#EFEEFC] px-3 py-1 rounded-md hover:bg-[#5D5FEF] hover:text-white transition-all">
@@ -2539,16 +2080,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                             sideInstruction !== '' &&
                             sideInstruction !== 'None' &&
                             sideInstruction !== '—';
-                          // Strip the standard package boilerplate ("1 Dal + 1 Sabji
-                          // + Salad + Dessert (weekly)") so the cell shows ONLY the
-                          // deviation; a clean standard order leaves it empty.
-                          const strippedSideInstruction = hasSideInstruction
-                            ? stripStandardMealText(sideInstruction)
-                            : '';
                           const sideText = customInstruction || hasTodayOverride
                             ? null
-                            : strippedSideInstruction !== ''
-                              ? strippedSideInstruction
+                            : hasSideInstruction
+                              ? sideInstruction
                               : null;
                           // 3) Free-text notes from any stored note column.
                           const rawNotes = [
@@ -2575,17 +2110,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                               ? `⚡ ${customInstruction}`
                               : `⚡ Custom: ${customInstruction}`);
 
-                          // Compact per-bag SIDES indicator (S = Salad, D = Dessert).
-                          const sideAddons = resolveSideAddons(customer);
-                          const sidesBadge = formatSidesBadge(sideAddons.salad, sideAddons.dessert);
-
-                          if (
-                            !sideText &&
-                            !customLabel &&
-                            !noteText &&
-                            !todayOverrideLabel &&
-                            sidesBadge === '—'
-                          ) {
+                          if (!sideText && !customLabel && !noteText && !todayOverrideLabel) {
                             return <span className="text-gray-300">—</span>;
                           }
 
@@ -2613,14 +2138,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                                   title={sideText}
                                 >
                                   {sideText}
-                                </span>
-                              )}
-                              {sidesBadge !== '—' && (
-                                <span
-                                  className="max-w-full truncate inline-block px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-md text-[10.5px] font-bold leading-snug print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
-                                  title={`Sides: ${sidesBadge}`}
-                                >
-                                  🥗 SIDES {sidesBadge}
                                 </span>
                               )}
                               {noteText && (
