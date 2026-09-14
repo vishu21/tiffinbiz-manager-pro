@@ -34,22 +34,15 @@ type Customer = {
   delivery_address: string;
   dietary_notes: string | null;
   delivery_instructions: string | null;
-  // Optional legacy note/instruction columns that may exist on older schemas (the base
-  // customers table predates migration 00002). Surfaced through the manifest's
-  // "Side Instructions / Notes" cell whenever the values are present.
   notes?: string | null;
   side_notes?: string | null;
   custom_instructions?: string | null;
   meal_type?: string | null;
   portion_size?: string | null;
   roti_count?: number | null;
-  // Optional second bread count (migration 00006) — kept separate from roti_count so
-  // Pronthis are never folded into the Roti totals/badges.
   pronthi_count?: number | null;
   rice_count?: string | null;
   delivery_schedule?: string | null;
-  // Optional: per-day pickup flags (full day names) + legacy all-days pickup boolean.
-  // Both landed in migration 00011 and may be absent on older schemas.
   is_pickup?: boolean | null;
   pickup_days?: string[] | null;
   subscription_status?: string | null;
@@ -57,30 +50,20 @@ type Customer = {
   pause_end_date?: string | null;
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
-  // Optional: scheduled (future) cancel/pause support (migration 00014).
   scheduled_cancel_date?: string | null;
   scheduled_status?: 'cancelled' | 'paused' | null;
-  // Optional: subscription start date (migration 00008). When it is in the future the
-  // customer is "upcoming" and must NOT appear on the kitchen manifest/totals until the
-  // selected (target) date reaches that start date.
   start_date?: string | null;
   discount_type?: 'flat' | 'percent' | null;
   discount_value?: number | null;
   discount_note?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
-  // Derived (never a DB column): true when the selected date carries an active override
-  // row with is_skipped === true. Resolved in applyDailyOverride below and consumed by
-  // the metrics engine + the manifest row rendering.
   isSkipped?: boolean;
   created_at: string;
 };
 
 const EMPTY_OVERRIDES: Record<string, DailyOverrideRow> = {};
 
-// Shown when customer_daily_overrides cannot be reached (missing table or a stale
-// PostgREST schema cache). The Prep dashboard keeps working with session-local
-// overrides so the kitchen is never blocked by an unapplied migration.
 const formatOverrideUnavailableWarning = (detail?: string): string => {
   const base =
     'Daily override persistence is unavailable — the customer_daily_overrides table was not found (or the schema cache is stale). ' +
@@ -93,9 +76,6 @@ const DAYS_OF_WEEK = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
 ];
 
-// Local calendar date key (YYYY-MM-DD) for the manifest's selected date — used for
-// menu queries, daily overrides, and scheduled cancel/pause comparisons so nothing
-// ever rolls over at UTC midnight.
 const toLocalDateKey = (date: Date): string => {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -103,15 +83,12 @@ const toLocalDateKey = (date: Date): string => {
   return `${y}-${m}-${d}`;
 };
 
-// "Sep 11" style label (no weekday) for the compact Ends {date} manifest hint.
 const formatShortDate = (dateKey: string): string => {
   const date = new Date(`${dateKey}T12:00:00`);
   if (Number.isNaN(date.getTime())) return dateKey;
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-// Whole-day difference between two YYYY-MM-DD keys (to − from). Used to surface the
-// "Ends {date}" hint when a scheduled cancellation falls within the next 3 days.
 const daysBetweenKeys = (from: string, to: string): number => {
   const start = new Date(`${from}T12:00:00`);
   const end = new Date(`${to}T12:00:00`);
@@ -119,15 +96,6 @@ const daysBetweenKeys = (from: string, to: string): number => {
   return Math.round((end.getTime() - start.getTime()) / 86_400_000);
 };
 
-// ── Next active delivery date resolution ─────────────────────────────────────
-// The kitchen preps the day BEFORE delivery, so the default target is the next
-// calendar date (starting tomorrow) that routes at least one active delivery.
-// Days with zero scheduled customers (e.g. a non-operational Sunday) are skipped.
-
-// True when `customer` is prepared & packed for the delivery date `dateKey`.
-// This is the single scheduling predicate shared by the manifest filter AND the
-// initial-date resolver, so the default dashboard date always matches the rules
-// that decide which rows appear on the manifest.
 const isScheduledOn = (
   customer: Pick<
     Customer,
@@ -139,19 +107,12 @@ const isScheduledOn = (
   const schedule = customer.delivery_schedule || '';
   if (!schedule || schedule === '—') return false;
 
-  // Strict active-subscription filter: only currently-active customers are
-  // prepared and packed. Paused, cancelled, or expired customers are excluded.
   const subStatus = (customer.subscription_status || 'active').toLowerCase();
   if (subStatus !== 'active') return false;
 
-  // Scheduled (future) cancel/pause: the customer is served through their
-  // scheduled_cancel_date (that day shows the LAST DAY badge) and is dropped
-  // once the date has passed — even before auto-transition runs.
   const scheduledDate = customer.scheduled_cancel_date;
   if (scheduledDate && dateKey > scheduledDate) return false;
 
-  // Future subscription start (upcoming customer): nothing is prepared or packed
-  // until the start date itself arrives (start_date <= selected/target date).
   const startDate = customer.start_date;
   if (startDate && dateKey < startDate) return false;
 
@@ -177,12 +138,9 @@ const isScheduledOn = (
 
 const MAX_DELIVERY_LOOKAHEAD_DAYS = 14;
 
-// First date strictly after today that routes at least one active delivery.
-// Falls back to the plain next calendar day when nothing is scheduled inside the
-// lookahead window (fully paused operation) so the dashboard never errors.
 const resolveNextActiveDeliveryDate = (customers: Customer[]): Date => {
   const anchor = new Date();
-  anchor.setHours(12, 0, 0, 0); // midday — immune to DST boundary jumps
+  anchor.setHours(12, 0, 0, 0);
   for (let offset = 1; offset <= MAX_DELIVERY_LOOKAHEAD_DAYS; offset++) {
     const candidate = new Date(anchor);
     candidate.setDate(anchor.getDate() + offset);
@@ -197,9 +155,6 @@ const resolveNextActiveDeliveryDate = (customers: Customer[]): Date => {
   return fallback;
 };
 
-// Kitchen packing order used by the manifest below. Mirrors the Customers page
-// Kitchen Dispatch / Packing mode: Non-Veg first, then Full LG -> Half LG ->
-// Full RG -> Half RG, then alphabetical by customer name.
 const PORTION_RG = 'RG';
 const PORTION_LG = 'LG';
 const PORTION_HALF_RG = 'Half RG';
@@ -211,33 +166,21 @@ const normalizePortionToken = (value: string | null | undefined): string => {
     return v.includes('LG') || v.includes('LARGE') ? PORTION_HALF_LG : PORTION_HALF_RG;
   }
   if (v === 'LG' || v === 'LARGE') return PORTION_LG;
-  if (v === 'SM' || v === 'SMALL') return PORTION_HALF_RG; // legacy 1x 8oz
-  return PORTION_RG; // RG / REGULAR / empty -> full regular
+  if (v === 'SM' || v === 'SMALL') return PORTION_HALF_RG;
+  return PORTION_RG;
 };
 
-// Display helper for the Portion column: always emits a concise standard code
-// (LG / HALF LG / RG / HALF RG) regardless of the raw stored synonym ("Large",
-// "LARGE", "Regular", "HALF LARGE", ...). The cell's `uppercase` class renders
-// the canonical "Half LG" as "HALF LG".
 const formatPortionLabel = (value: string | null | undefined): string =>
   normalizePortionToken(value);
 
-// True container spec for a portion tier. Canonical mapping is intentional so Full
-// Large rows consistently read "2x 12oz" (never mixed with a 8oz subtext from an
-// "LG" vs "Large" spelling difference), and Half LG reads "1x 12oz" — the single
-// Large container — instead of a bogus "2x 8oz".
 const getPortionContainerSpec = (portionSize: string | null | undefined): string => {
   const p = normalizePortionToken(portionSize);
   if (p === PORTION_LG) return '2x 12oz';
   if (p === PORTION_HALF_LG) return '1x 12oz';
-  if (p === PORTION_HALF_RG) return '1x 8oz'; // includes legacy SM / SMALL
-  return '2x 8oz'; // PORTION_RG
+  if (p === PORTION_HALF_RG) return '1x 8oz';
+  return '2x 8oz';
 };
 
-
-// Rice cell guard: only a real positive rice quantity (1+ of any tier) prints. Raw
-// "0", "None", "—", and empty/falsy values all collapse to the clean placeholder so
-// a bare zero never shows up in the packing checklist.
 const hasRiceToPack = (value: string | null | undefined): boolean => {
   const text = String(value || '').trim().toLowerCase();
   if (!text || text === 'none' || text === '—' || text === '0') return false;
@@ -247,24 +190,16 @@ const hasRiceToPack = (value: string | null | undefined): boolean => {
   });
 };
 
-// ── Print-manifest data formatters ──────────────────────────────────────────
-// Everything below feeds the PRINT-ONLY kitchen roster + cook's summary box.
-// The on-screen dashboard keeps its richer badges/columns untouched.
-
-// Canadian province / common US state postal codes dropped from a shortened
-// address ("…, ON", "…, NY").
 const ADDRESS_REGION_CODES = new Set([
   'ON', 'BC', 'AB', 'SK', 'MB', 'QC', 'NB', 'NS', 'PE', 'NL', 'YT', 'NT', 'NU',
   'NY', 'WA', 'MI', 'OH', 'CA', 'TX', 'FL',
 ]);
-// Country trailers dropped when they trail the address.
+
 const ADDRESS_COUNTRIES = new Set([
   'canada', 'usa', 'us', 'u.s.a.', 'united states', 'united states of america',
   'uk', 'united kingdom', 'india',
 ]);
 
-// Common street-type suffixes → compact abbreviations so a printed row reads
-// "1405 Stackhouse Ave" instead of spilling the full "Avenue".
 const STREET_SUFFIX_ABBR: Record<string, string> = {
   avenue: 'Ave', ave: 'Ave',
   street: 'St', str: 'St',
@@ -300,15 +235,10 @@ const shortenStreetSuffixes = (line: string): string =>
     })
     .join(' ');
 
-// "1405 Stackhouse Avenue, London, ON N5X 1Z5" → "1405 Stackhouse Ave".
-// Keeps the unit + street line(s) (any segment carrying a street number) and
-// drops the postal code, city, province/state, and country trailers. Falls back
-// to the postal-stripped input when nothing street-like survives.
 const formatShortAddress = (address: string): string => {
   const raw = String(address || '').trim();
   if (!raw) return '';
 
-  // 1) Strip postal codes (Canadian A1A 1A1 / A1A1A1, US 5- or 9-digit ZIP).
   const withoutPostal = raw
     .replace(/[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d/g, ' ')
     .replace(/\b\d{5}(?:-\d{4})?\b/g, ' ')
@@ -316,8 +246,6 @@ const formatShortAddress = (address: string): string => {
     .replace(/\s+,/g, ',')
     .trim();
 
-  // 2) Split into comma segments: drop trailing region/country segments, then any
-  //    trailing segment that carries no street number (the city name).
   const segments = withoutPostal
     .split(',')
     .map(part => part.trim())
@@ -340,19 +268,19 @@ const formatShortAddress = (address: string): string => {
   return shortenStreetSuffixes(kept).replace(/\s{2,}/g, ' ').trim();
 };
 
-// Portion tier → single-clean print badge: L (Large / 12 oz) or R (Regular / 8 oz).
-const formatSizeBadge = (portionSize: string | null | undefined): 'L' | 'R' => {
+// Portion tier → single-clean print badge:
+// L (Large / 2x 12oz), HL (Half Large / 1x 12oz), R (Regular / 2x 8oz), HR (Half Regular / 1x 8oz)
+const formatSizeBadge = (portionSize: string | null | undefined): string => {
   const p = normalizePortionToken(portionSize);
-  return p === PORTION_LG || p === PORTION_HALF_LG ? 'L' : 'R';
+  if (p === PORTION_HALF_LG) return 'HL';
+  if (p === PORTION_HALF_RG) return 'HR';
+  if (p === PORTION_LG) return 'L';
+  return 'R';
 };
 
-// Meal type → single-clean print badge: V (Veg) or NV (Non-Veg).
 const formatTypeBadge = (mealType: string | null | undefined): 'V' | 'NV' =>
   String(mealType || '').toLowerCase().includes('non') ? 'NV' : 'V';
 
-// Raw-ingredient batch rows → stacked, OUNCES-ONLY lines
-// ("Eggplant (Baingan): 69 oz"). lbs/oz and kg/g conversions are intentionally
-// omitted: the kitchen preps these by weight on the scale.
 const formatBatchBreakdownLines = (
   rows: Array<{ name: string; totalOz: number }>,
 ): string[] =>
@@ -360,7 +288,6 @@ const formatBatchBreakdownLines = (
     ? ['No ingredient standards defined.']
     : rows.map(row => `${row.name}: ${Math.round(row.totalOz)} oz`);
 
-// Compact rice cell for the printed roster: "1 Lg + 2 Rg" (or "—" when none).
 const formatShortRice = (riceCount: string | null | undefined): string => {
   if (!hasRiceToPack(riceCount)) return '—';
   const parts: string[] = [];
@@ -379,8 +306,8 @@ const formatShortRice = (riceCount: string | null | undefined): string => {
 
 const kitchenDietRank = (mealType: string | null | undefined): number => {
   const t = String(mealType || '').toLowerCase();
-  if (t.includes('non')) return 1; // Non-Veg first
-  if (t.includes('veg')) return 2; // Veg second
+  if (t.includes('non')) return 1;
+  if (t.includes('veg')) return 2;
   return 3;
 };
 
@@ -401,15 +328,8 @@ const kitchenOrderSort = (a: Customer, b: Customer): number => {
   return (a.full_name || '').localeCompare(b.full_name || '');
 };
 
-// ── Custom curry / side-instruction formatting for the packaging manifest ──
-// Mirrors the Customers page NOTES-badge vocabulary so the kitchen sees the exact
-// same human phrases ("M/W/F: 1 Dal + 1 Chicken | T/Th: 2x Dal", ...) that admins
-// set in the customer editor. Harmanjeet-style MWF side rules are stored as a
-// structured JSON `curry_config`; these helpers turn that JSON back into text.
-
 type CurryProfile = { dal: number; sabji: number; chicken: number; gravy: number };
 
-// Official defaults per day group: Mon/Wed/Fri (non-veg day) vs Tue/Thu (veg day).
 const DEFAULT_MWF_PROFILE: CurryProfile = { dal: 0, sabji: 1, chicken: 1, gravy: 0 };
 const DEFAULT_TTH_PROFILE: CurryProfile = { dal: 1, sabji: 1, chicken: 0, gravy: 0 };
 
@@ -423,7 +343,6 @@ const normalizeCurryProfile = (p: Partial<CurryProfile> | null | undefined): Cur
 const curryProfilesEqual = (a: CurryProfile, b: CurryProfile): boolean =>
   a.dal === b.dal && a.sabji === b.sabji && a.chicken === b.chicken && a.gravy === b.gravy;
 
-// "1 Dal + 1 Chicken", "2 Dal + 2 Gravy", ...
 const formatCurryProfileText = (p: CurryProfile): string => {
   const parts: string[] = [];
   if (p.dal > 0) parts.push(p.dal > 1 ? `${p.dal} Dal` : '1 Dal');
@@ -433,7 +352,6 @@ const formatCurryProfileText = (p: CurryProfile): string => {
   return parts.join(' + ');
 };
 
-// "2x Dal" for a single doubled side; otherwise the standard "1 Dal + 1 Chicken" phrasing.
 const describeCurrySubstitution = (p: CurryProfile): string => {
   const entries: Array<[number, string]> = [
     [p.dal, 'Dal'],
@@ -446,13 +364,11 @@ const describeCurrySubstitution = (p: CurryProfile): string => {
   return formatCurryProfileText(p);
 };
 
-// Lists ONLY the day groups that deviate from their official default, joined with " | ".
 const formatCustomCurryRule = (
   mwf: CurryProfile,
   tth: CurryProfile,
   patternType: string | null | undefined
 ): string | null => {
-  // Veg-side custom profiles apply to every delivery day identically.
   if (patternType === 'veg_fixed') {
     return formatCurryProfileText(mwf) || null;
   }
@@ -467,15 +383,23 @@ const formatCustomCurryRule = (
   return deviations.join(' | ');
 };
 
-// Human-readable "custom instructions" for a customer flagged is_custom_curry. Structured
-// JSON curry_config → the day-grouped rule text; legacy plain-text config → verbatim.
 const getCustomInstructionsText = (
   customer: Pick<Customer, 'is_custom_curry' | 'curry_config'>
 ): string | null => {
   if (customer.is_custom_curry !== true) return null;
   const raw = (customer.curry_config || '').trim();
   if (!raw) return null;
-  if (!raw.startsWith('{')) return raw;
+
+  // Strips standard "+ Salad" and "+ Dessert" but keeps explicit "No Salad" / "No Dessert"
+  const cleanStandardAddons = (str: string) =>
+    str
+      .replace(/\s*\+\s*(?<!No\s+)Salad\b/gi, '')
+      .replace(/\s*\+\s*(?<!No\s+)Dessert\b/gi, '')
+      .trim();
+
+  if (!raw.startsWith('{')) {
+    return cleanStandardAddons(raw) || null;
+  }
   try {
     const parsed = JSON.parse(raw) as {
       pattern_type?: string;
@@ -488,34 +412,23 @@ const getCustomInstructionsText = (
       normalizeCurryProfile(parsed.tth),
       parsed.pattern_type
     );
-    const filteredExtras = Array.isArray(parsed.extras)
-      ? parsed.extras.filter(
-          (extra) =>
-            extra !== 'Salad' && extra !== 'Dessert'
-        )
-      : [];
-    const extras =
-      filteredExtras.length > 0
-        ? ` + ${filteredExtras.join(' + ')}`
-        : '';
-    if (!base) return extras || null;
-    return `${base}${extras}`;
+
+    let finalInstruction = base || '';
+    if (Array.isArray(parsed.extras)) {
+      const filteredExtras = parsed.extras.filter(
+        (extra) => extra !== 'Salad' && extra !== 'Dessert'
+      );
+      if (filteredExtras.length > 0) {
+        finalInstruction += (finalInstruction ? ' + ' : '') + filteredExtras.join(' + ');
+      }
+    }
+
+    return cleanStandardAddons(finalInstruction) || null;
   } catch {
-    return raw;
+    return cleanStandardAddons(raw) || null;
   }
 };
 
-
-// ── "Today Only" daily-override helpers ─────────────────────────────────────
-// A date-scoped override row stores a FULL snapshot of the customer's meal
-// config for one calendar date (created from the Quick Meal Edit drawer when
-// the "⚡ Today Only" scope is active). The resolved manifest for that date
-// layers the snapshot over the master customers row; every other calendar date
-// keeps using the master subscription defaults untouched.
-
-// True when a daily override row carries a real meal-config SNAPSHOT (the Quick Edit
-// drawer always writes at least meal_type + portion_size). A lone skip flag row created
-// by the Skip Banner leaves every meal column NULL and must NOT clobber the master row.
 const overrideHasMealSnapshot = (override: DailyOverrideRow): boolean =>
   override.meal_type !== null ||
   override.portion_size !== null ||
@@ -527,32 +440,18 @@ const overrideHasMealSnapshot = (override: DailyOverrideRow): boolean =>
   override.is_custom_curry !== null ||
   override.curry_config !== null;
 
-// Applies a daily override snapshot over a base customer row using a STRICT
-// fallback: an override column wins only when it actually carries a value, a NULL
-// override column falls back to the master `customers` row, and the built-in default
-// applies ONLY when neither holds a value. A skip-only row (no snapshot) keeps the
-// master profile untouched and merely marks the day skipped so the row mutes + drops
-// out of the totals. A skipped day is NOT prepped, so it always resolves the master
-// profile for display (e.g. Oormila's red NON-VEG badge must never degrade to 'VEG').
 const applyDailyOverride = (customer: Customer, override: DailyOverrideRow): Customer => {
   const isSkipped = override.is_skipped === true;
-  // Pure skip rows (no meal snapshot) and EVERY skipped day resolve straight from the
-  // master customer: a skip record can carry meal_type = NULL (or a stale legacy 'VEG'),
-  // and neither may repaint the customer's real dietary type while the meal is skipped.
   if (isSkipped || !overrideHasMealSnapshot(override)) {
     return { ...customer, isSkipped };
   }
   return {
     ...customer,
-    // Strict fallback (override → master → built-in default) so a NULL override column
-    // never clobbers a real master meal config.
     meal_type: override.meal_type ?? customer.meal_type ?? 'VEG',
     portion_size: override.portion_size ?? customer.portion_size ?? 'LG',
     roti_count: override.roti_count ?? customer.roti_count ?? 0,
     pronthi_count: override.pronthi_count ?? customer.pronthi_count ?? 0,
     rice_count: override.rice_count ?? customer.rice_count ?? null,
-    // Notes / instructions keep full-snapshot semantics: a NULL here is an intentional
-    // clear written by the Quick Edit drawer, so it is not back-filled from the master.
     dietary_notes: override.dietary_notes ?? null,
     delivery_instructions: override.delivery_instructions ?? null,
     is_custom_curry: override.is_custom_curry ?? null,
@@ -561,8 +460,6 @@ const applyDailyOverride = (customer: Customer, override: DailyOverrideRow): Cus
   };
 };
 
-// Builds a skip-only daily override row: every meal-config column stays NULL so the
-// master profile remains the source of truth for the row's display values.
 const buildSkipOverrideRow = (
   customerId: string,
   dateKey: string,
@@ -585,7 +482,6 @@ const buildSkipOverrideRow = (
 const curryCountsAreEqual = (a: CurryProfile, b: CurryProfile): boolean =>
   a.dal === b.dal && a.sabji === b.sabji && a.chicken === b.chicken && a.gravy === b.gravy;
 
-// Parses "2 Sabji", "2x Dal", "1 Dal + 1 Chicken" style count text into counts.
 const parseCurryCountText = (instructions: string | null | undefined): CurryProfile => {
   const text = String(instructions || '').trim().toLowerCase();
   if (!text || text === 'none' || text === '—') return { dal: 0, sabji: 0, chicken: 0, gravy: 0 };
@@ -605,8 +501,6 @@ const parseCurryCountText = (instructions: string | null | undefined): CurryProf
   };
 };
 
-// "2x Sabji", "1 Dal + 1 Chicken", ... (single-count sides keep the plain 1x
-// vocabulary the manifest already uses; doubled sides read "2x Sabji").
 const formatTodayCurryText = (p: CurryProfile): string => {
   const parts: string[] = [];
   const push = (count: number, label: string): void => {
@@ -624,17 +518,12 @@ const normalizeRiceText = (value: string | null | undefined): string => {
   return !t || t === 'None' || t === '—' ? '' : t;
 };
 
-// Compact human description of the deviation a "Today Only" override introduces
-// compared with the customer's master profile — the "⚡ Today: …" badge text.
 const describeTodayOverride = (
   base: Customer,
   override: DailyOverrideRow,
 ): string => {
   const tokens: string[] = [];
 
-  // Dietary-type deviation (Veg ⇄ Non-Veg). Surfaced explicitly so a diet-only
-  // "Today Only" change is never mistaken for a "one-time change" (which would
-  // otherwise hide the ⚡ Today badge for a genuine override).
   const baseNonVeg = (base.meal_type || '').toLowerCase().includes('non');
   const overrideNonVeg = (override.meal_type ?? base.meal_type ?? '')
     .toLowerCase()
@@ -671,17 +560,8 @@ const describeTodayOverride = (
   return tokens.length > 0 ? tokens.join(' · ') : 'one-time change';
 };
 
-
-// ── Standard subscription package vocabulary ─────────────────────────────────
-// The default plan text ("1 Dal + 1 Sabji + Salad + Dessert (weekly)") describes
-// a STANDARD order and must NEVER raise an alert — so the standard curry counts,
-// a single Salad / Dessert, and the plan boilerplate are stripped from every
-// surface before the ALERTS / SPECIAL column is built.
 const STANDARD_CURRY_TOKEN = /\b(?:1|one)\s*x?\s*(?:dal|daal|sabji|chicken|gravy)\b/gi;
 
-// Removes the standard-package vocabulary from a meal string, returning the
-// leftover deviation text ("" when the string was a clean standard order).
-// A doubled side ("2x Salad") is NOT standard and is preserved.
 const stripStandardMealText = (text: string): string =>
   String(text || '')
     .replace(/\(weekly\)/gi, ' ')
@@ -694,20 +574,14 @@ const stripStandardMealText = (text: string): string =>
     .replace(/\s{2,}/g, ' ')
     .trim();
 
-// True when a free-text note is nothing BUT standard-package vocabulary — e.g. a
-// mirrored "1 Dal + 1 Sabji + Salad + Dessert (weekly)" string. Such notes carry
-// no operational signal and are dropped from the kitchen sheet.
 const isStandardOnlyNote = (part: string): boolean =>
   stripStandardMealText(part).replace(/[\s()+.\-]/g, '') === '';
 
-// One SIDE add-on ("salad" / "dessert") read as an explicit DEVIATION from the
-// standard single portion: "2x Salad" → "2x Salad", "No Salad" → "No Salad",
-// while a bare "Salad"/"Dessert" (part of every standard tiffin) or a plain
-// count of 1 resolves to null so default plan items never alarm the kitchen.
 const resolveSideAlert = (text: string, keyword: string, label: string): string | null => {
   if (new RegExp(`\\bno\\s+${keyword}\\b`).test(text)) return `No ${label}`;
   const xMatch = text.match(new RegExp(`(\\d+)\\s*x\\s*${keyword}\\b`));
   const plainMatch = text.match(new RegExp(`(\\d+)\\s*${keyword}\\b`));
+
   const count = xMatch
     ? parseInt(xMatch[1], 10)
     : plainMatch
@@ -717,22 +591,14 @@ const resolveSideAlert = (text: string, keyword: string, label: string): string 
   return `${count}x ${label}`;
 };
 
-// Compact per-bag SIDES indicator for the printed roster / on-screen chip:
-// "S" (salad), "D" (dessert), "S+D" (both), "2S+D" (double salad + dessert) and
-// "—" for a bag that includes no add-ons.
 const formatSidesBadge = (salad: number, dessert: number): string => {
   const parts: string[] = [];
   if (salad > 0) parts.push(salad > 1 ? `${salad}S` : 'S');
   if (dessert > 0) parts.push(dessert > 1 ? `${dessert}D` : 'D');
+
   return parts.length > 0 ? parts.join('+') : '—';
 };
 
-// ── Printed roster ALERTS / SPECIAL column ───────────────────────────────────
-// Surfaces ONLY the operational deviations worth flagging on the kitchen sheet
-// — special curry counts ("2 Sabji" / "No Daal"), doubled sides ("2x Salad"),
-// allergies ("Lactose intolerant") and prep notes ("Carry Bag"). The standard
-// package ("1 Dal + 1 Sabji + Salad + Dessert (weekly)") is muted, so a clean
-// standard order resolves to null and prints "—".
 const buildAlertSummary = (input: {
   customRule: string | null;
   todayOverride: string | null;
@@ -745,28 +611,18 @@ const buildAlertSummary = (input: {
   if (input.todayOverride) tokens.push(input.todayOverride);
   if (input.customRule) tokens.push(input.customRule);
 
-  // Explicit curry counts that deviate from the standard profile for the row's
-  // day/type. Suppressed when a custom rule / today override already summarizes
-  // the deviation (avoids printing the same exception twice).
-  // One normalized haystack (delivery_instructions + notes + custom rule) scanned
-  // for explicit curry / side deviations.
-  const normalized = `${input.deliveryInstructions || ''} ${input.notes || ''} ${
-    input.customRule || ''
-  }`
+  const normalized = `${input.deliveryInstructions || ''} ${input.notes || ''} ${input.customRule || ''
+    }`
     .toLowerCase()
     .replace(/daal/g, 'dal');
 
   if (!input.customRule && !input.todayOverride) {
-    // Standard profile: non-veg on a chicken day = 1 Sabji + 1 Chicken; every
-    // other case (veg customer / veg day) = 1 Dal + 1 Sabji.
     const baseline = input.isNonVeg && input.isChickenDay
       ? { dal: 0, sabji: 1, chicken: 1, gravy: 0 }
       : { dal: 1, sabji: 1, chicken: 0, gravy: 0 };
     const labelFor: Record<keyof typeof baseline, string> = {
       dal: 'Daal', sabji: 'Sabji', chicken: 'Chicken', gravy: 'Gravy',
     };
-    // Only EXPLICITLY-numbered items are compared: an item the text never
-    // mentions (e.g. a Half plan's single container) is not a "missing" alert.
     const explicitCount = (keyword: string): number | null => {
       const xMatch = normalized.match(new RegExp(`(\\d+)\\s*x\\s*${keyword}\\b`));
       if (xMatch) return parseInt(xMatch[1], 10);
@@ -777,17 +633,22 @@ const buildAlertSummary = (input: {
     (Object.keys(labelFor) as Array<keyof typeof baseline>).forEach(key => {
       const count = explicitCount(key);
       if (count === null || count === baseline[key]) return;
+
+      // 1. Suppress standard 1 Chicken / Gravy on Veg Days
+      if (!input.isChickenDay && (key === 'chicken' || key === 'gravy') && count === 1) return;
+
+      // 2. Suppress standard 1 Chicken for Non-Veg on Chicken Days (already indicated by TYPE=NV)
+      if (input.isChickenDay && input.isNonVeg && key === 'chicken' && count === 1) return;
+
       tokens.push(count === 0 ? `No ${labelFor[key]}` : `${count} ${labelFor[key]}`);
     });
-    // Explicit "No Daal" / "No Sabji" exclusions carry no number.
     for (const match of normalized.matchAll(/\bno\s+(dal|sabji|chicken|gravy)\b/g)) {
-      tokens.push(`No ${labelFor[match[1] as keyof typeof baseline]}`);
+      const item = match[1] as keyof typeof baseline;
+      if (!input.isChickenDay && (item === 'chicken' || item === 'gravy')) continue;
+      tokens.push(`No ${labelFor[item]}`);
     }
   }
 
-  // Free-text notes / dietary flags ("Lactose intolerant", "Need onion in
-  // salad"). Standard-package phrasing is dropped so the default plan text never
-  // leaks into the kitchen sheet.
   if (input.notes) {
     input.notes
       .split(/[·|\n]+/)
@@ -797,21 +658,14 @@ const buildAlertSummary = (input: {
       .forEach(part => tokens.push(part));
   }
 
-  // SIDE add-ons: only doubled / excluded portions raise an alert. A standard
-  // single Salad / Dessert that ships with every tiffin stays silent so default
-  // plan items never fill up the column.
   const saladAlert = resolveSideAlert(normalized, 'salad', 'Salad');
   if (saladAlert) tokens.push(saladAlert);
   const dessertAlert = resolveSideAlert(normalized, 'dessert', 'Dessert');
   if (dessertAlert) tokens.push(dessertAlert);
 
-  // Prep markers anywhere in the merged meal text.
   if (/\bextra\s+roti\b/.test(normalized)) tokens.push('Extra Roti');
   if (/\bcarry\s*bag\b/.test(normalized)) tokens.push('Carry Bag');
 
-  // Dedupe (case-insensitive), then drop any token already contained in a richer
-  // one — so "2x Salad" is never re-listed after a custom rule that already
-  // spells out "… + 2x Salad" (the "2 SABJI + SALAD + DESSERT · SALAD" bug).
   const seen = new Set<string>();
   const unique = tokens.filter(token => {
     const key = token.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -827,99 +681,63 @@ const buildAlertSummary = (input: {
         other.toLowerCase().replace(/\s+/g, ' ').includes(key)
     );
   });
-  
-  // Strip standard plan strings from each token (e.g., "2 SABJI + SALAD + DESSERT" → "2 SABJI")
+
   const cleaned = collapsed.map(token => {
     return stripStandardMealText(token).trim() || token;
   });
-  
+
   return cleaned.length > 0 ? cleaned.join(' · ') : null;
 };
 
-
-// The drawer's unified save contract (Today Only / Date Range / Permanent Profile) is
-// committed through the single `saveCustomerOverride` server action.
 type QuickSaveRequest = QuickEditSaveRequest;
 
 export default function PrepDashboardClient({ initialCustomers }: { initialCustomers: Customer[] }) {
-  // The kitchen preps the day BEFORE delivery, so the dashboard opens on the next
-  // calendar date that routes at least one active delivery (typically tomorrow;
-  // non-operational days with zero scheduled deliveries are skipped).
   const [selectedDate, setSelectedDate] = useState<Date>(() =>
     resolveNextActiveDeliveryDate(initialCustomers)
   );
 
-  // Derive the active day name from the selected date — the week pill bar below
-  // highlights exactly this day-of-week for the resolved delivery date.
   const activeDay = DAYS_OF_WEEK[(selectedDate.getDay() + 6) % 7];
 
   const [veg1, setVeg1] = useState<string>('');
   const [veg2, setVeg2] = useState<string>('');
   const [nonVeg, setNonVeg] = useState<string>('Chicken Curry');
   const [isMenuLoading, setIsMenuLoading] = useState(false);
-  // Debounced auto-save status for today's production menu (Dal / Sabji / Non-Veg).
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  // Derived "write in flight" flag consumed by the Dal & Sabji card header status text.
   const isSaving = saveStatus === 'saving';
   const [availableRecipes, setAvailableRecipes] = useState<{ dal: Recipe[]; sabji: Recipe[] }>({ dal: [], sabji: [] });
   const [isRecipeManagerOpen, setIsRecipeManagerOpen] = useState(false);
 
-  // ── Today's Kitchen Menu (recipes catalog → batch prep calculator) ──────────
-  // `batchRecipes` holds every active recipe WITH its ingredient scaling factors;
-  // `selectedDalId` / `selectedSabjiId` mirror the daily_menu_selections row for
-  // the currently viewed date.
   const [batchRecipes, setBatchRecipes] = useState<RecipeWithIngredients[]>([]);
   const [selectedDalId, setSelectedDalId] = useState<string>('');
   const [selectedSabjiId, setSelectedSabjiId] = useState<string>('');
   const [menuSelectionError, setMenuSelectionError] = useState<string | null>(null);
   const [isMenuSelectionSaving, setIsMenuSelectionSaving] = useState(false);
 
-  // Tap-to-Edit Meal Config Quick Sheet (manifest row opens slide-over / bottom sheet)
   const [quickEditCustomer, setQuickEditCustomer] = useState<Customer | null>(null);
-  // Bumped on "Reset to Master Profile" to force the quick sheet to REMOUNT (and thereby
-  // re-hydrate its draft from the master profile) even though the customer id is unchanged.
   const [quickEditResetToken, setQuickEditResetToken] = useState(0);
   const [isQuickSaving, startQuickSaveTransition] = useTransition();
   const [quickSaveError, setQuickSaveError] = useState<string | null>(null);
-  // Single-day skip toggle in flight (Skip Banner in the drawer + Undo on a manifest row).
   const [isSkipPending, startSkipTransition] = useTransition();
-  // Multi-day vacation pause schedule/cancel in flight (drawer Vacation Pause banner).
   const [isVacationPending, startVacationTransition] = useTransition();
-  // Optimistic meal-config edits merged over the server rows so the manifest and
-  // carb totals update the instant a save is tapped (before the refetch lands).
   const [localEdits, setLocalEdits] = useState<Record<string, Partial<Customer>>>({});
-  // "Today Only" meal-config overrides cached per delivery date (selected date →
-  // customer id → full daily snapshot). Keeping dates cached in the map (instead
-  // of clearing on date change) means switching the calendar simply drops the
-  // previous date's overrides out of scope with zero effect-work.
   const [overridesByDate, setOverridesByDate] = useState<
     Record<string, Record<string, DailyOverrideRow>>
   >({});
-  // Degraded-persistence banner state. When customer_daily_overrides is missing
-  // (or its PostgREST schema cache is stale) the dashboard warns once and keeps
-  // "Today Only" edits in component state so nothing crashes.
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
   const [schemaReloading, setSchemaReloading] = useState(false);
   const router = useRouter();
 
-  // Opens the tap-to-edit quick sheet for a Kitchen Packing Manifest row.
   const openQuickEdit = (customer: Customer) => {
     setQuickEditCustomer(customer);
     setQuickSaveError(null);
   };
 
-  // Persists the drawer's unified save. Three scopes are supported:
-  //   - 'today' / 'range' → batch-write date-scoped override rows for every active delivery
-  //                         day in the window (a skip flag OR the custom meal snapshot);
-  //   - 'permanent'       → two-way sync into the master customers row, dropping the
-  //                         selected day's override so nothing pins the date to stale values.
   const handleQuickSave = (request: QuickSaveRequest) => {
     if (!quickEditCustomer) return;
     const target = quickEditCustomer;
     const { scope, startDate, endDate, isSkipped: skipRequested, config } = request;
     const changedKeys = Object.keys(config) as (keyof MealConfigPayload)[];
     const todayOverride = dailyOverrides[target.id];
-    // A skip draft that differs from the persisted flag is a real change on its own.
     const skipChanged = skipRequested !== (todayOverride?.is_skipped === true);
     const isNoOp =
       scope === 'permanent'
@@ -934,13 +752,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     setQuickEditCustomer(null);
     setQuickSaveError(null);
 
-    // The selected manifest date only shows an optimistic row when it falls inside the
-    // saved window (a range may start tomorrow, leaving today's row untouched).
     const selectedInWindow = selectedDateKey >= startDate && selectedDateKey <= endDate;
 
     if (scope === 'permanent') {
-      // Optimistic master update + drop the day override so the row reflects the
-      // just-saved permanent profile immediately.
       if (changedKeys.length > 0) {
         setLocalEdits(prev => ({
           ...prev,
@@ -967,7 +781,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           });
           if (!result.success) {
             if (!result.schemaAvailable) {
-              // Override table missing → the master update still landed; warn only.
               setPersistenceWarning(formatOverrideUnavailableWarning(result.message));
             } else {
               throw new Error(result.message || 'Could not save meal config. Please try again.');
@@ -976,7 +789,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           router.refresh();
           void refreshDailyOverrides(selectedDateKey);
         } catch (err) {
-          // Roll the optimistic update back so the row reflects the last DB state.
           if (changedKeys.length > 0) {
             setLocalEdits(prev => {
               const next = { ...prev };
@@ -1002,43 +814,39 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       return;
     }
 
-    // 'today' / 'range' scope: persist the override for the window. A skip writes a
-    // skip-only row (any existing meal snapshot is preserved); a meal save writes the full
-    // snapshot and (re)tags the row with the ⚡ Today badge.
     const previousRow = overridesByDate[selectedDateKey]?.[target.id];
     const optimisticRow: DailyOverrideRow = skipRequested
       ? previousRow
         ? { ...previousRow, is_skipped: true }
         : buildSkipOverrideRow(target.id, selectedDateKey, true)
       : {
-          customer_id: target.id,
-          override_date: selectedDateKey,
-          meal_type: config.meal_type ?? target.meal_type ?? null,
-          portion_size: config.portion_size ?? target.portion_size ?? null,
-          roti_count: config.roti_count ?? target.roti_count ?? null,
-          pronthi_count: config.pronthi_count ?? target.pronthi_count ?? null,
-          rice_count: config.rice_count ?? target.rice_count ?? null,
-          dietary_notes:
-            config.dietary_notes !== undefined
-              ? config.dietary_notes
-              : target.dietary_notes ?? null,
-          delivery_instructions:
-            config.delivery_instructions !== undefined
-              ? config.delivery_instructions
-              : target.delivery_instructions ?? null,
-          is_custom_curry:
-            config.is_custom_curry !== undefined
-              ? config.is_custom_curry
-              : target.is_custom_curry ?? null,
-          curry_config:
-            config.curry_config !== undefined
-              ? config.curry_config
-              : target.curry_config ?? null,
-          is_skipped: false,
-        };
+        customer_id: target.id,
+        override_date: selectedDateKey,
+        meal_type: config.meal_type ?? target.meal_type ?? null,
+        portion_size: config.portion_size ?? target.portion_size ?? null,
+        roti_count: config.roti_count ?? target.roti_count ?? null,
+        pronthi_count: config.pronthi_count ?? target.pronthi_count ?? null,
+        rice_count: config.rice_count ?? target.rice_count ?? null,
+        dietary_notes:
+          config.dietary_notes !== undefined
+            ? config.dietary_notes
+            : target.dietary_notes ?? null,
+        delivery_instructions:
+          config.delivery_instructions !== undefined
+            ? config.delivery_instructions
+            : target.delivery_instructions ?? null,
+        is_custom_curry:
+          config.is_custom_curry !== undefined
+            ? config.is_custom_curry
+            : target.is_custom_curry ?? null,
+        curry_config:
+          config.curry_config !== undefined
+            ? config.curry_config
+            : target.curry_config ?? null,
+        is_skipped: false,
+      };
 
     if (selectedInWindow) {
-      // Optimistic override → manifest + metric cards react instantly.
       setOverridesByDate(prev => {
         const day = { ...(prev[selectedDateKey] || {}) };
         day[target.id] = optimisticRow;
@@ -1058,7 +866,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         });
         if (!result.success) {
           if (!result.schemaAvailable) {
-            // Override table missing → keep the optimistic row session-local + warn.
             setPersistenceWarning(formatOverrideUnavailableWarning(result.message));
           } else {
             throw new Error(result.message || 'Could not save the override. Please try again.');
@@ -1067,7 +874,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         router.refresh();
         void refreshDailyOverrides(selectedDateKey);
       } catch (err) {
-        // Roll the optimistic override back so the row reflects the last DB state.
         if (selectedInWindow) {
           setOverridesByDate(prev => {
             const day = { ...(prev[selectedDateKey] || {}) };
@@ -1083,7 +889,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     });
   };
 
-  // Closes the quick sheet and clears the selected row.
   const closeQuickEdit = () => {
     setQuickEditCustomer(null);
     setQuickSaveError(null);
@@ -1092,13 +897,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const saveInFlightRef = useRef(false);
 
-  // Local (non-UTC) YYYY-MM-DD calendar key. Every DB key on this dashboard —
-  // daily_menus, customer_daily_overrides, and scheduled cancel/pause comparisons
-  // — is a local calendar date, never a UTC-split ISO string.
   const selectedDateKey = toLocalDateKey(selectedDate);
   const dateStr = selectedDateKey;
 
-  // Display label for the Quick Meal Edit drawer's "⚡ Today Only" scope pill.
   const selectedDateFormatted = selectedDate.toLocaleDateString('en-US', {
     weekday: 'short',
     month: 'short',
@@ -1108,7 +909,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       : {}),
   });
 
-  // Header label — the kitchen is prepping meals FOR this delivery date.
   const formattedTargetDate = selectedDate.toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
@@ -1118,7 +918,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       : {}),
   });
 
-  // Print manifest header date — always includes a 4-digit year (e.g. "Thursday, Sep 10, 2026").
   const printDeliveryDateLabel = selectedDate.toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'short',
@@ -1126,14 +925,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     year: 'numeric',
   });
 
-  // 🌙 Badge: shown only when the resolved date is literally the next calendar day.
   const isPreppingTomorrow = useMemo(() => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     return toLocalDateKey(tomorrow) === selectedDateKey;
   }, [selectedDateKey]);
 
-  // ── Daily "Today Only" override loader ─────────────────────────────────────
   const applyOverrideRows = useCallback(
     (dateKey: string, rows: DailyOverrideRow[]) => {
       const byCustomer: Record<string, DailyOverrideRow> = {};
@@ -1154,8 +951,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         applyOverrideRows(dateKey, result.rows);
         return { schemaAvailable: true };
       }
-      // Table missing or stale schema cache → keep any session-local overrides that
-      // already exist for the date instead of overwriting them with an empty list.
       console.warn(
         '[Prep] customer_daily_overrides unavailable; keeping session-local overrides.',
         result.message ?? ''
@@ -1165,14 +960,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     [applyOverrideRows]
   );
 
-  // Overrides that apply to the manifest's currently selected date — a stable
-  // empty map when the date has no overrides (so memo consumers never churn).
   const dailyOverrides = overridesByDate[selectedDateKey] || EMPTY_OVERRIDES;
 
-  // Toggles a single-day meal skip. Optimistically flips the day's override flag so the
-  // metric cards + manifest react instantly, then persists via toggleDailySkip (which also
-  // extends/rolls back the customer's billing cycle end by one delivery day). A failed
-  // write rolls the optimistic flip back so every surface reflects the last DB state.
   const handleToggleSkip = (customerId: string, nextSkipped: boolean) => {
     const previousRow = overridesByDate[selectedDateKey]?.[customerId];
     setQuickSaveError(null);
@@ -1181,18 +970,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       const day = { ...(prev[selectedDateKey] || {}) };
       const existing = day[customerId];
       if (nextSkipped) {
-        // Skip: keep any existing meal-config snapshot (diet / portion / roti /
-        // notes) and only flip the flag; otherwise add a skip-only row so the day
-        // drops out of the prep totals while the master profile stays intact.
         day[customerId] = existing
           ? { ...existing, is_skipped: true }
           : buildSkipOverrideRow(customerId, selectedDateKey, true);
       } else {
-        // Undo → HARD RESET: drop the customer's override entry entirely so the row
-        // resolves 100% from the master `customers` profile — no override merging runs.
-        // A skip record carries ONLY `is_skipped`, so removing it can never strand stale
-        // meal-config columns (a bogus 'VEG' / 'RG', an old snapshot, …) on the row nor
-        // re-trigger the ⚡ Today badge. Non-veg / LG / roti counts stay untouched.
         delete day[customerId];
       }
       return { ...prev, [selectedDateKey]: day };
@@ -1237,9 +1018,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     });
   };
 
-  // Cancels the active vacation pause: the server removes the skip rows it created,
-  // rolls the billing cycle back by that count, and clears the pause window so meals
-  // resume. The drawer optimistically clears its window banner.
   const handleCancelVacationPause = (customerId: string) => {
     setQuickSaveError(null);
     startVacationTransition(async () => {
@@ -1271,17 +1049,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     });
   };
 
-  // "Reset to Master Profile" — discards EVERY daily change for the selected date by
-  // deleting the day's override row, then reloads the master customer profile so the
-  // drawer + manifest revert instantly. The server action also rolls back a skipped
-  // day's billing-cycle extension.
   const handleClearOverride = () => {
     if (!quickEditCustomer) return;
     const target = quickEditCustomer;
     const previousRow = overridesByDate[selectedDateKey]?.[target.id];
 
     if (!previousRow) {
-      // Nothing persisted for the date → just re-hydrate the drawer from master.
       setQuickEditCustomer(baseCustomerById.get(target.id) ?? target);
       setQuickEditResetToken(token => token + 1);
       return;
@@ -1289,7 +1062,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
     setQuickSaveError(null);
 
-    // Optimistic removal → manifest + metrics fall back to the master profile at once.
     setOverridesByDate(prev => {
       const day = { ...(prev[selectedDateKey] || {}) };
       delete day[target.id];
@@ -1311,7 +1083,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             );
           }
         }
-        // Swap the open drawer over to the master row so its draft re-hydrates.
         setQuickEditCustomer(baseCustomerById.get(target.id) ?? target);
         setQuickEditResetToken(token => token + 1);
         router.refresh();
@@ -1332,9 +1103,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     });
   };
 
-  // Re-sync the selected date's overrides on every calendar change. Lookups use
-  // the per-date cache, so switching the calendar instantly drops any other
-  // date's overrides without leaking them into the active manifest/metrics.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1351,9 +1119,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     };
   }, [selectedDateKey, refreshDailyOverrides]);
 
-  // "Reload schema & retry" used by the degraded-persistence banner: asks
-  // PostgREST to refresh its schema cache (NOTIFY pgrst, 'reload schema'), then
-  // re-probes the table and re-applies the active date's overrides.
   const handleReloadSchema = useCallback(async () => {
     setSchemaReloading(true);
     setPersistenceWarning(null);
@@ -1362,15 +1127,14 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       if (!reload.ok) {
         setPersistenceWarning(
           `Could not reload the schema cache: ${reload.message || 'unknown error'}. ` +
-            'Make sure migration 00016 (notify_pgrst_reload) has been applied, then try again.'
+          'Make sure migration 00016 (notify_pgrst_reload) has been applied, then try again.'
         );
         return;
       }
       const probe = await checkDailyOverrideTable();
       if (!probe.exists) {
         setPersistenceWarning(
-          `The customer_daily_overrides table still isn't reachable${
-            probe.message ? ` (${probe.message})` : ''
+          `The customer_daily_overrides table still isn't reachable${probe.message ? ` (${probe.message})` : ''
           }.`
         );
         return;
@@ -1382,7 +1146,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     }
   }, [refreshDailyOverrides, selectedDateKey]);
 
-  // Fetch menu from Supabase whenever selectedDate changes
   useEffect(() => {
     let cancelled = false;
     setIsMenuLoading(true);
@@ -1411,7 +1174,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     return () => { cancelled = true; };
   }, [dateStr]);
 
-  // Debounced auto-save: save 1.2s after last change
   const triggerAutoSave = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     setSaveStatus('saving');
@@ -1434,7 +1196,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     }, 1200);
   }, [dateStr, veg1, veg2, nonVeg]);
 
-  // Call triggerAutoSave whenever any menu value changes
   useEffect(() => {
     if (!isMenuLoading) triggerAutoSave();
   }, [veg1, veg2, nonVeg, isMenuLoading]);
@@ -1448,13 +1209,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     }
   }, []);
 
-  // Fetch available recipes on mount
   useEffect(() => {
     refreshRecipes();
   }, [refreshRecipes]);
 
-  // Load the recipes catalog (with ingredient scaling) once — powers the
-  // "Today's Kitchen Menu" dropdowns and the batch prep calculator.
   useEffect(() => {
     (async () => {
       try {
@@ -1466,7 +1224,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     })();
   }, []);
 
-  // Keep the "Today's Dal / Today's Sabji" dropdowns in sync with the viewed date.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1484,8 +1241,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     };
   }, [selectedDateKey]);
 
-  // Persists the Dal/Sabji choice for the viewed date. Both ids are always sent so
-  // changing one dropdown never clears the other.
   const persistMenuSelection = async (dalId: string, sabjiId: string) => {
     setMenuSelectionError(null);
     setIsMenuSelectionSaving(true);
@@ -1505,26 +1260,27 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
   const handleSelectDal = (dalId: string) => {
     setSelectedDalId(dalId);
+    const recipe = activeDalRecipes.find(r => r.id === dalId);
+    setVeg1(recipe ? recipe.name : '');
     void persistMenuSelection(dalId, selectedSabjiId);
   };
 
   const handleSelectSabji = (sabjiId: string) => {
     setSelectedSabjiId(sabjiId);
+    const recipe = activeSabjiRecipes.find(r => r.id === sabjiId);
+    setVeg2(recipe ? recipe.name : '');
     void persistMenuSelection(selectedDalId, sabjiId);
   };
 
-  // Cleanup timer on unmount
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, []);
 
-  // Helper: shift selectedDate to a specific day of the week
   const goToDay = (targetDayName: string) => {
     const targetIndex = DAYS_OF_WEEK.indexOf(targetDayName);
     if (targetIndex === -1) return;
-    // DAYS_OF_WEEK[0]=Monday → JS getDay(): Mon=1, Tue=2, ..., Sun=0
     const jsTargetDay = targetIndex < 6 ? targetIndex + 1 : 0;
     const diff = jsTargetDay - selectedDate.getDay();
     const newDate = new Date(selectedDate);
@@ -1536,13 +1292,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     return ['Monday', 'Wednesday', 'Friday'].includes(activeDay);
   }, [activeDay]);
 
-  // Veg-Only day is the exact complement of a chicken menu day (Tue/Thu/Sat/Sun).
-  // Drives the Non-Veg card's idle state alongside a zero chicken volume.
   const isVegDay = !isChickenDay;
 
-  // --- ENGINE 1: DELIVERY FILTER ---
-  // Merge any optimistic (just-saved) meal-config edits over the server rows so
-  // the manifest and carb totals reflect a save before the refetch lands.
   const mergedCustomers = useMemo(() => {
     return initialCustomers.map(customer => {
       const edit = localEdits[customer.id];
@@ -1550,10 +1301,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     });
   }, [initialCustomers, localEdits]);
 
-  // Layer any "Today Only" override (full snapshot for the selected date) over the
-  // optimistic master edits. Resolved rows feed BOTH the packing manifest and the
-  // prep metric reducer, so a single-day override reactively re-shapes the counts
-  // until the calendar moves to a date that carries no override.
   const resolvedCustomers = useMemo(() => {
     return mergedCustomers.map(customer => {
       const override = dailyOverrides[customer.id];
@@ -1561,8 +1308,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     });
   }, [mergedCustomers, dailyOverrides]);
 
-  // Base (pre-override) rows, used to build the human "⚡ Today: …" deviation
-  // badge shown on the manifest for customers with a date-scoped override.
   const baseCustomerById = useMemo(() => {
     const byId = new Map<string, Customer>();
     mergedCustomers.forEach(customer => byId.set(customer.id, customer));
@@ -1570,49 +1315,24 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   }, [mergedCustomers]);
 
   const activeCustomers = useMemo(() => {
-    // Shared scheduling predicate — the SAME rules the initial-date resolver used
-    // to pick the next active delivery date, so the default manifest is never empty.
     return resolvedCustomers.filter(customer =>
       isScheduledOn(customer, activeDay, selectedDateKey)
     );
   }, [resolvedCustomers, activeDay, selectedDateKey]);
 
-  // Kitchen Dispatch / Packing Order for the manifest — mirrors the Customers page
-  // sort mode so the checklist walks the exact same production sequence.
   const manifestCustomers = useMemo(() =>
     [...activeCustomers].sort(kitchenOrderSort),
     [activeCustomers],
   );
 
-
-
-
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // ENGINE 2: PREP METRICS — pure, fully-dynamic itemized calculation.
-  // Every Dal / Sabji / Chicken PACK count, ounce target, leg count, and carb
-  // total is computed by iterating the date-filtered active customer list once
-  // inside `prepCalculations.ts`. Nothing on this screen is hardcoded — the same
-  // reducer serves 5, 17, or 500 customers.
-  // ─────────────────────────────────────────────────────────────────────────
   const metrics = useMemo(
     () => computePrepMetrics(activeCustomers, isChickenDay),
     [activeCustomers, isChickenDay],
   );
 
-  // Chicken-station PACK totals: gravy variants are cooked & packed at the
-  // Chicken station too (gravy containers never carry legs), so the printed
-  // staging list rolls chicken + gravy packs together while the engine keeps the
-  // items separately priced. (Batch-cooking volume uses metrics.chickenOz.)
   const chickenStationPackLG = metrics.chickenPackLG + metrics.gravyPackLG;
   const chickenStationPackRG = metrics.chickenPackRG + metrics.gravyPackRG;
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // ENGINE 3: BATCH PREP SCALING — turns the day's container counts into raw
-  // ingredient weights for the selected dal/sabji recipes.
-  //   totalOz = (count8oz × raw_oz_per_8oz) + (count12oz × raw_oz_per_12oz)
-  //   grams   = totalOz × 28.3495
-  // ─────────────────────────────────────────────────────────────────────────
   const activeDalRecipes = useMemo(
     () => batchRecipes.filter(r => r.category === 'dal' && r.is_active !== false),
     [batchRecipes],
@@ -1637,7 +1357,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     return grams >= 1000 ? `${(grams / 1000).toFixed(2)} kg` : `${Math.round(grams)} g`;
   };
 
-  // One row per ingredient: { name, totalOz } scaled by the container counts.
   const buildBatchRows = (
     recipe: RecipeWithIngredients | null,
     count8oz: number,
@@ -1645,26 +1364,19 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   ) =>
     recipe
       ? recipe.ingredients.map(ing => ({
-          id: ing.id,
-          name: ing.name,
-          totalOz: count8oz * ing.raw_oz_per_8oz + count12oz * ing.raw_oz_per_12oz,
-        }))
+        id: ing.id,
+        name: ing.name,
+        totalOz: count8oz * ing.raw_oz_per_8oz + count12oz * ing.raw_oz_per_12oz,
+      }))
       : [];
 
   const dalBatchRows = buildBatchRows(selectedDalRecipe, metrics.dalPackRG, metrics.dalPackLG);
   const sabjiBatchRows = buildBatchRows(selectedSabjiRecipe, metrics.sabjiPackRG, metrics.sabjiPackLG);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // PRINT MANIFEST DERIVED VALUES — headline names pulled from the selected
-  // daily menu, cooked-rice volume, and the raw-ingredient breakdown lines for
-  // the cook's batch-scaling box.
-  // ─────────────────────────────────────────────────────────────────────────
   const printDalName = selectedDalRecipe?.name || (veg1 || '').trim() || '—';
   const printSabjiName = selectedSabjiRecipe?.name || (veg2 || '').trim() || '—';
   const printChickenName = isChickenDay ? (nonVeg || '').trim() || 'Chicken Curry' : null;
 
-  // Explicit sides line for the printed summary: omit zero counts (else "—") so
-  // zeros never clutter the sheet.
   const printedSideParts: string[] = [];
   if (metrics.saladCount > 0) printedSideParts.push(`Salad: ${metrics.saladCount}`);
   if (metrics.dessertCount > 0) printedSideParts.push(`Dessert: ${metrics.dessertCount}`);
@@ -1675,8 +1387,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
   return (
     <div className="flex flex-col h-screen bg-[#F9FBFC] overflow-hidden font-sans text-[#292D32] print:h-auto print:overflow-visible print:bg-white">
-      
-      {/* HEADER SECTION (screen-only — replaced in print by the compact manifest strip) */}
+
+      {/* HEADER SECTION */}
       <div className="bg-white border-b border-[#EEEEEE] shrink-0 print:hidden">
         <div className="px-8 py-5 flex items-center justify-between">
           <div>
@@ -1697,11 +1409,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             <p className="text-[13px] text-gray-500 mt-1">Real-time production metrics for line chefs.</p>
           </div>
           <div className="flex items-center space-x-4">
-            <span className={`px-3 py-1 rounded-md text-[11px] font-black tracking-wider uppercase border shadow-sm ${
-              isChickenDay 
-                ? 'bg-red-600 text-white border-red-700 animate-pulse' 
+            <span className={`px-3 py-1 rounded-md text-[11px] font-black tracking-wider uppercase border shadow-sm ${isChickenDay
+                ? 'bg-red-600 text-white border-red-700 animate-pulse'
                 : 'bg-green-600 text-white border-green-700'
-            }`}>
+              }`}>
               {isChickenDay ? '🍗 Non-Veg Day' : '🥬 Veg Day'}
             </span>
 
@@ -1710,11 +1421,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 <button
                   key={day}
                   onClick={() => goToDay(day)}
-                  className={`px-4 py-1.5 text-[12px] font-bold rounded-md transition-all ${
-                    activeDay === day 
-                      ? 'bg-[#5D5FEF] text-white shadow-sm' 
+                  className={`px-4 py-1.5 text-[12px] font-bold rounded-md transition-all ${activeDay === day
+                      ? 'bg-[#5D5FEF] text-white shadow-sm'
                       : 'text-[#7A7C87] hover:text-[#5D5FEF] hover:bg-white/50'
-                  }`}
+                    }`}
                 >
                   {day.substring(0, 3)}
                 </button>
@@ -1733,22 +1443,14 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         </div>
       </div>
 
-      {/* DASHBOARD GRID WORKSPACE (relaxed for print so the manifest paginates) */}
+      {/* DASHBOARD GRID WORKSPACE */}
       <div className="flex-1 overflow-y-auto p-8 space-y-6 print:flex-none print:h-auto print:overflow-visible print:p-3">
 
-        {/* ═══ PRINT-ONLY KITCHEN MANIFEST — HEADLINE + COOK'S BOX ═══
-            `hidden print:block` — this block exists ONLY in the browser's print
-            output (sidebar, KPI cards, dark production menu, day switcher, and
-            schema-reload banners are all print:hidden). It reproduces the physical
-            prep notebook: a large date + menu headline, a batch-scaling cook's box,
-            then the compact packing roster below. Never split this block across
-            pages. */}
+        {/* PRINT-ONLY KITCHEN MANIFEST */}
         <div
           className="hidden print:block mb-3 border border-black break-inside-avoid"
           style={{ pageBreakInside: 'avoid' }}
         >
-          {/* Headline: a clean flex row — large date on the left, order-count
-              badge on the right. Dish names live in their batch cards below. */}
           <div className="flex items-center justify-between gap-4 px-3 py-2 border-b border-black">
             <h2 className="text-2xl font-black tracking-tight leading-none text-black">
               {printDeliveryDateLabel}
@@ -1758,9 +1460,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             </span>
           </div>
 
-          {/* Kitchen Batch Scaling & Cook's Summary — scaled raw weights in oz */}
           <div className="grid grid-cols-4 divide-x divide-black border-b border-black">
-            {/* Sabji — total cooked oz + explicit container split + raw breakdown */}
             <div className="p-2 min-w-0">
               <span className="block text-[10px] font-black uppercase tracking-wide text-black">
                 Sabji · {printSabjiName}
@@ -1778,7 +1478,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               </div>
             </div>
 
-            {/* Daal — total cooked oz + explicit container split + raw breakdown */}
             <div className="p-2 min-w-0">
               <span className="block text-[10px] font-black uppercase tracking-wide text-black">
                 Daal · {printDalName}
@@ -1796,7 +1495,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               </div>
             </div>
 
-            {/* Chicken — leg / piece count (or the idle veg-day state) */}
             <div className="p-2 min-w-0">
               <span className="block text-[10px] font-black uppercase tracking-wide text-black">
                 Chicken · {printChickenName || 'Veg Day'}
@@ -1817,7 +1515,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               )}
             </div>
 
-            {/* Breads & Sides — Roti / cooked rice / side totals */}
             <div className="p-2 min-w-0">
               <span className="block text-[10px] font-black uppercase tracking-wide text-black">
                 Breads &amp; Sides
@@ -1837,10 +1534,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           </div>
         </div>
 
-        {/* ═══ PRINT-ONLY COMPACT PACKING ROSTER ═══
-            `.print-sheet` scopes the globals.css print rules (clean black borders,
-            high density, per-row pagination). Exact kitchen-notebook column order:
-            [ ] · ALERTS / SPECIAL · CUSTOMER · STREET / BLDG · SIZE · TYPE · ROTI · RICE · SIDES. */}
+        {/* PRINT-ONLY COMPACT PACKING ROSTER */}
         <div className="hidden print:block print-sheet">
           <table className="w-full">
             <thead>
@@ -1866,8 +1560,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 manifestCustomers
                   .filter(c => !c.isSkipped)
                   .map(customer => {
-                    // Mirror the on-screen notes cell so the printed ALERTS column
-                    // carries the exact same deviation vocabulary.
                     const override = dailyOverrides[customer.id];
                     const baseRow = baseCustomerById.get(customer.id);
                     const todayDeviation =
@@ -1894,9 +1586,34 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                         v.trim() !== '—' &&
                         v.trim() !== 'None'
                     );
+                    const sideAddons = resolveSideAddons(customer);
+                    const portion = (customer.portion_size || '').toLowerCase();
+                    const isLg = portion.includes('lg') || portion.includes('large');
+
+                    const isDefaultSides = isLg
+                      ? sideAddons.salad === 1 && sideAddons.dessert === 1
+                      : sideAddons.salad === 0 && sideAddons.dessert === 0;
+
+                    const currentSidesBadge = isDefaultSides
+                      ? '—'
+                      : formatSidesBadge(sideAddons.salad, sideAddons.dessert);
+
+                    let filteredRawNotes = [...rawNotes];
+
+                    if (currentSidesBadge !== '—') {
+                      const badgeHasSalad = currentSidesBadge.includes('S');
+                      const badgeHasDessert = currentSidesBadge.includes('D');
+
+                      filteredRawNotes = filteredRawNotes.filter(note => {
+                        const trimmedNote = note.trim();
+                        if (badgeHasSalad && trimmedNote.match(/^(\d+x?|No)\s*Salad/i)) return false;
+                        if (badgeHasDessert && trimmedNote.match(/^(\d+x?|No)\s*Dessert/i)) return false;
+                        return true;
+                      });
+                    }
                     const noteText =
-                      rawNotes.length > 0
-                        ? [...new Set(rawNotes.map(v => v.trim()))].join(' · ')
+                      filteredRawNotes.length > 0
+                        ? [...new Set(filteredRawNotes.map(v => v.trim()))].join(' · ')
                         : null;
                     const alertText = buildAlertSummary({
                       customRule,
@@ -1906,7 +1623,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       isNonVeg: (customer.meal_type || '').toLowerCase().includes('non'),
                       isChickenDay,
                     });
-                    // Pickup orders have no routable address → printed as "PU".
                     const street = isPickupOnDay(customer, activeDay)
                       ? 'PU'
                       : formatShortAddress(customer.delivery_address) || '—';
@@ -1925,27 +1641,19 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                         className="break-inside-avoid"
                         style={{ pageBreakInside: 'avoid' }}
                       >
-                        {/* 1) [ ] pen-check target for the packers */}
                         <td className="text-center align-middle">
                           <span className="inline-block w-3.5 h-3.5 border border-black align-middle" />
                         </td>
-                        {/* 2) CUSTOMER */}
                         <td className="text-left font-bold break-words">{customer.full_name}</td>
-                        {/* 3) STREET / BLDG — shortened address (or "PU") */}
                         <td className="text-left break-words">{street}</td>
-                        {/* 4) SIZE — L (Large/12oz) or R (Regular/8oz) */}
                         <td className="text-center font-black">
                           {formatSizeBadge(customer.portion_size)}
                         </td>
-                        {/* 5) TYPE — V or NV */}
                         <td className="text-center font-black">
                           {formatTypeBadge(customer.meal_type)}
                         </td>
-                        {/* 6) ROTI — count (+ Pronthi marker when present) */}
                         <td className="text-center font-bold">{rotiText}</td>
-                        {/* 7) RICE — Rg / Lg / — */}
                         <td className="text-center font-bold">{riceText}</td>
-                        {/* 8) ALERTS / SPECIAL — blank ("—") for standard orders */}
                         <td className="text-left font-black uppercase break-words">
                           {alertText ?? '—'}
                         </td>
@@ -1957,7 +1665,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           </table>
         </div>
 
-        {/* Degraded-persistence banner (customer_daily_overrides missing/stale) */}
+        {/* Degraded-persistence banner */}
         {persistenceWarning && (
           <div className="flex items-start justify-between gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[12.5px] font-semibold print:hidden">
             <div className="flex items-start gap-2 min-w-0 leading-snug">
@@ -1975,17 +1683,29 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           </div>
         )}
 
-        {/* TODAY'S KITCHEN MENU + BATCH PREP CALCULATOR (screen-only) */}
+        {/* TODAY'S KITCHEN MENU + BATCH PREP CALCULATOR */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 print:hidden items-start">
-          {/* Today's Kitchen Menu — pick the dal & sabji for this delivery date */}
           <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4">
             <div className="flex items-center justify-between gap-2 mb-3">
-              <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
-                🍽️ Today&apos;s Kitchen Menu
-              </span>
-              <span className="text-[11px] font-semibold text-gray-400">
-                {isMenuSelectionSaving ? 'Saving…' : formattedTargetDate}
-              </span>
+              <div className="flex items-center gap-2.5">
+                <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
+                  🍽️ Today&apos;s Kitchen Menu
+                </span>
+                <a
+  href="/admin/recipes"
+  className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded transition-colors"
+>
+  ⚙️ Manage Recipes
+</a>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-[10px] font-bold text-gray-400 whitespace-nowrap">
+                  {isMenuSelectionSaving ? '⏳ Saving...' : '✓ Saved'}
+                </span>
+                <span className="text-[11px] font-semibold text-gray-400">
+                  {formattedTargetDate}
+                </span>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2026,16 +1746,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               </label>
             </div>
 
-            {activeDalRecipes.length === 0 && activeSabjiRecipes.length === 0 && (
-              <p className="mt-3 text-[11.5px] text-gray-400">
-                No recipes yet — add them in{' '}
-                <a href="/admin/recipes" className="text-[#5D5FEF] font-bold hover:underline">
-                  Recipe Management
-                </a>
-                .
-              </p>
-            )}
-
             {menuSelectionError && (
               <p className="mt-3 text-[11.5px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg">
                 ⚠️ {menuSelectionError}
@@ -2043,7 +1753,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             )}
           </div>
 
-          {/* Batch Prep Calculator — scales the selected recipes to today's counts */}
           <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4">
             <div className="flex items-center justify-between gap-2 mb-3">
               <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
@@ -2127,15 +1836,13 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           </div>
         </div>
 
-        {/* 3-STATION GRID — Breads & Sides · Dal & Sabji · Non-Veg */}
+        {/* 3-STATION GRID */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 print:hidden items-stretch">
-          
-          {/* Card 1: Breads & Sides — compact 2-column subgrid (Breads | Rice) */}
+
           <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-3 flex flex-col">
             <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide mb-2">🍞 Breads &amp; Sides</span>
 
             <div className="grid grid-cols-2 gap-3">
-              {/* Breads side — total badge + Roti / Pronthi counts */}
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center justify-between gap-1 mb-1.5">
                   <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Breads</span>
@@ -2146,8 +1853,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     <span className="text-gray-500 font-medium">Roti</span>
                     <span className="font-bold text-gray-900">{metrics.totalRoti}</span>
                   </div>
-                  {/* Pronthis stay in their own bucket (never folded into the Roti total) so the
-                      kitchen sees "121 Roti + 2 Pronthi" as two separate, unambiguous counts. */}
                   {metrics.totalPronthi > 0 && (
                     <div className="flex items-center justify-between text-xs">
                       <span className="bg-amber-400 text-amber-950 font-bold px-1.5 py-0.5 rounded text-[10px]">Pronthi</span>
@@ -2157,7 +1862,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 </div>
               </div>
 
-              {/* Rice side — total boxes badge + LG / RG (XL row hidden at 0 to save space) */}
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center justify-between gap-1 mb-1.5">
                   <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Rice</span>
@@ -2182,7 +1886,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               </div>
             </div>
 
-            {/* Bottom strip — Salad / Dessert staged from the engine, grouped left */}
             <div className="flex items-center gap-2.5 pt-2 mt-2 border-t border-gray-100">
               <span className="text-xs font-semibold text-emerald-700">🥗 {metrics.saladCount} Salad</span>
               <span className="text-xs font-semibold text-amber-800">🍮 {metrics.dessertCount} Dessert</span>
@@ -2191,62 +1894,20 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
           {/* Card 2: Dal & Sabji (green top accent) */}
           <div className="bg-white rounded-xl shadow-sm p-3 flex flex-col border-x border-b border-[#EEEEEE] border-t-4 border-t-green-500">
-            {/* Header: station title + gear (opens Recipe Manager) on the left, auto-save status on the right */}
+            {/* Header: station title only */}
             <div className="flex items-center justify-between gap-2 mb-2">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">🍲 Dal &amp; Sabji</span>
-                <button
-                  type="button"
-                  onClick={() => setIsRecipeManagerOpen(true)}
-                  className="text-[13px] leading-none text-gray-400 hover:text-gray-700 transition-colors"
-                  title="Manage Recipes"
-                  aria-label="Manage Recipes"
-                >
-                  ⚙️
-                </button>
-              </div>
-              <span className="text-[10px] font-bold text-gray-400 whitespace-nowrap">
-                {isSaving ? '⏳ Saving...' : '✓ Saved'}
+              <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
+                🍲 Dal &amp; Sabji
               </span>
             </div>
 
-            {/* Embedded menu selectors (moved off the retired production menu bar) — Veg 2 (Sabji) | Veg 1 (Dal) */}
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              <div className="min-w-0">
-                <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-1">VEG 2</label>
-                <select
-                  value={veg2}
-                  onChange={(e) => setVeg2(e.target.value)}
-                  disabled={isMenuLoading}
-                  className="w-full text-xs rounded-md border border-gray-200 py-1 px-2 bg-gray-50 focus:bg-white outline-none focus:border-emerald-400 disabled:opacity-40 disabled:cursor-wait"
-                >
-                  <option value="">— Select Sabji —</option>
-                  {availableRecipes.sabji.map(r => (
-                    <option key={r.id} value={r.name}>{r.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="min-w-0">
-                <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wide mb-1">VEG 1</label>
-                <select
-                  value={veg1}
-                  onChange={(e) => setVeg1(e.target.value)}
-                  disabled={isMenuLoading}
-                  className="w-full text-xs rounded-md border border-gray-200 py-1 px-2 bg-gray-50 focus:bg-white outline-none focus:border-emerald-400 disabled:opacity-40 disabled:cursor-wait"
-                >
-                  <option value="">— Select Dal —</option>
-                  {availableRecipes.dal.map(r => (
-                    <option key={r.id} value={r.name}>{r.name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Strict 2-column grid (SABJI | DAL) — each column owns its volume + inset pack box */}
+            {/* Strict 2-column grid (SABJI | DAL) */}
             <div className="grid grid-cols-2 gap-3">
               {/* Left column: SABJI */}
               <div className="min-w-0">
-                <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider">SABJI</span>
+                <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider truncate block">
+                  {veg2 ? `SABJI · ${veg2}` : 'SABJI'}
+                </span>
                 <div className="text-2xl font-black text-emerald-600">
                   {metrics.sabjiOz} oz
                 </div>
@@ -2264,7 +1925,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
               {/* Right column: DAL */}
               <div className="min-w-0">
-                <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider">DAL</span>
+                <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider truncate block">
+                  {veg1 ? `DAL · ${veg1}` : 'DAL'}
+                </span>
                 <div className="text-2xl font-black text-emerald-600">
                   {metrics.dalOz} oz
                 </div>
@@ -2282,9 +1945,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             </div>
           </div>
 
-          {/* Card 3: Non-Veg (red top accent) — idles on a Veg-Only day */}
           <div className="bg-white rounded-xl shadow-sm p-3 flex flex-col border-x border-b border-[#EEEEEE] border-t-4 border-t-red-500">
-            {/* Header: station title + embedded non-veg recipe selector (moved off the retired menu bar) */}
             <div className="flex items-center justify-between gap-2 mb-2">
               <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">🍗 Non-Veg</span>
               <select
@@ -2303,7 +1964,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-3 items-center">
-                {/* Left: chicken volume + inline leg count */}
                 <div className="min-w-0">
                   <span className="block text-xs font-bold text-red-600 uppercase tracking-wider mb-1">CHICKEN CURRY</span>
                   <div className="flex items-baseline gap-1.5">
@@ -2313,7 +1973,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     )}
                   </div>
                 </div>
-                {/* Right: PACK box (LG / RG) — same light-gray inset styling as Card 2 */}
                 <div className="bg-gray-50/80 rounded-lg p-2 border border-gray-100 text-xs space-y-1">
                   <div className="flex justify-between items-center text-gray-600 font-medium">
                     <span>LG (12 oz)</span>
@@ -2330,9 +1989,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
         </div>
 
-        {/* FULL-WIDTH PACKING MANIFEST — SCREEN ONLY. The printable sheet is the
-            dedicated print-only roster above (`.print-sheet`); this richer,
-            interactive table is hidden in the browser's print output. */}
+        {/* FULL-WIDTH PACKING MANIFEST */}
         <div className="bg-white border border-[#EEEEEE] rounded-xl shadow-sm overflow-hidden w-full print:hidden">
           <div className="px-5 py-3 border-b border-[#F5F5F5] bg-[#FCFCFD] flex justify-between items-center print:hidden">
             <h3 className="text-[12px] font-bold text-[#11142D] uppercase tracking-wide">Kitchen Packing Manifest</h3>
@@ -2344,12 +2001,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             <table className="w-full text-left text-[13px]">
               <thead>
                 <tr className="text-[#A2A4B0] font-bold border-b border-[#F5F5F5] uppercase text-[10.5px] tracking-wider bg-gray-50/60 h-9 break-inside-avoid print:border-slate-300" style={{ pageBreakInside: 'avoid' }}>
-                  {/* Print-only checklist column (empty [ ] targets for the line chef) */}
                   <th className="hidden print:table-cell w-8 text-center print:py-1 print:px-1.5 print:text-[11px]">[ ]</th>
                   <th className="pl-5 print:py-1 print:px-1.5 print:text-[11px]">Customer</th>
-                  {/* ADDRESS / LOCATION is part of the printed manifest (packers read it
-                      off the sheet) and is forced visible in print. The Veg/Non-Veg Type
-                      column stays on the on-screen table only (print:hidden). */}
                   <th className="print:table-cell print:py-1 print:px-1.5 print:text-[11px]">Address / Location</th>
                   <th className="print:hidden">Type</th>
                   <th className="print:py-1 print:px-1.5 print:text-[11px]">Portion</th>
@@ -2368,12 +2021,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     <tr
                       key={customer.id}
                       onClick={() => openQuickEdit(customer)}
-                      className={`cursor-pointer hover:bg-gray-50/80 transition-colors h-11 break-inside-avoid print:bg-white print:cursor-default ${
-                        customer.isSkipped ? 'opacity-60 print:hidden' : ''
-                      }`}
+                      className={`cursor-pointer hover:bg-gray-50/80 transition-colors h-11 break-inside-avoid print:bg-white print:cursor-default ${customer.isSkipped ? 'opacity-60 print:hidden' : ''
+                        }`}
                       style={{ pageBreakInside: 'avoid' }}
                     >
-                      {/* Print-only [ ] checklist target — empty box for physical pen checks */}
                       <td className="hidden print:table-cell w-8 text-center align-middle print:py-1 print:px-1.5 print:text-[11px]">
                         <div className="w-4 h-4 border border-black rounded-sm print:block hidden" />
                       </td>
@@ -2383,7 +2034,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                           {(() => {
                             const scheduledDate = customer.scheduled_cancel_date;
                             if (!scheduledDate) return null;
-                            // Today is the customer's final tiffin day.
                             if (scheduledDate === selectedDateKey) {
                               return (
                                 <span
@@ -2394,8 +2044,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                                 </span>
                               );
                             }
-                            // Upcoming end within the next 3 days — subtle hint so the
-                            // kitchen can plan tiffin-bag collection ahead of time.
                             const daysUntilEnd = daysBetweenKeys(selectedDateKey, scheduledDate);
                             if (daysUntilEnd > 0 && daysUntilEnd <= 3) {
                               return (
@@ -2414,12 +2062,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       >
                         {isPickupOnDay(customer, activeDay) ? (
                           <>
-                            {/* Screen-only pill (pickups have no routable address) */}
                             <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100 text-[10.5px] font-bold uppercase tracking-wide whitespace-nowrap print:hidden">
                               Pickup
                             </span>
-                            {/* Print marker in place of the address so the packer still
-                                sees the pickup order at a glance. */}
                             <span className="hidden print:inline-block font-black tracking-wider whitespace-nowrap">
                               [PICKUP]
                             </span>
@@ -2429,11 +2074,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                         )}
                       </td>
                       <td className="print:hidden">
-                        <span className={`px-2 py-0.5 rounded text-[10.5px] font-black tracking-wide border uppercase ${
-                          customer.meal_type?.toLowerCase().includes('non') 
-                            ? 'bg-red-50 text-red-600 border-red-100' 
+                        <span className={`px-2 py-0.5 rounded text-[10.5px] font-black tracking-wide border uppercase ${customer.meal_type?.toLowerCase().includes('non')
+                            ? 'bg-red-50 text-red-600 border-red-100'
                             : 'bg-green-50 text-green-600 border-green-100'
-                        }`}>
+                          }`}>
                           {customer.meal_type?.toLowerCase().includes('non') ? 'Non-Veg' : 'Veg'}
                         </span>
                       </td>
@@ -2461,8 +2105,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                           if (!hasRoti && !hasPronthi) {
                             return <span className="text-gray-300 font-mono">—</span>;
                           }
-                          // Compact plain-text bread summary — no badge boxes — so the
-                          // printed rows stay tight enough for a full-page checklist.
                           const breadParts: string[] = [];
                           if (hasRoti) breadParts.push(`${customer.roti_count} Roti`);
                           if (hasPronthi) breadParts.push(`${customer.pronthi_count} Pronthi`);
@@ -2484,8 +2126,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       </td>
                       <td className="pr-5 print:py-1 print:px-1.5 print:text-[11px]">
                         {(() => {
-                          // 0a) Single-day SKIP: the meal is not being prepped for this date.
-                          //     Show the badge + a one-tap Undo in place of the portion/notes.
                           if (customer.isSkipped) {
                             return (
                               <div className="flex items-center gap-2">
@@ -2506,17 +2146,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                               </div>
                             );
                           }
-                          // 0) "Today Only" override for this row + date: the manifest already
-                          //    shows the override values, so the master custom-rule/side chips are
-                          //    replaced by a single amber ⚡ Today badge describing the change.
+
                           const activeOverride = dailyOverrides[customer.id];
                           const baseRow = baseCustomerById.get(customer.id);
-                          // A skip-only row (no meal snapshot) is NOT a "Today Only" meal edit
-                          // and must never render the ⚡ Today badge. A snapshot that resolves to
-                          // the customer's exact master profile (e.g. a leftover day row) is not
-                          // a deviation either — the badge only appears when today's meal
-                          // contents actually differ from the master, so an undone skip can never
-                          // surface a spurious "⚡ Today: Updated notes" tag.
                           const todayDeviation =
                             activeOverride && baseRow && overrideHasMealSnapshot(activeOverride)
                               ? describeTodayOverride(baseRow, activeOverride)
@@ -2526,22 +2158,17 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                           const todayOverrideLabel = hasTodayOverride
                             ? `⚡ Today: ${todayDeviation}`
                             : null;
-                          // 1) Custom curry rule (structured curry_config → day-grouped text
-                          //    like "M/W/F: 1 Dal + 1 Chicken | T/Th: 2x Dal"). Skipped when a
-                          //    single-day override owns today's row.
+
                           const customInstruction = hasTodayOverride
                             ? null
                             : getCustomInstructionsText(customer);
-                          // 2) Structured side instructions (delivery_instructions). Skipped when
-                          //    a custom rule above already carries the same per-day side plan.
+
                           const sideInstruction = (customer.delivery_instructions || '').trim();
                           const hasSideInstruction =
                             sideInstruction !== '' &&
                             sideInstruction !== 'None' &&
                             sideInstruction !== '—';
-                          // Strip the standard package boilerplate ("1 Dal + 1 Sabji
-                          // + Salad + Dessert (weekly)") so the cell shows ONLY the
-                          // deviation; a clean standard order leaves it empty.
+
                           const strippedSideInstruction = hasSideInstruction
                             ? stripStandardMealText(sideInstruction)
                             : '';
@@ -2550,7 +2177,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                             : strippedSideInstruction !== ''
                               ? strippedSideInstruction
                               : null;
-                          // 3) Free-text notes from any stored note column.
+
                           const rawNotes = [
                             customer.dietary_notes,
                             customer.notes,
@@ -2568,16 +2195,20 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                               ? [...new Set(rawNotes.map(v => v.trim()))].join(' · ')
                               : null;
 
-                          const customLabel =
-                            customInstruction &&
-                            (customInstruction.startsWith('M/W/F:') ||
-                            customInstruction.startsWith('T/Th:')
-                              ? `⚡ ${customInstruction}`
-                              : `⚡ Custom: ${customInstruction}`);
+                          const customLabel = customInstruction ? `⚡ ${customInstruction}` : null;
 
-                          // Compact per-bag SIDES indicator (S = Salad, D = Dessert).
                           const sideAddons = resolveSideAddons(customer);
-                          const sidesBadge = formatSidesBadge(sideAddons.salad, sideAddons.dessert);
+                          const portion = (customer.portion_size || '').toLowerCase();
+                          const isLg = portion.includes('lg') || portion.includes('large');
+
+                          // Suppress default side allocations: LG (1S, 1D), Regular (0S, 0D)
+                          const isDefaultSides = isLg
+                            ? sideAddons.salad === 1 && sideAddons.dessert === 1
+                            : sideAddons.salad === 0 && sideAddons.dessert === 0;
+
+                          const sidesBadge = isDefaultSides
+                            ? '—'
+                            : formatSidesBadge(sideAddons.salad, sideAddons.dessert);
 
                           if (
                             !sideText &&
@@ -2615,7 +2246,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                                   {sideText}
                                 </span>
                               )}
-                              {sidesBadge !== '—' && (
+                              {sidesBadge !== '—' && !sideText && (
                                 <span
                                   className="max-w-full truncate inline-block px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-md text-[10.5px] font-bold leading-snug print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
                                   title={`Sides: ${sidesBadge}`}
@@ -2644,7 +2275,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         </div>
 
       </div>
-      {/* Tap-to-edit Meal Config Quick Sheet - bottom sheet (mobile) / slide-over (desktop) */}
+
       {quickEditCustomer && (
         <PrepQuickEditSheet
           key={`${quickEditCustomer.id}:${quickEditResetToken}`}
@@ -2658,9 +2289,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           isOverrideActive={
             quickEditCustomer
               ? Boolean(
-                  dailyOverrides[quickEditCustomer.id] &&
-                    overrideHasMealSnapshot(dailyOverrides[quickEditCustomer.id])
-                )
+                dailyOverrides[quickEditCustomer.id] &&
+                overrideHasMealSnapshot(dailyOverrides[quickEditCustomer.id])
+              )
               : false
           }
           isSkipped={dailyOverrides[quickEditCustomer.id]?.is_skipped === true}

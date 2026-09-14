@@ -233,7 +233,7 @@ const formatHalfContainerNote = (
     if (counts.dessert > 0) noteParts.push(formatSideAddon(counts.dessert, 'Dessert'));
   }
 
-  return `Custom: ${noteParts.join(' + ')}`;
+  return noteParts.join(' + ');
 };
 
 // The built-in "standard" curry profile for a meal type + portion.
@@ -2447,7 +2447,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       customText &&
       (customText.startsWith('M/W/F:') || customText.startsWith('T/Th:')
         ? `⚡ ${customText}`
-        : `⚡ Custom: ${customText}`);
+        : `⚡ ${customText}`);
 
     if (!halfNote && !customText && !displayNote) {
       return <span className="text-gray-300">—</span>;
@@ -4187,7 +4187,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
                             {customCurryPillText && (
                               <div className="mt-1 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
-                                ⚡ Custom: {customCurryPillText}
+                                ⚡ {customCurryPillText}
                               </div>
                             )}
                             {customHalfNote && (
@@ -4256,7 +4256,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         </div>
                         {extraAddonNote && (
                           <div className="mt-2 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
-                            ⚡ Custom: {extraAddonNote}
+                            ⚡ {extraAddonNote}
                           </div>
                         )}
                       </div>
