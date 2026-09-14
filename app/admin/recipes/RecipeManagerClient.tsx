@@ -59,6 +59,7 @@ export default function RecipeManagerClient({
 }) {
   const [recipes, setRecipes] = useState<RecipeWithIngredients[]>(initialRecipes);
   const [activeTab, setActiveTab] = useState<'all' | RecipeCategory>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Add / Edit drawer state
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -66,6 +67,7 @@ export default function RecipeManagerClient({
   const [formName, setFormName] = useState('');
   const [formCategory, setFormCategory] = useState<RecipeCategory>('dal');
   const [ingredients, setIngredients] = useState<IngredientDraft[]>([makeDraft()]);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, startSubmit] = useTransition();
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -86,10 +88,23 @@ export default function RecipeManagerClient({
     [recipes]
   );
 
-  const visibleRecipes = useMemo(
-    () => (activeTab === 'all' ? recipes : recipes.filter(r => r.category === activeTab)),
-    [recipes, activeTab]
-  );
+  const visibleRecipes = useMemo(() => {
+    let filtered = activeTab === 'all' ? recipes : recipes.filter(r => r.category === activeTab);
+
+    if (searchQuery.trim()) {
+      const lowerCaseQuery = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter(
+        recipe =>
+          recipe.name.toLowerCase().includes(lowerCaseQuery) ||
+          recipe.category.toLowerCase().includes(lowerCaseQuery) ||
+          (CATEGORY_LABEL[recipe.category] && CATEGORY_LABEL[recipe.category].toLowerCase().includes(lowerCaseQuery)) ||
+          recipe.ingredients.some(ingredient =>
+            ingredient.name.toLowerCase().includes(lowerCaseQuery)
+          )
+      );
+    }
+    return filtered;
+  }, [recipes, activeTab, searchQuery]);
 
   const openAdd = () => {
     setEditingId(null);
@@ -137,6 +152,29 @@ export default function RecipeManagerClient({
     setIngredients(prev =>
       prev.length <= 1 ? [makeDraft()] : prev.filter(row => row.key !== key)
     );
+
+  // Drag and drop reordering handlers
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) return;
+
+    setIngredients(prev => {
+      const updated = [...prev];
+      const [moved] = updated.splice(draggedIndex, 1);
+      updated.splice(index, 0, moved);
+      return updated;
+    });
+    setDraggedIndex(index);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedIndex(null);
+  };
 
   const handleSave = () => {
     setFormError(null);
@@ -194,7 +232,7 @@ export default function RecipeManagerClient({
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="max-w-[1200px] mx-auto">
+      <div className="max-w-[1400px] mx-auto">
         {/* Header */}
         <div className="flex items-start justify-between gap-4 mb-5">
           <div>
@@ -218,22 +256,59 @@ export default function RecipeManagerClient({
           </div>
         )}
 
-        {/* Category tabs — All | Dal | Sabji | Chicken */}
-        <div className="flex flex-wrap items-center gap-2 mb-5">
-          {TABS.map(tab => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-1.5 rounded-lg text-[12px] font-bold border transition-all ${
-                activeTab === tab.key
-                  ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-sm'
-                  : 'bg-white text-[#7A7C87] border-[#E0E0E0] hover:border-[#5D5FEF] hover:text-[#5D5FEF]'
-              }`}
+        {/* Category tabs & Instant Search Bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {TABS.map(tab => {
+              const active = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-full border transition-all ${
+                    active
+                      ? 'text-[#5D5FEF] bg-[#F4F4FE] border-[#5D5FEF]/30 shadow-xs'
+                      : 'text-gray-600 bg-white border-gray-200 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
+                >
+                  {tab.label} ({counts[tab.key]})
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="relative w-full sm:w-72">
+            <input
+              type="text"
+              placeholder="Search recipes, ingredients, or category..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="w-full px-3 py-1.5 text-xs bg-white border border-gray-200 rounded-lg pl-8 pr-7 outline-none focus:border-[#5D5FEF] shadow-xs text-gray-700 placeholder-gray-400"
+            />
+            <svg
+              className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
             >
-              {tab.label} ({counts[tab.key]})
-            </button>
-          ))}
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs"
+              >
+                ✕
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Recipe grid */}
@@ -241,73 +316,107 @@ export default function RecipeManagerClient({
           <div className="bg-white border border-dashed border-[#E0E0E0] rounded-2xl py-16 text-center">
             <p className="text-4xl mb-3">🍲</p>
             <p className="text-[13px] font-semibold text-gray-500">
-              No dishes yet{activeTab !== 'all' ? ` in ${CATEGORY_LABEL[activeTab]}` : ''}.
+              No dishes found{searchQuery ? ` matching "${searchQuery}"` : activeTab !== 'all' ? ` in ${CATEGORY_LABEL[activeTab]}` : ''}.
             </p>
             <p className="text-[12px] text-gray-400 mt-1">
-              Use &ldquo;+ Add New Dish&rdquo; to create the first recipe.
+              Use &ldquo;+ Add New Dish&rdquo; to create a recipe or clear your filters.
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {visibleRecipes.map(recipe => (
-              <div
-                key={recipe.id}
-                className="bg-white border border-[#EEEEEE] rounded-xl shadow-sm p-4 flex flex-col"
-              >
-                <div className="flex items-start justify-between gap-2 mb-3">
-                  <div className="min-w-0">
-                    <h3 className="text-[15px] font-bold text-[#11142D] truncate" title={recipe.name}>
-                      {recipe.name}
-                    </h3>
-                    <span
-                      className={`inline-block mt-1 px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wider ${CATEGORY_BADGE[recipe.category]}`}
-                    >
-                      {CATEGORY_LABEL[recipe.category]}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => openEdit(recipe)}
-                      className="px-2 py-1 text-[10.5px] font-bold text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                    >
-                      ✏️ Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(recipe)}
-                      disabled={deletingId === recipe.id}
-                      className="px-2 py-1 text-[10.5px] font-bold text-red-500 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
-                    >
-                      {deletingId === recipe.id ? '…' : '❌'}
-                    </button>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+            {visibleRecipes.map(recipe => {
+              const totalRgOz = recipe.ingredients.reduce((sum, ing) => sum + (ing.raw_oz_per_8oz || 0), 0);
+              const totalLgOz = recipe.ingredients.reduce((sum, ing) => sum + (ing.raw_oz_per_12oz || 0), 0);
+
+              return (
+                <div
+                  key={recipe.id}
+                  className="relative flex flex-col justify-between p-3.5 bg-white border border-gray-200 rounded-xl shadow-xs"
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-2 mb-2.5">
+                      <div className="min-w-0">
+                        <h3 className="text-[14px] font-bold text-[#11142D] truncate" title={recipe.name}>
+                          {recipe.name}
+                        </h3>
+                        <span
+                          className={`inline-block mt-1 px-1.5 py-0.5 rounded border text-[9.5px] font-bold uppercase tracking-wider ${CATEGORY_BADGE[recipe.category]}`}
+                        >
+                          {CATEGORY_LABEL[recipe.category]}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openEdit(recipe)}
+                          className="px-1.5 py-0.5 text-[10.5px] font-semibold text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(recipe)}
+                          disabled={deletingId === recipe.id}
+                          className="px-1.5 py-0.5 text-[10.5px] font-semibold text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                        >
+                          {deletingId === recipe.id ? '…' : '❌'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {recipe.ingredients.length === 0 ? (
+                      <p className="text-[11.5px] text-gray-400 italic py-2">No ingredients configured.</p>
+                    ) : (
+                      <table className="w-full text-[11.5px]">
+                        <thead>
+                          <tr className="text-gray-400 uppercase text-[9px] tracking-wider border-b border-gray-100">
+                            <th className="text-left font-bold pb-1">Ingredient</th>
+                            <th className="text-right font-bold pb-1">8 oz (RG)</th>
+                            <th className="text-right font-bold pb-1">12 oz (LG)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-50">
+                          {recipe.ingredients.map(ing => (
+                            <tr key={ing.id}>
+                              <td className="py-1 text-xs font-medium text-gray-700 truncate max-w-[120px]" title={ing.name}>
+                                {ing.name}
+                              </td>
+                              <td className="py-1 text-xs text-right font-mono text-gray-600">
+                                {ing.raw_oz_per_8oz} oz
+                              </td>
+                              <td className="py-1 text-xs text-right font-mono text-gray-600">
+                                {ing.raw_oz_per_12oz} oz
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t border-gray-200">
+                            <td className="pt-1.5 text-[10px] font-bold uppercase text-gray-500">
+                              Total Base
+                            </td>
+                            <td
+                              className={`pt-1.5 text-xs text-right font-mono font-bold ${
+                                totalRgOz.toFixed(1) === '8.0' ? 'text-gray-400' : 'text-gray-800'
+                              }`}
+                            >
+                              {totalRgOz.toFixed(1)} oz
+                            </td>
+                            <td
+                              className={`pt-1.5 text-xs text-right font-mono font-bold ${
+                                totalLgOz.toFixed(1) === '12.0' ? 'text-gray-400' : 'text-gray-800'
+                              }`}
+                            >
+                              {totalLgOz.toFixed(1)} oz
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    )}
                   </div>
                 </div>
-
-                {recipe.ingredients.length === 0 ? (
-                  <p className="text-[11.5px] text-gray-400 italic">No ingredients yet.</p>
-                ) : (
-                  <table className="w-full text-[11.5px]">
-                    <thead>
-                      <tr className="text-gray-400 uppercase text-[9.5px] tracking-wider">
-                        <th className="text-left font-bold pb-1">Ingredient</th>
-                        <th className="text-right font-bold pb-1">8 oz (RG)</th>
-                        <th className="text-right font-bold pb-1">12 oz (LG)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {recipe.ingredients.map(ing => (
-                        <tr key={ing.id} className="border-t border-gray-100">
-                          <td className="py-1 font-semibold text-gray-700">{ing.name}</td>
-                          <td className="py-1 text-right text-gray-600">{ing.raw_oz_per_8oz} oz</td>
-                          <td className="py-1 text-right text-gray-600">{ing.raw_oz_per_12oz} oz</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -321,7 +430,7 @@ export default function RecipeManagerClient({
               className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-full max-w-[640px] max-h-[88vh] flex flex-col pointer-events-auto"
               onClick={e => e.stopPropagation()}
             >
-              {/* Header */}
+              {/* Drawer Header */}
               <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
                 <h2 className="text-[14px] font-bold text-[#11142D] uppercase tracking-wide">
                   {editingId ? '✏️ Edit Dish' : '+ Add New Dish'}
@@ -335,7 +444,7 @@ export default function RecipeManagerClient({
                 </button>
               </div>
 
-              {/* Body */}
+              {/* Drawer Body */}
               <div className="px-5 py-4 overflow-y-auto space-y-4 flex-1">
                 <div className="grid grid-cols-1 sm:grid-cols-[1fr_150px] gap-3">
                   <label className="flex flex-col gap-1">
@@ -366,20 +475,39 @@ export default function RecipeManagerClient({
                   </label>
                 </div>
 
-                {/* Dynamic ingredient rows */}
+                {/* Dynamic Draggable Ingredient Rows */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[10.5px] font-bold text-gray-500 uppercase tracking-wider">
-                      Ingredients
+                      Ingredients (Drag ⠿ to rearrange)
                     </span>
                     <span className="text-[10px] text-gray-400">
                       Raw oz → 8 oz (RG) &amp; 12 oz (LG)
                     </span>
                   </div>
 
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     {ingredients.map((row, index) => (
-                      <div key={row.key} className="flex items-center gap-2">
+                      <div
+                        key={row.key}
+                        draggable
+                        onDragStart={e => handleDragStart(e, index)}
+                        onDragOver={e => handleDragOver(e, index)}
+                        onDragEnd={handleDragEnd}
+                        className={`flex items-center gap-2 p-1 rounded-lg border transition-all ${
+                          draggedIndex === index
+                            ? 'opacity-40 bg-gray-100 border-dashed border-[#5D5FEF]'
+                            : 'bg-white border-transparent hover:border-gray-200'
+                        }`}
+                      >
+                        {/* Drag Handle */}
+                        <span
+                          title="Drag to rearrange"
+                          className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-700 px-1 select-none text-base font-bold shrink-0"
+                        >
+                          ⠿
+                        </span>
+
                         <input
                           type="text"
                           value={row.name}
@@ -435,7 +563,7 @@ export default function RecipeManagerClient({
                 )}
               </div>
 
-              {/* Footer */}
+              {/* Drawer Footer */}
               <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2 shrink-0">
                 <button
                   type="button"
@@ -461,6 +589,3 @@ export default function RecipeManagerClient({
     </div>
   );
 }
-
-
-

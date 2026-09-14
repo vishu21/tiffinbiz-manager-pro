@@ -20,7 +20,6 @@ import {
   getRecipesWithIngredients,
   type RecipeWithIngredients,
 } from '@/app/admin/recipes/actions';
-import RecipeManagerModal from './RecipeManagerModal';
 import { useRouter } from 'next/navigation';
 import type { MealConfigPayload } from '@/app/admin/actions';
 import PrepQuickEditSheet, { type QuickEditSaveRequest } from './PrepQuickEditSheet';
@@ -268,8 +267,6 @@ const formatShortAddress = (address: string): string => {
   return shortenStreetSuffixes(kept).replace(/\s{2,}/g, ' ').trim();
 };
 
-// Portion tier → single-clean print badge:
-// L (Large / 2x 12oz), HL (Half Large / 1x 12oz), R (Regular / 2x 8oz), HR (Half Regular / 1x 8oz)
 const formatSizeBadge = (portionSize: string | null | undefined): string => {
   const p = normalizePortionToken(portionSize);
   if (p === PORTION_HALF_LG) return 'HL';
@@ -286,7 +283,13 @@ const formatBatchBreakdownLines = (
 ): string[] =>
   rows.length === 0
     ? ['No ingredient standards defined.']
-    : rows.map(row => `${row.name}: ${Math.round(row.totalOz)} oz`);
+    : rows.map(row => {
+        const hint = getIngredientCountHint(row.name, row.totalOz);
+        // Shorten "Tomatoes (Pureed)" -> "Tomatoes", "Onions (Chopped)" -> "Onions" for print scannability
+        const cleanName = row.name.replace(/\s*\([^)]*\)/g, '').trim();
+        const hintText = hint ? ` (${hint})` : '';
+        return `${cleanName}: ${Math.round(row.totalOz)} oz${hintText}`;
+      });
 
 const formatShortRice = (riceCount: string | null | undefined): string => {
   if (!hasRiceToPack(riceCount)) return '—';
@@ -390,7 +393,6 @@ const getCustomInstructionsText = (
   const raw = (customer.curry_config || '').trim();
   if (!raw) return null;
 
-  // Strips standard "+ Salad" and "+ Dessert" but keeps explicit "No Salad" / "No Dessert"
   const cleanStandardAddons = (str: string) =>
     str
       .replace(/\s*\+\s*(?<!No\s+)Salad\b/gi, '')
@@ -634,10 +636,7 @@ const buildAlertSummary = (input: {
       const count = explicitCount(key);
       if (count === null || count === baseline[key]) return;
 
-      // 1. Suppress standard 1 Chicken / Gravy on Veg Days
       if (!input.isChickenDay && (key === 'chicken' || key === 'gravy') && count === 1) return;
-
-      // 2. Suppress standard 1 Chicken for Non-Veg on Chicken Days (already indicated by TYPE=NV)
       if (input.isChickenDay && input.isNonVeg && key === 'chicken' && count === 1) return;
 
       tokens.push(count === 0 ? `No ${labelFor[key]}` : `${count} ${labelFor[key]}`);
@@ -689,6 +688,17 @@ const buildAlertSummary = (input: {
   return cleaned.length > 0 ? cleaned.join(' · ') : null;
 };
 
+// Count hint helper for whole produce items (e.g. Medium Tomatoes)
+const getIngredientCountHint = (ingredientName: string, totalOz: number): string | null => {
+  const lower = ingredientName.toLowerCase();
+  if (lower.includes('tomato')) {
+    const count = Math.round((totalOz / 4.2) * 2) / 2;
+    const roundedInt = Math.round(count);
+    return count < 1 ? '~1 med' : `~${roundedInt} med`;
+  }
+  return null;
+};
+
 type QuickSaveRequest = QuickEditSaveRequest;
 
 export default function PrepDashboardClient({ initialCustomers }: { initialCustomers: Customer[] }) {
@@ -703,9 +713,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const [nonVeg, setNonVeg] = useState<string>('Chicken Curry');
   const [isMenuLoading, setIsMenuLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const isSaving = saveStatus === 'saving';
   const [availableRecipes, setAvailableRecipes] = useState<{ dal: Recipe[]; sabji: Recipe[] }>({ dal: [], sabji: [] });
-  const [isRecipeManagerOpen, setIsRecipeManagerOpen] = useState(false);
 
   const [batchRecipes, setBatchRecipes] = useState<RecipeWithIngredients[]>([]);
   const [selectedDalId, setSelectedDalId] = useState<string>('');
@@ -1471,11 +1479,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               <p className="text-[11px] font-bold leading-snug text-black">
                 Regular: {metrics.sabjiPackRG}, Large: {metrics.sabjiPackLG}
               </p>
-              <div className="mt-1 space-y-0.5 text-[10px] font-medium leading-snug text-black">
-                {sabjiBreakdownLines.map((line, index) => (
-                  <div key={index} className="break-words">• {line}</div>
-                ))}
-              </div>
+              {/* Change text-[10px] leading-snug to text-[9px] leading-tight */}
+<div className="mt-1 space-y-0.5 text-[9px] font-medium leading-tight text-black">
+  {sabjiBreakdownLines.map((line, index) => (
+    <div key={index} className="truncate">• {line}</div>
+  ))}
+</div>
             </div>
 
             <div className="p-2 min-w-0">
@@ -1488,11 +1497,11 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               <p className="text-[11px] font-bold leading-snug text-black">
                 Regular: {metrics.dalPackRG}, Large: {metrics.dalPackLG}
               </p>
-              <div className="mt-1 space-y-0.5 text-[10px] font-medium leading-snug text-black">
-                {dalBreakdownLines.map((line, index) => (
-                  <div key={index} className="break-words">• {line}</div>
-                ))}
-              </div>
+              <div className="mt-1 space-y-0.5 text-[9px] font-medium leading-tight text-black">
+  {dalBreakdownLines.map((line, index) => (
+    <div key={index} className="truncate">• {line}</div>
+  ))}
+</div>
             </div>
 
             <div className="p-2 min-w-0">
@@ -1692,11 +1701,11 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                   🍽️ Today&apos;s Kitchen Menu
                 </span>
                 <a
-  href="/admin/recipes"
-  className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded transition-colors"
->
-  ⚙️ Manage Recipes
-</a>
+                  href="/admin/recipes"
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded transition-colors"
+                >
+                  ⚙️ Manage Recipes
+                </a>
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-[10px] font-bold text-gray-400 whitespace-nowrap">
@@ -1784,17 +1793,27 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       </p>
                     ) : (
                       <ul className="space-y-1">
-                        {dalBatchRows.map(row => (
-                          <li
-                            key={row.id}
-                            className="flex items-baseline justify-between gap-3 text-[12px] border-b border-gray-50 pb-1"
-                          >
-                            <span className="font-semibold text-gray-700 truncate">{row.name}:</span>
-                            <span className="shrink-0 font-mono font-bold text-gray-900">
-                              {formatOz(row.totalOz)}  ({formatWeight(row.totalOz)})
-                            </span>
-                          </li>
-                        ))}
+                        {dalBatchRows.map(row => {
+                          const countHint = getIngredientCountHint(row.name, row.totalOz);
+                          return (
+                            <li
+                              key={row.id}
+                              className="flex items-baseline justify-between gap-3 text-[12px] border-b border-gray-50 pb-1"
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="font-semibold text-gray-700 truncate">{row.name}:</span>
+                                {countHint && (
+                                  <span className="text-[10.5px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded shrink-0">
+                                    {countHint}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="shrink-0 font-mono font-bold text-gray-900">
+                                {formatOz(row.totalOz)}  ({formatWeight(row.totalOz)})
+                              </span>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>
@@ -1816,17 +1835,27 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       </p>
                     ) : (
                       <ul className="space-y-1">
-                        {sabjiBatchRows.map(row => (
-                          <li
-                            key={row.id}
-                            className="flex items-baseline justify-between gap-3 text-[12px] border-b border-gray-50 pb-1"
-                          >
-                            <span className="font-semibold text-gray-700 truncate">{row.name}:</span>
-                            <span className="shrink-0 font-mono font-bold text-gray-900">
-                              {formatOz(row.totalOz)}  ({formatWeight(row.totalOz)})
-                            </span>
-                          </li>
-                        ))}
+                        {sabjiBatchRows.map(row => {
+                          const countHint = getIngredientCountHint(row.name, row.totalOz);
+                          return (
+                            <li
+                              key={row.id}
+                              className="flex items-baseline justify-between gap-3 text-[12px] border-b border-gray-50 pb-1"
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="font-semibold text-gray-700 truncate">{row.name}:</span>
+                                {countHint && (
+                                  <span className="text-[10.5px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded shrink-0">
+                                    {countHint}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="shrink-0 font-mono font-bold text-gray-900">
+                                {formatOz(row.totalOz)}  ({formatWeight(row.totalOz)})
+                              </span>
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                   </div>
@@ -2201,7 +2230,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                           const portion = (customer.portion_size || '').toLowerCase();
                           const isLg = portion.includes('lg') || portion.includes('large');
 
-                          // Suppress default side allocations: LG (1S, 1D), Regular (0S, 0D)
                           const isDefaultSides = isLg
                             ? sideAddons.salad === 1 && sideAddons.dessert === 1
                             : sideAddons.salad === 0 && sideAddons.dessert === 0;
@@ -2301,11 +2329,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           onClearOverride={handleClearOverride}
         />
       )}
-      <RecipeManagerModal
-        open={isRecipeManagerOpen}
-        onClose={() => setIsRecipeManagerOpen(false)}
-        onRecipesChanged={refreshRecipes}
-      />
     </div>
   );
 }
