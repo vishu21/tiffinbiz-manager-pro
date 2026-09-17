@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
+import { Package, BookOpen, PartyPopper, Check, SkipForward, Undo2 } from 'lucide-react';
 import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction } from './actions';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
 
@@ -162,8 +163,8 @@ export default function DeliveriesClient({
       <div className="px-8 flex gap-1.5">
         {(
           [
-            { key: 'dispatch', label: '📦 Daily Dispatch', hint: dispatchList.length },
-            { key: 'ledger', label: '📒 Subscription Ledger', hint: ledgerList.length },
+            { key: 'dispatch', label: <span className="flex items-center gap-1.5"><Package className="w-4 h-4" /> Daily Dispatch</span>, hint: dispatchList.length },
+            { key: 'ledger', label: <span className="flex items-center gap-1.5"><BookOpen className="w-4 h-4" /> Subscription Ledger</span>, hint: ledgerList.length },
           ] as const
         ).map(t => (
           <button
@@ -202,7 +203,7 @@ export default function DeliveriesClient({
 
             {dispatchList.length === 0 ? (
               <div className="py-16 text-center">
-                <div className="text-3xl mb-2">🎉</div>
+                <PartyPopper className="w-8 h-8 mx-auto text-gray-400 mb-2" />
                 <p className="text-gray-500 text-sm font-medium">No customers scheduled for delivery today</p>
                 <p className="text-gray-400 text-xs mt-1">
                   Active, non-paused customers with paid credits or grace remaining appear here once per day.
@@ -238,7 +239,7 @@ export default function DeliveriesClient({
                           }}
                           className="px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-500 hover:bg-emerald-600 rounded-lg shadow-sm disabled:opacity-50 transition-colors"
                         >
-                          {busyId === c.id ? 'Saving…' : '✓ Mark Delivered'}
+                          {busyId === c.id ? 'Saving…' : <span className="flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Mark Delivered</span>}
                         </button>
                         <button
                           type="button"
@@ -262,7 +263,7 @@ export default function DeliveriesClient({
               <div className="border-t border-[#F0F2F5]">
                 <div className="px-5 py-3 border-b border-[#F0F2F5] flex items-center justify-between">
                   <h3 className="text-[12.5px] font-bold text-gray-700 uppercase tracking-wide">
-                    ✓ Completed Today
+                    <span className="flex items-center gap-1.5"><Check className="w-4 h-4 text-emerald-600" /> Completed Today</span>
                   </h3>
                   <span className="text-[11px] text-gray-400">
                     Undo reverses the credit/skip and re-queues today&apos;s delivery
@@ -283,7 +284,7 @@ export default function DeliveriesClient({
                             event === 'delivered' ? 'text-emerald-600' : 'text-amber-600'
                           }`}
                         >
-                          {event === 'delivered' ? '✓ Delivered' : '⏭ Skipped'}
+                          {event === 'delivered' ? <span className="flex items-center gap-1"><Check className="w-3.5 h-3.5 text-emerald-600" /> Delivered</span> : <span className="flex items-center gap-1"><SkipForward className="w-3.5 h-3.5 text-amber-600" /> Skipped</span>}
                         </span>
                       </div>
                       <button

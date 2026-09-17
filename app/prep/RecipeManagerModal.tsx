@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { Pencil, X } from 'lucide-react';
 import { addRecipe, updateRecipe, deleteRecipe, getAvailableRecipes } from './actions';
 import type { Recipe } from './actions';
 
@@ -159,14 +160,14 @@ export default function RecipeManagerModal({ open, onClose, onRecipesChanged }: 
                       className="px-2 py-1 text-[10px] font-bold text-blue-600 hover:bg-blue-50 rounded"
                       title="Edit"
                     >
-                      ✏️
+                      <Pencil className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => handleDelete(r.id)}
                       className="px-2 py-1 text-[10px] font-bold text-red-500 hover:bg-red-50 rounded"
                       title="Delete"
                     >
-                      ❌
+                      <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
@@ -216,7 +217,7 @@ export default function RecipeManagerModal({ open, onClose, onRecipesChanged }: 
                 disabled={isSubmitting}
                 className="flex-1 py-1.5 bg-[#5D5FEF] text-white text-[11px] font-bold rounded-lg hover:bg-[#4D4FDF] disabled:opacity-50 transition-all"
               >
-                {isSubmitting ? 'Saving...' : editingId ? '✏️ Update Item' : '+ Add Item'}
+                {isSubmitting ? 'Saving...' : editingId ? <span className="flex items-center gap-1"><Pencil className="w-3.5 h-3.5" /> Update Item</span> : '+ Add Item'}
               </button>
               {editingId && (
                 <button

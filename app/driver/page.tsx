@@ -1,5 +1,6 @@
 import { createClient } from '@/utils/supabase/server'
 import { redirect } from 'next/navigation'
+import { MapPin } from 'lucide-react'
 
 export default async function DriverDashboard() {
   const supabase = await createClient()
@@ -50,7 +51,7 @@ export default async function DriverDashboard() {
 
             <div className="space-y-2">
               <div className="flex items-start gap-2">
-                <span className="text-sm font-bold text-gray-600">📍 Address:</span>
+                <MapPin className="w-3.5 h-3.5" /> Address:
                 <p className="text-sm text-gray-700">{delivery.customers?.address}</p>
               </div>
 

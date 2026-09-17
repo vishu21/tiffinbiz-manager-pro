@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import GlobalProgressBar from '@/app/components/ui/GlobalProgressBar';
+import 'nprogress/nprogress.css';
 
 export const metadata: Metadata = {
   title: "Tiffin Manager OS",
@@ -20,6 +22,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen w-full bg-[#FDFDFD] antialiased">
+       <GlobalProgressBar />
         {children}
       </body>
     </html>

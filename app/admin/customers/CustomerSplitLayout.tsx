@@ -2,6 +2,7 @@
 
 import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
+import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Check } from 'lucide-react';
 import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation } from '@/app/admin/actions';
 import {
   isLegacyPickupCustomer,
@@ -11,7 +12,7 @@ import {
 } from '@/app/utils/customerPickup';
 
 // Stable no-op subscription for the mount flag below.
-const noopSubscribe = () => () => {};
+const noopSubscribe = () => () => { };
 
 // Plan tier options + included credits.
 const PLAN_OPTIONS: { key: 'trial' | 'weekly' | 'monthly'; label: string; credits: number }[] = [
@@ -38,6 +39,45 @@ const REFERRAL_QUICK_PILLS = ['Instagram', 'WhatsApp', 'Flyer', 'Word of mouth']
 // Local YYYY-MM-DD key (avoids the UTC rollover of toISOString() so "today" always matches
 // the user's own calendar day). Used by the Last-Service-Date scheduling comparisons.
 const toLocalDateKey = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const isWeekdayDelivery = (date: Date): boolean => {
+  const day = date.getDay();
+  return day !== 0 && day !== 6;
+};
+
+const calculateTargetLastDay = (
+  startDateStr: string | null | undefined,
+  totalMeals: number | null | undefined,
+): string | null => {
+  if (!startDateStr || !totalMeals || totalMeals <= 0) return null;
+
+  let normalized = startDateStr.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(normalized)) {
+    const [m, d, y] = normalized.split('/');
+    normalized = `${y}-${m}-${d}`;
+  }
+
+  const date = new Date(`${normalized}T00:00:00`);
+  if (isNaN(date.getTime())) return null;
+
+  let mealsCounted = 0;
+  if (isWeekdayDelivery(date)) {
+    mealsCounted = 1;
+  }
+
+  while (mealsCounted < totalMeals) {
+    date.setDate(date.getDate() + 1);
+    if (isWeekdayDelivery(date)) {
+      mealsCounted++;
+    }
+    if (mealsCounted > 730) return null;
+  }
+
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
@@ -684,12 +724,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     const patchedServerRows =
       Object.keys(rowPatches).length > 0
         ? initialCustomers.map(c => {
-            const patch = rowPatches[c.id];
-            if (!patch) return c;
-            // The patch only applies until the server copy differs from the stale row it
-            // replaced (i.e. until router.refresh() delivers the adopted record).
-            return patch.staleSignature !== JSON.stringify(c) ? c : patch.updated;
-          })
+          const patch = rowPatches[c.id];
+          if (!patch) return c;
+          // The patch only applies until the server copy differs from the stale row it
+          // replaced (i.e. until router.refresh() delivers the adopted record).
+          return patch.staleSignature !== JSON.stringify(c) ? c : patch.updated;
+        })
         : initialCustomers;
     return [...localPrefix, ...patchedServerRows];
   }, [newlyAddedCustomers, initialCustomers, rowPatches]);
@@ -1007,7 +1047,23 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     }, 100);
     return () => clearTimeout(timer);
   }, [focusFullNameOnDuplicate, isAddingNew]);
+  // Synchronize tier with credits when nudged via + / -
+  const handleUpdateCredits = (nextCredits: number) => {
+    const validCredits = Math.max(1, nextCredits);
+    setTotalTiffinCredits(validCredits);
+    if (validCredits >= 20) {
+      setPlanTier('monthly');
+    } else if (validCredits >= 5) {
+      setPlanTier('weekly');
+    } else {
+      setPlanTier('trial');
+    }
+  };
 
+  // Live Auto-Calculated Projected End Date (Mon-Fri service)
+  const computedEndDate = useMemo(() => {
+    return calculateTargetLastDay(startDate, totalTiffinCredits);
+  }, [startDate, totalTiffinCredits]);
   // ═══════════════════════════════════════════════════════════════
   // Custom curry detection — drives the "⚡ Custom" pill and is saved
   // as `is_custom_curry` + `curry_config` (never into dietary notes).
@@ -1486,15 +1542,27 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     return 0;
   });
 
-  // Column subtotals for the Roti / Rice headers — always computed from the
-  // rows currently displayed (status / meal-type / search filters) so each
-  // header total matches exactly the rows beneath it.
+// Column subtotals and summary metrics computed from the active filtered view
   let totalRotis = 0;
   let totalPronthis = 0;
   let riceRgCount = 0;
   let riceLgCount = 0;
   let riceXlCount = 0;
+
+  // Granular size counts split by Veg vs Non-Veg
+  const vegSizes = { lg: 0, rg: 0, hlg: 0, hrg: 0 };
+  const nvSizes = { lg: 0, rg: 0, hlg: 0, hrg: 0 };
+
   for (const c of sortedCustomers) {
+    const isNv = (c.meal_type || '').toLowerCase().includes('non');
+    const target = isNv ? nvSizes : vegSizes;
+    const p = normalizePortionToken(c.portion_size);
+
+    if (p === PORTION_LG) target.lg++;
+    else if (p === PORTION_HALF_LG) target.hlg++;
+    else if (p === PORTION_HALF_RG) target.hrg++;
+    else target.rg++;
+
     if (typeof c.roti_count === "number" && c.roti_count > 0) totalRotis += c.roti_count;
     if (typeof c.pronthi_count === "number" && c.pronthi_count > 0) totalPronthis += c.pronthi_count;
     const rawRice = (c.rice_count || "").toLowerCase();
@@ -1508,13 +1576,25 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       else if (m[2] === "xl") riceXlCount += qty;
     }
   }
+
+  const formatSizeTokens = (s: { lg: number; rg: number; hlg: number; hrg: number }) => {
+    const tokens: string[] = [];
+    if (s.lg > 0) tokens.push(`${s.lg} LG`);
+    if (s.rg > 0) tokens.push(`${s.rg} RG`);
+    if (s.hlg > 0) tokens.push(`${s.hlg} Half-LG`);
+    if (s.hrg > 0) tokens.push(`${s.hrg} Half-RG`);
+    return tokens.length > 0 ? tokens.join(' · ') : '0';
+  };
+
+  const totalVeg = vegSizes.lg + vegSizes.rg + vegSizes.hlg + vegSizes.hrg;
+  const totalNv = nvSizes.lg + nvSizes.rg + nvSizes.hlg + nvSizes.hrg;
+
   const riceTotalParts: string[] = [];
   if (riceRgCount > 0) riceTotalParts.push(`${riceRgCount} Rg`);
   if (riceLgCount > 0) riceTotalParts.push(`${riceLgCount} Lg`);
   if (riceXlCount > 0) riceTotalParts.push(`${riceXlCount} Xl`);
   const riceHeaderTotal = riceTotalParts.join(" + ");
-  // Bread header mirrors the Rice column's split style (`3 Rg + 1 Lg`): plain Roti and
-  // Pronthi stay in separate buckets so Pronthis are never folded into the Roti total.
+
   const breadTotalParts: string[] = [];
   if (totalRotis > 0) breadTotalParts.push(`${totalRotis} Roti`);
   if (totalPronthis > 0) breadTotalParts.push(`${totalPronthis} Pronthi`);
@@ -1728,11 +1808,11 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             (mwfPresetKey && mwfPresetKey !== 'custom'
               ? mwfPresetKey
               : 'custom') as
-              | 'default'
-              | 'dal-chicken'
-              | 'double-chicken'
-              | 'double-gravy'
-              | 'custom'
+            | 'default'
+            | 'dal-chicken'
+            | 'double-chicken'
+            | 'double-gravy'
+            | 'custom'
           );
 
           const tth = normalizeDayProfile(weeklyConfig.tth);
@@ -1864,9 +1944,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     // STEP 3 — Apply Portion-Size Defaults (rotis + curries)
     // ═══════════════════════════════════════════════════════════════
     const PORTION_DEFAULTS: Record<string, { roti: number; curries: number; premium: string }> = {
-      Small:  { roti: 4, curries: 1, premium: '' },
-      Regular:{ roti: 6, curries: 2, premium: '' },
-      Large:  { roti: 8, curries: 2, premium: ' + Salad + Dessert (weekly)' },
+      Small: { roti: 4, curries: 1, premium: '' },
+      Regular: { roti: 6, curries: 2, premium: '' },
+      Large: { roti: 8, curries: 2, premium: ' + Salad + Dessert (weekly)' },
     };
 
     let defaultRoti = PORTION_DEFAULTS[detectedPortion].roti;
@@ -2156,11 +2236,11 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       ? JSON.stringify(buildWeeklyConfig())
       : curryIsCustom && mealType !== 'Non-veg'
         ? JSON.stringify({
-            pattern_type: 'veg_fixed' as const,
-            mwf: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
-            tth: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
-            extras: extrasForConfig,
-          } as WeeklyCurryConfig)
+          pattern_type: 'veg_fixed' as const,
+          mwf: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
+          tth: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
+          extras: extrasForConfig,
+        } as WeeklyCurryConfig)
         : curryIsCustom
           ? customCurryPillText
           : null;
@@ -2189,6 +2269,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       plan_tier: planTier,
       total_tiffin_credits: totalTiffinCredits,
       start_date: startDate.trim() || null,
+      cycle_end_date: computedEndDate || null,
       roti_count: rotiCount === '' ? null : Number(rotiCount),
       pronthi_count: pronthiCount === '' ? null : Number(pronthiCount),
       rice_count: builtRice,
@@ -2199,17 +2280,17 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       // Structured custom-curry metadata lives in its own columns — never dietary_notes.
       ...(curryIsCustom || hasStoredCustomCurry
         ? {
-            is_custom_curry: curryIsCustom,
-            curry_config: curryIsCustom ? curryConfigForSave : null,
-          }
+          is_custom_curry: curryIsCustom,
+          curry_config: curryIsCustom ? curryConfigForSave : null,
+        }
         : {}),
       ...(discountConfigured || hasStoredDiscount
         ? {
-            discount_type: discountType === 'none' ? null : discountType,
-            discount_value:
-              discountNumber !== null && Number.isFinite(discountNumber) ? discountNumber : null,
-            discount_note: discountNote.trim() || null,
-          }
+          discount_type: discountType === 'none' ? null : discountType,
+          discount_value:
+            discountNumber !== null && Number.isFinite(discountNumber) ? discountNumber : null,
+          discount_note: discountNote.trim() || null,
+        }
         : {})
     };
 
@@ -2477,7 +2558,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             className="px-2 py-0.5 bg-yellow-50 text-yellow-800 border border-yellow-200 rounded-md text-[10.5px] font-medium leading-snug"
             title={displayNote}
           >
-            ⚠️ {displayNote}
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-500" /> {displayNote}
           </span>
         )}
       </div>
@@ -2582,13 +2663,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         key={customer.id}
         id={`customer-row-${customer.id}`}
         onClick={() => openCancellationDetails(customer)}
-        className={`group transition-all duration-150 cursor-pointer ${
-          isLastModified
-            ? 'bg-blue-50/70 border-l-4 border-l-blue-500 transition-colors duration-700 ease-out'
-            : selectedCustomer?.id === customer.id
-              ? 'bg-[#F4F4FE]'
-              : 'hover:bg-[#FAF9FF] bg-white'
-        }`}
+        className={`group transition-all duration-150 cursor-pointer ${isLastModified
+          ? 'bg-blue-50/70 border-l-4 border-l-blue-500 transition-colors duration-700 ease-out'
+          : selectedCustomer?.id === customer.id
+            ? 'bg-[#F4F4FE]'
+            : 'hover:bg-[#FAF9FF] bg-white'
+          }`}
       >
         <td className="py-2 pl-4 pr-3 rounded-l-xl align-top">
           <div className="flex flex-col min-w-0">
@@ -2598,7 +2678,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             </div>
             {customer.delivery_address ? (
               <span className="text-[11px] text-[#7A7C87] font-medium truncate mt-0.5 flex items-center">
-                <span className="text-[9px] mr-1 opacity-70">📍</span>
+                <MapPin className="w-3 h-3 mr-1 opacity-70" />
                 {customer.delivery_address.split(',')[0]}
               </span>
             ) : (
@@ -2689,12 +2769,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         <col className="w-[35%]" />
         <col className="w-[15%]" />
       </colgroup>
-      <thead className="sticky top-0 z-20 bg-[#FCFCFD] shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]">
-        <tr className="text-[#A2A4B0] font-bold border-b border-[#EAEBED] uppercase text-[10.5px] tracking-wider select-none bg-[#FCFCFD] h-10">
-          <th className="sticky top-0 z-20 bg-[#FCFCFD] pl-4 rounded-l-lg pb-1">Customer</th>
-          <th className="sticky top-0 z-20 bg-[#FCFCFD] pb-1">Cancelled Date</th>
-          <th className="sticky top-0 z-20 bg-[#FCFCFD] pb-1">Reason</th>
-          <th className="sticky top-0 z-20 bg-[#FCFCFD] pb-1 pr-3 rounded-r-lg text-right">Actions</th>
+      <thead className="sticky top-0 z-20 bg-white shadow-xs">
+        <tr className="text-[#A2A4B0] font-bold border-b border-gray-200 uppercase text-[10.5px] tracking-wider select-none bg-white h-11">
+          <th className="sticky top-0 z-20 bg-white pl-4 py-2 border-b border-gray-200">Customer</th>
+          <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Cancelled Date</th>
+          <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Reason</th>
+          <th className="sticky top-0 z-20 bg-white py-2 pr-3 border-b border-gray-200 text-right">Actions</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-[#F9FBFC]">
@@ -2702,7 +2782,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           <tr>
             <td colSpan={4} className="py-16 text-center">
               <div className="flex flex-col items-center justify-center space-y-3">
-                <div className="w-12 h-12 bg-[#F4F4FE] rounded-full flex items-center justify-center text-xl">🗂️</div>
+                <FolderOpen className="w-6 h-6 text-[#5D5FEF]" />
                 <h3 className="text-gray-700 font-bold text-[14px]">No cancelled customers found</h3>
                 <p className="text-gray-400 text-xs max-w-xs leading-normal">
                   Cancelled customers will appear here so they can be reviewed or reactivated.
@@ -2721,7 +2801,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     <div className="flex flex-col h-screen bg-[#FDFDFD] overflow-hidden font-sans antialiased text-[#292D32]">
 
       {/* 3-PART HEADER: Title/Count · Center Search · Add Customer */}
-      <div className="px-8 py-4 shrink-0 flex items-center justify-between gap-6 bg-white shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+      <div className="px-4 sm:px-6 py-3 shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         {/* LEFT: Title + Count Badge */}
         <div className="flex items-center gap-3 shrink-0">
           <h1 className="text-[22px] font-bold text-[#11142D] tracking-tight">Customers</h1>
@@ -2749,6 +2829,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               </svg>
             </div>
             <input
+
               type="text"
               placeholder="Search customer, address, or phone..."
               value={searchTerm}
@@ -2762,7 +2843,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 onClick={() => setSearchTerm('')}
                 className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 text-sm cursor-pointer z-10"
               >
-                ✕
+                <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
@@ -2775,13 +2856,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             aria-pressed={kitchenMode}
             onClick={toggleKitchenMode}
             title="Kitchen Dispatch / Packing Order: Non-Veg first → Large → Regular → Small → A–Z"
-            className={`flex items-center space-x-1.5 px-3 py-2 text-[13px] font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
-              kitchenMode
-                ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
-                : 'bg-white border-[#E0E0E0] text-[#7A7C87] hover:bg-gray-50'
-            }`}
+            className={`flex items-center space-x-1.5 px-3 py-2 text-[13px] font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${kitchenMode
+              ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
+              : 'bg-white border-[#E0E0E0] text-[#7A7C87] hover:bg-gray-50'
+              }`}
           >
-            <span>🍳</span>
+            <UtensilsCrossed className="w-4 h-4" />
             <span>Kitchen Order</span>
           </button>
 
@@ -2796,7 +2876,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       </div>
 
       {/* CONSOLIDATED FILTER BAR: dietary tabs (left) + status pills (right) */}
-      <div className="px-8 pt-3 pb-3 shrink-0 border-b border-[#EEEEEE] flex items-center justify-between gap-4">
+      <div className="px-4 sm:px-6 py-3 shrink-0 border-b border-[#EEEEEE] flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-gray-100">
         <div className="flex items-center gap-6 text-[13px] font-medium text-[#7A7C87] whitespace-nowrap">
           <button onClick={() => setActiveTab('all')} className={`pb-1 border-b-2 transition-colors ${activeTab === 'all' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
             All Customers <span className="text-xs text-[#B5B7C0]">({customersForDisplay.length})</span>
@@ -2823,17 +2903,16 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               <button
                 key={status}
                 onClick={() => setStatusFilter(status)}
-                className={`px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider transition-all border ${
-                  statusFilter === status
-                    ? status === 'active'
-                      ? 'bg-green-100 text-green-700 border-green-300'
-                      : status === 'paused'
-                        ? 'bg-amber-100 text-amber-700 border-amber-300'
-                        : status === 'cancelled'
-                          ? 'bg-red-100 text-red-700 border-red-300'
-                          : 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
-                    : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
-                }`}
+                className={`px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider transition-all border ${statusFilter === status
+                  ? status === 'active'
+                    ? 'bg-green-100 text-green-700 border-green-300'
+                    : status === 'paused'
+                      ? 'bg-amber-100 text-amber-700 border-amber-300'
+                      : status === 'cancelled'
+                        ? 'bg-red-100 text-red-700 border-red-300'
+                        : 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
+                  : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                  }`}
               >
                 {status === 'all' ? 'All' : status} ({statusCounts[status]})
               </button>
@@ -2842,502 +2921,532 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         </div>
       </div>
 
-      {/* DATA VIEW TABLE — only this list scrolls; headers stay fixed */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-8 py-3">
-        <div className="w-full">
-          <table className="w-full table-fixed text-left text-[13px] border-separate border-spacing-0">
+      {/* DATA VIEW TABLE CONTAINER */}
+      <div className="flex-1 min-h-0 bg-white rounded-xl border border-gray-200 shadow-xs mx-4 sm:mx-6 mb-4 flex flex-col overflow-hidden">
+        {/* SUMMARY METRICS BAR */}
+        {statusFilter !== 'cancelled' && sortedCustomers.length > 0 && (
+          <div className="px-4 py-2 bg-gray-50/90 border-b border-gray-200 flex flex-wrap items-center gap-2.5 text-xs shrink-0">
+            {/* Veg Breakdown (Count + Sizes) */}
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50/80 border border-emerald-200 text-emerald-800">
+              <span className="font-bold text-[11px]">{totalVeg} Veg</span>
+              <span className="text-emerald-300 font-normal">|</span>
+              <span className="text-[10.5px] font-semibold text-emerald-700">
+                {formatSizeTokens(vegSizes)}
+              </span>
+            </div>
+
+            {/* Non-Veg Breakdown (Count + Sizes) */}
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-50/80 border border-rose-200 text-rose-800">
+              <span className="font-bold text-[11px]">{totalNv} Non-Veg</span>
+              <span className="text-rose-300 font-normal">|</span>
+              <span className="text-[10.5px] font-semibold text-rose-700">
+                {formatSizeTokens(nvSizes)}
+              </span>
+            </div>
+
+            <div className="h-4 w-px bg-gray-300 hidden sm:block" />
+
+            {/* Breads & Rice Totals (Icon-free, matching horizontal pills) */}
+            <div className="inline-flex items-center gap-2">
+              <div className="inline-flex items-center px-2.5 py-1 rounded-lg bg-amber-50/80 border border-amber-200 text-amber-800 font-bold text-[11px]">
+                <span>{breadHeaderTotal || '0 Roti'}</span>
+              </div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50/80 border border-blue-200 text-blue-800 text-[11px]">
+                <span className="font-extrabold uppercase text-[10.5px] text-blue-700">Rice</span>
+                <span className="text-blue-300 font-normal">|</span>
+                <span className="font-semibold text-blue-900">{riceHeaderTotal || '0'}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <table className="w-full table-fixed text-left text-[13px] border-collapse">
             {statusFilter === 'cancelled' ? (
               renderCancelledTableInner()
             ) : (
               <>
                 <colgroup>
-                  <col className="w-[20%]" />
+                  <col className="min-w-[220px]" />
                   <col className="w-[10%]" />
                   <col className="w-[10%]" />
-                  <col className="w-[8%]" />
                   <col className="w-[9%]" />
-                  <col className="w-[11%]" />
-                  <col className="w-[15%]" />
+                  <col className="w-[9%]" />
+                  <col className="w-[100px]" />
+                  <col className="min-w-[140px]" />
                   <col className="w-[8%]" />
                   <col className="w-[9%]" />
                 </colgroup>
-            {/* SECTION: CUSTOMERS_TABLE_HEAD */}
-            <thead className="sticky top-0 z-30" data-section="customers-table-head">
-              <tr className="text-[#A2A4B0] font-bold uppercase text-[10.5px] tracking-wider select-none h-10">
-                <th onClick={cycleNameSort} className="sticky top-0 z-30 bg-[#FCFCFD] pl-4 pb-1 border-b border-[#EAEBED] cursor-pointer select-none hover:text-indigo-600 transition-colors group">
-                  <div className="flex items-center space-x-1">
-                    <span>Customer</span>
-                    <span className="text-[10px] text-gray-400 font-bold opacity-70 group-hover:opacity-100">
-                      {nameSort === 'default' ? ' ↕' : nameSort === 'asc' ? ' ↑' : ' ↓'}
-                    </span>
-                  </div>
-                </th>
-                <th onClick={cyclePortionSort} className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED] cursor-pointer select-none hover:text-indigo-600 transition-colors group">
-                  <div className="flex items-center space-x-1">
-                    <span>Meal Plan</span>
-                    <span className="text-[10px] text-gray-400 font-bold opacity-70 group-hover:opacity-100">
-                      {portionSort === 'default' ? ' ⇅' : portionSort === 'desc' ? ' ↓' : ' ↑'}
-                    </span>
-                  </div>
-                </th>
-                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Plan</th>
-                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">
-                  <div className="flex flex-col items-start gap-0.5 leading-tight">
-                    <span>Roti / Bread</span>
-                    <span className="text-[10px] font-black normal-case tracking-normal text-amber-700">
-                      {breadHeaderTotal !== "" ? breadHeaderTotal : "—"}
-                    </span>
-                  </div>
-                </th>
-                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">
-                  <div className="flex flex-col items-start gap-0.5 leading-tight">
-                    <span>Rice</span>
-                    <span className="text-[10px] font-black normal-case tracking-normal text-blue-700">
-                      {riceHeaderTotal !== "" ? riceHeaderTotal : "—"}
-                    </span>
-                  </div>
-                </th>
-                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Schedule</th>
-                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED]">Notes</th>
-                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 border-b border-[#EAEBED] text-xs font-semibold text-gray-500 uppercase tracking-wider text-center">Discount</th>
-                <th className="sticky top-0 z-30 bg-[#FCFCFD] pb-1 pr-3 border-b border-[#EAEBED] text-center whitespace-nowrap">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#F9FBFC]">
-              {sortedCustomers.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-16 text-center">
-                    <div className="flex flex-col items-center justify-center space-y-3">
-                      <div className="w-12 h-12 bg-[#F4F4FE] rounded-full flex items-center justify-center text-xl">👥</div>
-                      <h3 className="text-gray-700 font-bold text-[14px]">No customers found matching search</h3>
-                      <p className="text-gray-400 text-xs max-w-xs leading-normal">Verify credentials or spin up a fresh active profile record instantly below.</p>
-                      <button onClick={handleOpenAddForm} className="mt-1 px-4 py-1.5 bg-[#5D5FEF] text-white text-xs font-bold rounded-lg shadow-sm">
-                        + Add Fresh Record
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                sortedCustomers.map(customer => {
-                  const displayPlanSize = normalizePortionToken(customer.portion_size || PORTION_RG);
-
-                  // Fulfillment mode drives the sub-cell below the customer name:
-                  // pure pickup → single Kitchen Pickup badge; delivery-only → address +
-                  // map link; hybrid (e.g. Harshpreet) → address + map link with a compact
-                  // pickup-day pill underneath so partial pickup days stay visible.
-                  const fulfillment = getCustomerFulfillment(customer);
-
-                  const isLastModified = customer.id === lastModifiedCustomerId;
-
-                  return (
-                    <tr
-                      key={customer.id}
-                      id={`customer-row-${customer.id}`}
-                      onClick={() => handleRowClick(customer)}
-                      className={`group transition-colors cursor-pointer ${
-                        isLastModified
-                          ? 'bg-blue-50/70 border-l-4 border-l-blue-500 transition-colors duration-700 ease-out'
-                          : selectedCustomer?.id === customer.id
-                            ? 'bg-[#F4F4FE]'
-                            : 'bg-white hover:bg-slate-50/80'
-                      }`}
-                    >
-                      {/* SECTION: TABLE_ROW_CUSTOMER_CELL */}
-                      <td
-                        className={`py-2 pl-4 pr-3 rounded-l-xl align-top ${isLastModified ? 'border-l-4 border-l-blue-500' : ''}`}
-                        data-section="table-row-customer-cell"
-                      >
-                        <div className="flex flex-col min-w-0">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="font-bold text-[#11142D] text-[13px] truncate capitalize">{customer.full_name}</span>
-                            {(() => {
-                              const subStatus = (customer.subscription_status || 'active').toLowerCase();
-                              const isPaused = subStatus === 'paused';
-                              const isCancelled = subStatus === 'cancelled';
-                              const isUpcoming = !isPaused && !isCancelled && !!customer.start_date && customer.start_date > todayKey;
-                              const statusLabel = isCancelled
-                                ? `Cancelled${customer.cancellation_reason ? ` — ${customer.cancellation_reason}` : ''}`
-                                : isPaused
-                                  ? `Paused${customer.pause_start_date ? ` until ${customer.pause_end_date || 'Indefinite'}` : ''}`
-                                  : isUpcoming
-                                    ? `Upcoming — starts ${formatShortLastDay(customer.start_date!)}`
-                                    : 'Active';
-                              return (
-                                <span
-                                  title={statusLabel}
-                                  className={`inline-block w-2 h-2 rounded-full shrink-0 ${
-                                    isCancelled ? 'bg-red-500' : isPaused ? 'bg-amber-400' : isUpcoming ? 'bg-blue-500' : 'bg-green-500'
-                                  }`}
-                                />
-                              );
-                            })()}
-                          </div>
-                          {customer.start_date && customer.start_date > todayKey ? (
-                            <span
-                              title={`Subscription starts ${formatShortLastDay(customer.start_date)}`}
-                              className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold mt-0.5 whitespace-nowrap"
-                            >
-                              🗓️ Starts {formatShortLastDay(customer.start_date)}
-                            </span>
-                          ) : null}
-                          {customer.scheduled_cancel_date &&
-                          (customer.subscription_status || 'active') === 'active' ? (
-                            <span
-                              title={`Last service day — service will be ${customer.scheduled_status === 'paused' ? 'paused' : 'cancelled'} after this date.`}
-                              className="inline-flex items-center self-start max-w-full px-2 py-0.5 text-xs font-semibold rounded bg-amber-100 text-amber-800 border border-amber-300 mt-0.5 whitespace-nowrap"
-                            >
-                              ⏳ Ends {formatShortDate(customer.scheduled_cancel_date)}
-                            </span>
-                          ) : null}
-                          {fulfillment.mode === 'pure_pickup' ? (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-0.5">
-                              🛍️ Kitchen Pickup
-                            </span>
-                          ) : (
-                            <>
-                              {customer.delivery_address ? (
-                                <div className="flex items-center min-w-0 mt-0.5 max-w-full">
-                                  <span
-                                    className="text-[11px] text-[#7A7C87] font-medium truncate"
-                                    title={customer.delivery_address}
-                                  >
-                                    {customer.delivery_address.split(',')[0]}
-                                  </span>
-                                  <a
-                                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customer.delivery_address)}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    title="Open in Google Maps"
-                                    aria-label="Open in Google Maps"
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="ml-1 p-0.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors inline-flex items-center"
-                                  >
-                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                    </svg>
-                                  </a>
-                                </div>
-                              ) : (
-                                <span className="text-[11px] text-gray-300 italic mt-0.5">No destination configured</span>
-                              )}
-                              {fulfillment.mode === 'hybrid' && fulfillment.pickupDays.length > 0 && (
-                                <span
-                                  title={fulfillment.pickupDays.join(', ')}
-                                  className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-1"
-                                >
-                                  🛍️ Pickup: {fulfillment.pickupDays.map(day => day.substring(0, 3)).join(', ')}
-                                </span>
-                              )}
-                            </>
-                          )}
-                          {customer.referred_by ? (
-                            <span
-                              title={`Referred by ${customer.referred_by}`}
-                              className="text-[11px] text-[#7A7C87] font-medium truncate mt-1 flex items-center max-w-full"
-                            >
-                              <span className="text-[9px] mr-1 opacity-70">🤝</span>
-                              Referred by: {customer.referred_by}
-                            </span>
-                          ) : null}
-                        </div>
-                      </td>
-
-                      <td className="py-2 pr-3 whitespace-nowrap align-top">
-                        <div className="flex flex-col items-start gap-1">
-                          {customer.meal_type ? (
-                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase leading-none ${
-                              customer.meal_type.toLowerCase().includes('non')
-                                ? 'bg-red-50 text-red-600 border-red-100/60'
-                                : 'bg-green-50 text-green-600 border-green-100/60'
-                            }`}>
-                              {customer.meal_type.toLowerCase().includes('non') ? 'Non-Veg' : 'Veg'}
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-gray-300 font-bold uppercase">—</span>
-                          )}
-                          <span className={`text-[11px] font-semibold ${
-                            displayPlanSize === PORTION_LG || displayPlanSize === PORTION_HALF_LG ? 'text-purple-600' : 'text-gray-500'
-                          }`}>
-                            {displayPlanSize}
-                          </span>
-                        </div>
-                      </td>
-
-                      {/* SECTION: TABLE_ROW_PLAN_CELL */}
-                      {/* PLAN: informational credit state (pure props, no actions) */}
-                      <td className="py-2 pr-3 align-top whitespace-nowrap" data-section="table-row-plan-cell">
-                        {(() => {
-                          const planLabel = customer.plan_tier || 'Monthly';
-                          const used = customer.used_credits ?? 0;
-                          const total = customer.total_tiffin_credits ?? 20;
-                          const isOverdue = used > total;
-                          const isDue = !isOverdue && used >= total;
-                          const pillClass = isOverdue
-                            ? 'bg-rose-50 text-rose-700 border-rose-200'
-                            : isDue
-                              ? 'bg-amber-50 text-amber-800 border-amber-200'
-                              : 'bg-indigo-50 text-indigo-700 border-indigo-100';
-                          const subText = isOverdue
-                            ? `+${used - total} Grace • Overdue`
-                            : isDue
-                              ? `${used}/${total} • Due`
-                              : `${used}/${total} delivered`;
-                          const subClass = isOverdue
-                            ? 'text-rose-600'
-                            : isDue
-                              ? 'text-amber-700'
-                              : 'text-gray-500';
-                          return (
-                            <div className="flex flex-col items-start gap-0.5 min-w-0">
-                              <span
-                                className={`${pillClass} uppercase text-[11px] font-semibold px-2 py-0.5 rounded border inline-block`}
-                              >
-                                {planLabel}
-                              </span>
-                              <span className={`text-[11px] font-medium ${subClass}`}>{subText}</span>
-                            </div>
-                          );
-                        })()}
-                      </td>
-
-                      <td className="py-2 pr-3 align-top">
-                        {(() => {
-                          const hasRoti =
-                            customer.roti_count !== null &&
-                            customer.roti_count !== undefined &&
-                            customer.roti_count > 0;
-                          const hasPronthi =
-                            customer.pronthi_count !== null &&
-                            customer.pronthi_count !== undefined &&
-                            customer.pronthi_count > 0;
-                          if (!hasRoti && !hasPronthi) {
-                            return <span className="text-gray-300 font-mono">—</span>;
-                          }
-                          return (
-                            <div className="flex flex-col items-start gap-1">
-                              {hasRoti && (
-                                <span className="px-1.5 py-0.5 bg-white text-gray-600 border border-gray-200 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
-                                  {customer.roti_count} Roti
-                                </span>
-                              )}
-                              {hasPronthi && (
-                                <span className="px-1.5 py-0.5 bg-amber-300 text-amber-950 border border-amber-400 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
-                                  {customer.pronthi_count} Pronthi
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()}
-                      </td>
-                      <td className="py-2 pr-3 align-top">
-                        {(() => {
-                          const rawRice = (customer.rice_count || "").trim().toLowerCase();
-                          const hasRice =
-                            rawRice !== "" &&
-                            rawRice !== "none" &&
-                            rawRice !== "—" &&
-                            rawRice !== "0" &&
-                            !rawRice.includes("0 rg");
-                          if (!hasRice) {
-                            return <span className="text-gray-300 font-mono">—</span>;
-                          }
-                          return (
-                            <span className="inline-block px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-100/70 rounded text-[10.5px] font-bold font-mono uppercase whitespace-nowrap">
-                              {formatRiceCellText(customer.rice_count)}
-                            </span>
-                          );
-                        })()}
-                      </td>
-
-                      <td className="py-2 pr-3 align-top whitespace-nowrap">
-                        {(() => {
-                          const badgeText = getScheduleBadgeText(customer);
-                          return badgeText ? (
-                            <span
-                              className="inline-flex px-2 py-0.5 rounded-md bg-gray-100 border border-gray-200 text-gray-700 text-[10.5px] font-bold tracking-wide whitespace-nowrap"
-                              title={getScheduleTooltip(customer) || undefined}
-                            >
-                              {badgeText}
-                            </span>
-                          ) : (
-                            <span className="text-gray-300">—</span>
-                          );
-                        })()}
-                      </td>
-
-                      <td className="py-2 pr-3 align-top break-words">
-                        {renderNotesCell(customer)}
-                      </td>
-
-                      <td className="py-2 px-3 text-center align-middle whitespace-nowrap">
-                        {!customer.discount_type ||
-                        !customer.discount_value ||
-                        Number(customer.discount_value) === 0 ? (
-                          <span className="text-gray-300 font-medium">—</span>
-                        ) : (
-                          <span
-                            title={customer.discount_note || 'Discount applied'}
-                            className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200"
-                          >
-                            {customer.discount_type === 'percent'
-                              ? `-${customer.discount_value}%`
-                              : `-$${customer.discount_value}`}
-                          </span>
-                        )}
-                      </td>
-
-                      {/* SECTION: TABLE_ROW_ACTIONS_MENU */}
-                      <td className="py-2 pr-4 align-middle text-right" data-section="table-row-actions-menu">
-                        <div className="flex items-center justify-end gap-1.5 relative">
-                          {/* Edit Button */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEditCustomer(customer);
-                            }}
-                            className="px-2.5 py-1 text-xs font-semibold text-gray-700 hover:text-indigo-600 hover:bg-gray-100 rounded-md transition-colors"
-                          >
-                            Edit
+                {/* SECTION: CUSTOMERS_TABLE_HEAD */}
+                <thead className="sticky top-0 z-20 bg-white shadow-xs">
+                  <tr className="text-[#A2A4B0] font-bold uppercase text-[10.5px] tracking-wider select-none h-10 bg-white border-b border-gray-200">
+                    <th onClick={cycleNameSort} className="sticky top-0 z-20 bg-white pl-4 py-2 border-b border-gray-200 cursor-pointer select-none hover:text-indigo-600 transition-colors group">
+                      <div className="flex items-center space-x-1">
+                        <span>Customer</span>
+                        <span className="text-[10px] text-gray-400 font-bold opacity-70 group-hover:opacity-100">
+                          {nameSort === 'default' ? ' ↕' : nameSort === 'asc' ? ' ↑' : ' ↓'}
+                        </span>
+                      </div>
+                    </th>
+                    <th onClick={cyclePortionSort} className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200 cursor-pointer select-none hover:text-indigo-600 transition-colors group">
+                      <div className="flex items-center space-x-1">
+                        <span>Meal Plan</span>
+                        <span className="text-[10px] text-gray-400 font-bold opacity-70 group-hover:opacity-100">
+                          {portionSort === 'default' ? ' ⇅' : portionSort === 'desc' ? ' ↓' : ' ↑'}
+                        </span>
+                      </div>
+                    </th>
+                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Plan</th>
+                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Roti / Bread</th>
+                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Rice</th>
+                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Schedule</th>
+                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Notes</th>
+                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider text-center">Discount</th>
+                    <th className="sticky top-0 z-20 bg-white py-2 pr-3 border-b border-gray-200 text-center whitespace-nowrap">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#F9FBFC]">
+                  {sortedCustomers.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-16 text-center">
+                        <div className="flex flex-col items-center justify-center space-y-3">
+                          <Users className="w-6 h-6 text-[#5D5FEF]" />
+                          <h3 className="text-gray-700 font-bold text-[14px]">No customers found matching search</h3>
+                          <p className="text-gray-400 text-xs max-w-xs leading-normal">Verify credentials or spin up a fresh active profile record instantly below.</p>
+                          <button onClick={handleOpenAddForm} className="mt-1 px-4 py-1.5 bg-[#5D5FEF] text-white text-xs font-bold rounded-lg shadow-sm">
+                            + Add Fresh Record
                           </button>
-
-                          {/* 3-Dot Overflow Menu */}
-                          <div
-                            className="relative inline-block text-left"
-                            data-action-menu={customer.id}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all shrink-0 cursor-pointer shadow-xs"
-                              title="More options"
-                              aria-label="More actions"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setActiveMenuId(activeMenuId === customer.id ? null : customer.id);
-                              }}
-                            >
-                              <svg className="w-3.5 h-3.5 fill-current shrink-0" viewBox="0 0 20 20">
-                                <circle cx="10" cy="4" r="1.3" />
-                                <circle cx="10" cy="10" r="1.3" />
-                                <circle cx="10" cy="16" r="1.3" />
-                              </svg>
-                            </button>
-
-                            {activeMenuId === customer.id && (
-                              <div
-                                className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-100 rounded-xl shadow-xl py-1.5 z-50 text-left"
-                                onClick={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                {/* 📋 Duplicate Customer — create-mode prefill from this row */}
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDuplicateCustomer(customer);
-                                  }}
-                                  className="w-full px-3.5 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                >
-                                  <span className="text-sm shrink-0">📋</span>
-                                  <span className="whitespace-nowrap">Duplicate Customer</span>
-                                </button>
-
-                                {/* 💳 Log Payment / Renew Cycle (due, overdue, or fully used) */}
-                                {((customer.payment_status === 'due' ||
-                                  customer.payment_status === 'overdue') ||
-                                  (customer.used_credits ?? 0) >= (customer.total_tiffin_credits ?? 20)) && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openRenewModal(customer);
-                                    }}
-                                    className="w-full px-3.5 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                  >
-                                    <span className="text-sm shrink-0">💳</span>
-                                    <span className="whitespace-nowrap">Log Payment / Renew Cycle</span>
-                                  </button>
-                                )}
-
-                                {/* ⭐ Upgrade Plan (trial or weekly only) */}
-                                {(customer.plan_tier === 'trial' || customer.plan_tier === 'weekly') && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openUpgradeModal(customer);
-                                    }}
-                                    className="w-full px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                  >
-                                    <span className="text-sm shrink-0">⭐</span>
-                                    <span className="whitespace-nowrap">Upgrade Plan</span>
-                                  </button>
-                                )}
-
-                                <div className="border-t border-gray-100 my-1" />
-
-                                {/* Pause / Resume */}
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setActiveMenuId(null);
-                                    if ((customer.subscription_status || 'active') === 'paused') {
-                                      handleUpdateCustomerStatus(customer.id, 'active');
-                                    } else {
-                                      openConfirmModalForCustomer(customer, 'pause');
-                                    }
-                                  }}
-                                  className="w-full px-3.5 py-2 text-xs font-medium text-amber-800 hover:bg-amber-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                >
-                                  <span className="text-sm shrink-0">
-                                    {(customer.subscription_status || 'active') === 'paused' ? '▶️' : '⏸️'}
-                                  </span>
-                                  <span className="whitespace-nowrap">
-                                    {(customer.subscription_status || 'active') === 'paused' ? 'Resume Service' : 'Pause Service'}
-                                  </span>
-                                </button>
-
-                                {/* Cancel */}
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setActiveMenuId(null);
-                                    openConfirmModalForCustomer(customer, 'cancel');
-                                  }}
-                                  className="w-full px-3.5 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                >
-                                  <span className="text-sm shrink-0">🛑</span>
-                                  <span className="whitespace-nowrap">Cancel Service</span>
-                                </button>
-
-                                <div className="border-t border-gray-100 my-1" />
-
-                                {/* Delete */}
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setActiveMenuId(null);
-                                    openConfirmModalForCustomer(customer, 'delete');
-                                  }}
-                                  className="w-full px-3.5 py-2 text-xs font-medium text-red-600 hover:bg-red-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                >
-                                  <span className="text-sm shrink-0">🗑️</span>
-                                  <span className="whitespace-nowrap">Delete Customer</span>
-                                </button>
-                              </div>
-                            )}
-                          </div>
                         </div>
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
+                  ) : (
+                    sortedCustomers.map(customer => {
+                      const displayPlanSize = normalizePortionToken(customer.portion_size || PORTION_RG);
+
+                      // Fulfillment mode drives the sub-cell below the customer name:
+                      // pure pickup → single Kitchen Pickup badge; delivery-only → address +
+                      // map link; hybrid (e.g. Harshpreet) → address + map link with a compact
+                      // pickup-day pill underneath so partial pickup days stay visible.
+                      const fulfillment = getCustomerFulfillment(customer);
+
+                      const isLastModified = customer.id === lastModifiedCustomerId;
+
+                      return (
+                        <tr
+                          key={customer.id}
+                          id={`customer-row-${customer.id}`}
+                          onClick={() => handleRowClick(customer)}
+                          className={`group transition-colors cursor-pointer ${isLastModified
+                            ? 'bg-blue-50/70 border-l-4 border-l-blue-500 transition-colors duration-700 ease-out'
+                            : selectedCustomer?.id === customer.id
+                              ? 'bg-[#F4F4FE]'
+                              : 'bg-white hover:bg-slate-50/80'
+                            }`}
+                        >
+                          {/* SECTION: TABLE_ROW_CUSTOMER_CELL */}
+                          <td
+                            className={`py-2 pl-4 pr-3 rounded-l-xl align-top ${isLastModified ? 'border-l-4 border-l-blue-500' : ''}`}
+                            data-section="table-row-customer-cell"
+                          >
+                            <div className="flex flex-col min-w-0">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="font-bold text-[#11142D] text-[13px] truncate capitalize">{customer.full_name}</span>
+                                {(() => {
+                                  const subStatus = (customer.subscription_status || 'active').toLowerCase();
+                                  const isPaused = subStatus === 'paused';
+                                  const isCancelled = subStatus === 'cancelled';
+                                  const isUpcoming = !isPaused && !isCancelled && !!customer.start_date && customer.start_date > todayKey;
+                                  const statusLabel = isCancelled
+                                    ? `Cancelled${customer.cancellation_reason ? ` — ${customer.cancellation_reason}` : ''}`
+                                    : isPaused
+                                      ? `Paused${customer.pause_start_date ? ` until ${customer.pause_end_date || 'Indefinite'}` : ''}`
+                                      : isUpcoming
+                                        ? `Upcoming — starts ${formatShortLastDay(customer.start_date!)}`
+                                        : 'Active';
+                                  return (
+                                    <span
+                                      title={statusLabel}
+                                      className={`inline-block w-2 h-2 rounded-full shrink-0 ${isCancelled ? 'bg-red-500' : isPaused ? 'bg-amber-400' : isUpcoming ? 'bg-blue-500' : 'bg-green-500'
+                                        }`}
+                                    />
+                                  );
+                                })()}
+                              </div>
+                              {customer.start_date && customer.start_date > todayKey ? (
+                                <span
+                                  title={`Subscription starts ${formatShortLastDay(customer.start_date)}`}
+                                  className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold mt-0.5 whitespace-nowrap"
+                                >
+                                  <Calendar className="w-4 h-4" /> Starts {formatShortLastDay(customer.start_date)}
+                                </span>
+                              ) : null}
+                              {customer.scheduled_cancel_date &&
+                                (customer.subscription_status || 'active') === 'active' ? (
+                                <span
+                                  title={`Last service day — service will be ${customer.scheduled_status === 'paused' ? 'paused' : 'cancelled'} after this date.`}
+                                  className="inline-flex items-center self-start max-w-full px-2 py-0.5 text-xs font-semibold rounded bg-amber-100 text-amber-800 border border-amber-300 mt-0.5 whitespace-nowrap"
+                                >
+                                  ⏳ Ends {formatShortDate(customer.scheduled_cancel_date)}
+                                </span>
+                              ) : null}
+                              {fulfillment.mode === 'pure_pickup' ? (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-0.5">
+                                  <ShoppingBag className="w-3 h-3" /> Kitchen Pickup
+                                </span>
+                              ) : (
+                                <>
+                                  {customer.delivery_address ? (
+                                    <div className="flex items-center min-w-0 mt-0.5 max-w-full">
+                                      <span
+                                        className="text-[11px] text-[#7A7C87] font-medium truncate"
+                                        title={customer.delivery_address}
+                                      >
+                                        {customer.delivery_address.split(',')[0]}
+                                      </span>
+                                      <a
+                                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customer.delivery_address)}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title="Open in Google Maps"
+                                        aria-label="Open in Google Maps"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="ml-1 p-0.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors inline-flex items-center"
+                                      >
+                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                        </svg>
+                                      </a>
+                                    </div>
+                                  ) : (
+                                    <span className="text-[11px] text-gray-300 italic mt-0.5">No destination configured</span>
+                                  )}
+                                  {fulfillment.mode === 'hybrid' && fulfillment.pickupDays.length > 0 && (
+                                    <span
+                                      title={fulfillment.pickupDays.join(', ')}
+                                      className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-1"
+                                    >
+                                      <ShoppingBag className="w-4 h-4" /> Pickup: {fulfillment.pickupDays.map(day => day.substring(0, 3)).join(', ')}
+                                    </span>
+                                  )}
+                                </>
+                              )}
+                              {customer.referred_by ? (
+                                <span
+                                  title={`Referred by ${customer.referred_by}`}
+                                  className="text-[11px] text-[#7A7C87] font-medium truncate mt-1 flex items-center max-w-full"
+                                >
+                                  <span className="text-[9px] mr-1 opacity-70">🤝</span>
+                                  Referred by: {customer.referred_by}
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+
+                          <td className="py-2 pr-3 whitespace-nowrap align-top">
+                            <div className="flex flex-col items-start gap-1">
+                              {customer.meal_type ? (
+                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase leading-none ${customer.meal_type.toLowerCase().includes('non')
+                                  ? 'bg-red-50 text-red-600 border-red-100/60'
+                                  : 'bg-green-50 text-green-600 border-green-100/60'
+                                  }`}>
+                                  {customer.meal_type.toLowerCase().includes('non') ? 'Non-Veg' : 'Veg'}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-gray-300 font-bold uppercase">—</span>
+                              )}
+                              <span className={`text-[11px] font-semibold ${displayPlanSize === PORTION_LG || displayPlanSize === PORTION_HALF_LG ? 'text-purple-600' : 'text-gray-500'
+                                }`}>
+                                {displayPlanSize}
+                              </span>
+                            </div>
+                          </td>
+
+                          {/* SECTION: TABLE_ROW_PLAN_CELL */}
+                          <td className="py-2 pr-3 align-top whitespace-nowrap" data-section="table-row-plan-cell">
+                            {(() => {
+                              const planLabel = customer.plan_tier || 'Monthly';
+                              const used = customer.used_credits ?? 0;
+                              const total = customer.total_tiffin_credits ?? 20;
+                              const isOverdue = used > total;
+                              const isDue = !isOverdue && used >= total;
+                              const pillClass = isOverdue
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : isDue
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-indigo-50 text-indigo-700 border-indigo-100';
+                              const subText = isOverdue
+                                ? `+${used - total} Grace • Overdue`
+                                : isDue
+                                  ? `${used}/${total} • Due`
+                                  : `${used}/${total} delivered`;
+                              const subClass = isOverdue
+                                ? 'text-rose-600'
+                                : isDue
+                                  ? 'text-amber-700'
+                                  : 'text-gray-500';
+
+                              const startDateFormatted = customer.start_date ? formatShortDate(customer.start_date) : null;
+                              const computedEnd = customer.cycle_end_date?.slice(0, 10) ||
+                                (customer.start_date ? calculateTargetLastDay(customer.start_date, total) : null);
+                              const endDateFormatted = computedEnd ? formatShortDate(computedEnd) : null;
+
+                              return (
+                                <div className="flex flex-col items-start gap-0.5 min-w-0">
+                                  <span
+                                    className={`${pillClass} uppercase text-[11px] font-semibold px-2 py-0.5 rounded border inline-block`}
+                                  >
+                                    {planLabel}
+                                  </span>
+                                  <span className={`text-[11px] font-medium ${subClass}`}>{subText}</span>
+
+                                  {startDateFormatted && (
+                                    <span className="text-[10.5px] font-semibold text-gray-400 mt-0.5 tracking-tight">
+                                      {startDateFormatted} → {endDateFormatted || '—'}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </td>
+
+                          <td className="py-2 pr-3 align-top">
+                            {(() => {
+                              const hasRoti =
+                                customer.roti_count !== null &&
+                                customer.roti_count !== undefined &&
+                                customer.roti_count > 0;
+                              const hasPronthi =
+                                customer.pronthi_count !== null &&
+                                customer.pronthi_count !== undefined &&
+                                customer.pronthi_count > 0;
+                              if (!hasRoti && !hasPronthi) {
+                                return <span className="text-gray-300 font-mono">—</span>;
+                              }
+                              return (
+                                <div className="flex flex-col items-start gap-1">
+                                  {hasRoti && (
+                                    <span className="px-1.5 py-0.5 bg-white text-gray-600 border border-gray-200 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
+                                      {customer.roti_count} Roti
+                                    </span>
+                                  )}
+                                  {hasPronthi && (
+                                    <span className="px-1.5 py-0.5 bg-amber-300 text-amber-950 border border-amber-400 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
+                                      {customer.pronthi_count} Pronthi
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          <td className="py-2 pr-3 align-top">
+                            {(() => {
+                              const rawRice = (customer.rice_count || "").trim().toLowerCase();
+                              const hasRice =
+                                rawRice !== "" &&
+                                rawRice !== "none" &&
+                                rawRice !== "—" &&
+                                rawRice !== "0" &&
+                                !rawRice.includes("0 rg");
+                              if (!hasRice) {
+                                return <span className="text-gray-300 font-mono">—</span>;
+                              }
+                              return (
+                                <span className="inline-block px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-100/70 rounded text-[10.5px] font-bold font-mono uppercase whitespace-nowrap">
+                                  {formatRiceCellText(customer.rice_count)}
+                                </span>
+                              );
+                            })()}
+                          </td>
+
+                          <td className="py-2 pr-3 align-top whitespace-nowrap">
+                            {(() => {
+                              const badgeText = getScheduleBadgeText(customer);
+                              return badgeText ? (
+                                <span
+                                  className="inline-flex px-2 py-0.5 rounded-md bg-gray-100 border border-gray-200 text-gray-700 text-[10.5px] font-bold tracking-wide whitespace-nowrap"
+                                  title={getScheduleTooltip(customer) || undefined}
+                                >
+                                  {badgeText}
+                                </span>
+                              ) : (
+                                <span className="text-gray-300">—</span>
+                              );
+                            })()}
+                          </td>
+
+                          <td className="py-2 pr-3 align-top break-words">
+                            {renderNotesCell(customer)}
+                          </td>
+
+                          <td className="py-2 px-3 text-center align-middle whitespace-nowrap">
+                            {!customer.discount_type ||
+                              !customer.discount_value ||
+                              Number(customer.discount_value) === 0 ? (
+                              <span className="text-gray-300 font-medium">—</span>
+                            ) : (
+                              <span
+                                title={customer.discount_note || 'Discount applied'}
+                                className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200"
+                              >
+                                {customer.discount_type === 'percent'
+                                  ? `-${customer.discount_value}%`
+                                  : `-$${customer.discount_value}`}
+                              </span>
+                            )}
+                          </td>
+
+                          {/* SECTION: TABLE_ROW_ACTIONS_MENU */}
+                          <td className="py-2 pr-4 align-middle text-right" data-section="table-row-actions-menu">
+                            <div className="flex items-center justify-end gap-1.5 relative">
+                              {/* Edit Button */}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEditCustomer(customer);
+                                }}
+                                className="px-2.5 py-1 text-xs font-semibold text-gray-700 hover:text-indigo-600 hover:bg-gray-100 rounded-md transition-colors"
+                              >
+                                Edit
+                              </button>
+
+                              {/* 3-Dot Overflow Menu */}
+                              <div
+                                className="relative inline-block text-left"
+                                data-action-menu={customer.id}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all shrink-0 cursor-pointer shadow-xs"
+                                  title="More options"
+                                  aria-label="More actions"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuId(activeMenuId === customer.id ? null : customer.id);
+                                  }}
+                                >
+                                  <svg className="w-3.5 h-3.5 fill-current shrink-0" viewBox="0 0 20 20">
+                                    <circle cx="10" cy="4" r="1.3" />
+                                    <circle cx="10" cy="10" r="1.3" />
+                                    <circle cx="10" cy="16" r="1.3" />
+                                  </svg>
+                                </button>
+
+                                {activeMenuId === customer.id && (
+                                  <div
+                                    className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-100 rounded-xl shadow-xl py-1.5 z-50 text-left"
+                                    onClick={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                  >
+                                    {/* 📋 Duplicate Customer — create-mode prefill from this row */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDuplicateCustomer(customer);
+                                      }}
+                                      className="w-full px-3.5 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                    >
+                                      <ClipboardList className="w-4 h-4" />
+                                      <span className="whitespace-nowrap">Duplicate Customer</span>
+                                    </button>
+
+                                    {/* 💳 Log Payment / Renew Cycle (due, overdue, or fully used) */}
+                                    {((customer.payment_status === 'due' ||
+                                      customer.payment_status === 'overdue') ||
+                                      (customer.used_credits ?? 0) >= (customer.total_tiffin_credits ?? 20)) && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            openRenewModal(customer);
+                                          }}
+                                          className="w-full px-3.5 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                        >
+                                          <span className="text-sm shrink-0"><CreditCard className="w-4 h-4" /></span>
+                                          <span className="whitespace-nowrap">Log Payment / Renew Cycle</span>
+                                        </button>
+                                      )}
+
+                                    {/* ⭐ Upgrade Plan (trial or weekly only) */}
+                                    {(customer.plan_tier === 'trial' || customer.plan_tier === 'weekly') && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openUpgradeModal(customer);
+                                        }}
+                                        className="w-full px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      >
+                                        <span className="text-sm shrink-0">⭐</span>
+                                        <span className="whitespace-nowrap">Upgrade Plan</span>
+                                      </button>
+                                    )}
+
+                                    <div className="border-t border-gray-100 my-1" />
+
+                                    {/* Pause / Resume */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveMenuId(null);
+                                        if ((customer.subscription_status || 'active') === 'paused') {
+                                          handleUpdateCustomerStatus(customer.id, 'active');
+                                        } else {
+                                          openConfirmModalForCustomer(customer, 'pause');
+                                        }
+                                      }}
+                                      className="w-full px-3.5 py-2 text-xs font-medium text-amber-800 hover:bg-amber-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                    >
+                                      <span className="text-sm shrink-0">
+                                        {(customer.subscription_status || 'active') === 'paused' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                                      </span>
+                                      <span className="whitespace-nowrap">
+                                        {(customer.subscription_status || 'active') === 'paused' ? 'Resume Service' : 'Pause Service'}
+                                      </span>
+                                    </button>
+
+                                    {/* Cancel */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveMenuId(null);
+                                        openConfirmModalForCustomer(customer, 'cancel');
+                                      }}
+                                      className="w-full px-3.5 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                    >
+                                      <Ban className="w-4 h-4" />
+                                      <span className="whitespace-nowrap">Cancel Service</span>
+                                    </button>
+
+                                    <div className="border-t border-gray-100 my-1" />
+
+                                    {/* Delete */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveMenuId(null);
+                                        openConfirmModalForCustomer(customer, 'delete');
+                                      }}
+                                      className="w-full px-3.5 py-2 text-xs font-medium text-red-600 hover:bg-red-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                      <span className="whitespace-nowrap">Delete Customer</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
               </>
             )}
           </table>
@@ -3361,107 +3470,105 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
                 {/* STICKY HEADER REGION — title, badge, actions + tab nav stay pinned */}
                 <div className="sticky top-0 z-10 bg-white border-b border-gray-100 shrink-0">
-                {/* HEAD BAR ACTIONS */}
-                <div className="px-6 py-4 border-b border-[#F5F5F5] flex items-center justify-between bg-[#FCFCFD] shrink-0">
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <h2 className="text-[14px] font-bold text-[#11142D] uppercase tracking-wide shrink-0">
-                      {isAddingNew ? 'Add Customer' : 'Edit'}
-                    </h2>
-                    {!isAddingNew && fullName && (
-                      <>
-                        <span className="text-2xl font-bold text-gray-900 capitalize truncate">
-                          {fullName}
-                        </span>
-                        {selectedCustomer && (() => {
-                          const drawerStatus = (selectedCustomer.subscription_status || 'active').toLowerCase();
-                          const isDrawerCancelled = drawerStatus === 'cancelled';
-                          const isDrawerPaused = drawerStatus === 'paused';
-                          const isDrawerUpcoming = !isDrawerPaused && !isDrawerCancelled &&
-                            !!selectedCustomer.start_date && selectedCustomer.start_date > todayKey;
-                          const drawerBadgeClass = isDrawerCancelled
-                            ? 'bg-red-50 text-red-600 border-red-100/60'
-                            : isDrawerPaused
-                              ? 'bg-amber-50 text-amber-600 border-amber-100/60'
-                              : isDrawerUpcoming
-                                ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                : 'bg-green-50 text-green-600 border-green-100/60';
-                          const drawerBadgeLabel = isDrawerCancelled
-                            ? '🔴 Cancelled'
-                            : isDrawerPaused
-                              ? '🟡 Paused'
-                              : isDrawerUpcoming
-                                ? '🗓️ UPCOMING'
-                                : '🟢 Active';
-                          return (
-                            <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase shrink-0 ${drawerBadgeClass}`}>
-                              {drawerBadgeLabel}
-                            </span>
-                          );
-                        })()}
-                        {!isAddingNew && referredBy.trim() && (
-                          <span
-                            title="Referred by"
-                            className="shrink-0 px-2.5 py-0.5 rounded-md text-[10px] font-semibold bg-[#EFEEFC] text-[#5D5FEF] border border-[#5D5FEF]/25 tracking-wide"
-                          >
-                            🤝 Referred by: {referredBy.trim()}
+                  {/* HEAD BAR ACTIONS */}
+                  <div className="px-6 py-4 border-b border-[#F5F5F5] flex items-center justify-between bg-[#FCFCFD] shrink-0">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <h2 className="text-[14px] font-bold text-[#11142D] uppercase tracking-wide shrink-0">
+                        {isAddingNew ? 'Add Customer' : 'Edit'}
+                      </h2>
+                      {!isAddingNew && fullName && (
+                        <>
+                          <span className="text-2xl font-bold text-gray-900 capitalize truncate">
+                            {fullName}
                           </span>
-                        )}
-                      </>
-                    )}
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <button type="button" onClick={closePanelGracefully} className="px-3 py-1.5 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50">
-                      Cancel
-                    </button>
-                    <button 
-                      type="submit" 
-                      disabled={isPending || aiLoading} 
-                      className={`px-3 py-1.5 font-semibold rounded-lg text-xs shadow-sm transition-all duration-200 flex items-center space-x-1.5 ${
-                        aiLoading 
-                          ? 'bg-[#EFEEFC] text-[#5D5FEF] border border-[#EFEEFC] cursor-wait' 
-                          : 'bg-[#5D5FEF] hover:bg-[#4D4FDF] text-white disabled:opacity-50'
-                      }`}
-                    >
-                      {(isPending || aiLoading) && (
-                        <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
+                          {selectedCustomer && (() => {
+                            const drawerStatus = (selectedCustomer.subscription_status || 'active').toLowerCase();
+                            const isDrawerCancelled = drawerStatus === 'cancelled';
+                            const isDrawerPaused = drawerStatus === 'paused';
+                            const isDrawerUpcoming = !isDrawerPaused && !isDrawerCancelled &&
+                              !!selectedCustomer.start_date && selectedCustomer.start_date > todayKey;
+                            const drawerBadgeClass = isDrawerCancelled
+                              ? 'bg-red-50 text-red-600 border-red-100/60'
+                              : isDrawerPaused
+                                ? 'bg-amber-50 text-amber-600 border-amber-100/60'
+                                : isDrawerUpcoming
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                  : 'bg-green-50 text-green-600 border-green-100/60';
+                            const drawerBadgeLabel = isDrawerCancelled
+                              ? '🔴 Cancelled'
+                              : isDrawerPaused
+                                ? '🟡 Paused'
+                                : isDrawerUpcoming
+                                  ? '🗓️ UPCOMING'
+                                  : '🟢 Active';
+                            return (
+                              <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase shrink-0 ${drawerBadgeClass}`}>
+                                {drawerBadgeLabel}
+                              </span>
+                            );
+                          })()}
+                          {!isAddingNew && referredBy.trim() && (
+                            <span
+                              title="Referred by"
+                              className="shrink-0 px-2.5 py-0.5 rounded-md text-[10px] font-semibold bg-[#EFEEFC] text-[#5D5FEF] border border-[#5D5FEF]/25 tracking-wide"
+                            >
+                              <Handshake className="w-3.5 h-3.5" /> Referred by: {referredBy.trim()}
+                            </span>
+                          )}
+                        </>
                       )}
-                      <span>
-                        {aiLoading 
-                          ? 'Waiting for Profile Analysis...' 
-                          : isPending 
-                            ? 'Committing to Database...' 
-                            : 'Save Customer'
-                        }
-                      </span>
-                    </button>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <button type="button" onClick={closePanelGracefully} className="px-3 py-1.5 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50">
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isPending || aiLoading}
+                        className={`px-3 py-1.5 font-semibold rounded-lg text-xs shadow-sm transition-all duration-200 flex items-center space-x-1.5 ${aiLoading
+                          ? 'bg-[#EFEEFC] text-[#5D5FEF] border border-[#EFEEFC] cursor-wait'
+                          : 'bg-[#5D5FEF] hover:bg-[#4D4FDF] text-white disabled:opacity-50'
+                          }`}
+                      >
+                        {(isPending || aiLoading) && (
+                          <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                        )}
+                        <span>
+                          {aiLoading
+                            ? 'Waiting for Profile Analysis...'
+                            : isPending
+                              ? 'Committing to Database...'
+                              : 'Save Customer'
+                          }
+                        </span>
+                      </button>
+                    </div>
                   </div>
-                </div>
 
-                {/* TAB NAVIGATION BAR — Profile / Plan & Billing / Meal Config */}
-                <div className="px-6 pt-3 pb-0 bg-white flex items-center gap-1.5">
-                  {([
-                    { key: 'profile', label: 'Profile', icon: '👤' },
-                    { key: 'plan', label: 'Plan & Billing', icon: '💳' },
-                    { key: 'meal', label: 'Meal Config', icon: '🍱' },
-                  ] as const).map(tab => (
-                    <button
-                      key={tab.key}
-                      type="button"
-                      onClick={() => setActiveDrawerTab(tab.key)}
-                      className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border border-b-0 rounded-b-none ${
-                        activeDrawerTab === tab.key
+                  {/* TAB NAVIGATION BAR — Profile / Plan & Billing / Meal Config */}
+                  <div className="px-6 pt-3 pb-0 bg-white flex items-center gap-1.5">
+                    {([
+                      { key: 'profile', label: 'Profile', icon: <User className="w-4 h-4" /> },
+                      { key: 'plan', label: 'Plan & Billing', icon: <CreditCard className="w-4 h-4" /> },
+                      { key: 'meal', label: 'Meal Config', icon: <UtensilsCrossed className="w-4 h-4" /> },
+                    ] as const).map(tab => (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        onClick={() => setActiveDrawerTab(tab.key)}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border border-b-0 rounded-b-none ${activeDrawerTab === tab.key
                           ? 'bg-[#EFEEFC] text-[#5D5FEF] border-[#5D5FEF]/30'
                           : 'bg-white text-[#7A7C87] border-transparent hover:bg-gray-50 hover:text-[#11142D]'
-                      }`}
-                    >
-                      <span>{tab.icon}</span>
-                      <span>{tab.label}</span>
-                    </button>
-                  ))}
-                </div>
+                          }`}
+                      >
+                        <span>{tab.icon}</span>
+                        <span>{tab.label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {/* SCROLLABLE TAB CONTENT WORKSPACE */}
@@ -3469,158 +3576,155 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
                   {/* TAB 1 — PROFILE */}
                   {activeDrawerTab === 'profile' && (
-                  <div className="space-y-3" data-section="edit-basic-info">
-                    {/* Row 1: Full Name + Contact Method (side by side) */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="min-w-0">
-                        <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">Full Name</label>
-                        <input
-                          ref={fullNameInputRef}
-                          type="text"
-                          value={fullName}
-                          onChange={(e) => {
-                            setFullName(e.target.value);
-                            if (formErrors.fullName) setFormErrors(prev => ({ ...prev, fullName: undefined }));
-                          }}
-                          required
-                          className={`w-full px-3 py-1.5 border rounded-lg outline-none focus:border-[#5D5FEF] ${
-                            formErrors.fullName ? 'border-red-400 bg-red-50/30' : 'border-[#E0E0E0]'
-                          }`}
-                        />
-                        {formErrors.fullName && (
-                          <p className="text-[10.5px] font-semibold text-red-500 mt-1 flex items-center gap-1">
-                            ⚠ {formErrors.fullName}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="min-w-0">
-                        <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
-                          Contact Method <span className="text-gray-400 font-normal normal-case">(Optional)</span>
-                        </label>
-                        <div className="flex items-stretch">
-                          <select
-                            value={contactChannel}
-                            onChange={(e) => setContactChannel(e.target.value as ContactChannel)}
-                            title="Contact channel"
-                            className="shrink-0 rounded-l-lg border border-r-0 border-[#E0E0E0] bg-gray-50 text-gray-600 text-[11px] font-semibold outline-none focus:border-[#5D5FEF] px-1.5 py-1.5 cursor-pointer"
-                          >
-                            <option value="phone">📞 Phone</option>
-                            <option value="messenger">💬 Messenger</option>
-                            <option value="whatsapp">📱 WhatsApp</option>
-                          </select>
+                    <div className="space-y-3" data-section="edit-basic-info">
+                      {/* Row 1: Full Name + Contact Method (side by side) */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="min-w-0">
+                          <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">Full Name</label>
                           <input
+                            ref={fullNameInputRef}
                             type="text"
-                            value={phoneNumber}
-                            onChange={(e) => setPhoneNumber(e.target.value)}
-                            placeholder={
-                              contactChannel === 'messenger'
-                                ? 'Profile name or m.me link'
-                                : contactChannel === 'whatsapp'
-                                  ? 'WhatsApp number'
-                                  : 'e.g. +1 (226) 555-0199'
-                            }
-                            className="w-full min-w-0 rounded-r-lg px-3 py-1.5 border border-[#E0E0E0] outline-none focus:border-[#5D5FEF]"
+                            value={fullName}
+                            onChange={(e) => {
+                              setFullName(e.target.value);
+                              if (formErrors.fullName) setFormErrors(prev => ({ ...prev, fullName: undefined }));
+                            }}
+                            required
+                            className={`w-full px-3 py-1.5 border rounded-lg outline-none focus:border-[#5D5FEF] ${formErrors.fullName ? 'border-red-400 bg-red-50/30' : 'border-[#E0E0E0]'
+                              }`}
                           />
+                          {formErrors.fullName && (
+                            <p className="text-[10.5px] font-semibold text-red-500 mt-1 flex items-center gap-1">
+                              ⚠ {formErrors.fullName}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="min-w-0">
+                          <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
+                            Contact Method <span className="text-gray-400 font-normal normal-case">(Optional)</span>
+                          </label>
+                          <div className="flex items-stretch">
+                            <select
+                              value={contactChannel}
+                              onChange={(e) => setContactChannel(e.target.value as ContactChannel)}
+                              title="Contact channel"
+                              className="shrink-0 rounded-l-lg border border-r-0 border-[#E0E0E0] bg-gray-50 text-gray-600 text-[11px] font-semibold outline-none focus:border-[#5D5FEF] px-1.5 py-1.5 cursor-pointer"
+                            >
+                              <option value="phone">📞 Phone</option>
+                              <option value="messenger">💬 Messenger</option>
+                              <option value="whatsapp">📱 WhatsApp</option>
+                            </select>
+                            <input
+                              type="text"
+                              value={phoneNumber}
+                              onChange={(e) => setPhoneNumber(e.target.value)}
+                              placeholder={
+                                contactChannel === 'messenger'
+                                  ? 'Profile name or m.me link'
+                                  : contactChannel === 'whatsapp'
+                                    ? 'WhatsApp number'
+                                    : 'e.g. +1 (226) 555-0199'
+                              }
+                              className="w-full min-w-0 rounded-r-lg px-3 py-1.5 border border-[#E0E0E0] outline-none focus:border-[#5D5FEF]"
+                            />
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    {/* Row 1b: Referred By (Optional) — 4 tap-to-set source pills + a
+                      {/* Row 1b: Referred By (Optional) — 4 tap-to-set source pills + a
                         typeahead combobox over existing customer names. The menu stays
                         closed until 2+ characters are typed; free-form text is still
                         allowed (whatever is typed or left as the last pill tapped saves). */}
-                    <div ref={referralContainerRef} className="relative">
-                      <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1.5">
-                        Referred By <span className="text-gray-400 font-normal normal-case">(Optional)</span>
-                      </label>
+                      <div ref={referralContainerRef} className="relative">
+                        <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1.5">
+                          Referred By <span className="text-gray-400 font-normal normal-case">(Optional)</span>
+                        </label>
 
-                      {/* QUICK SOURCE PILLS — a tap immediately writes referred_by. */}
-                      <div className="flex flex-wrap gap-1.5 mb-2">
-                        {REFERRAL_QUICK_PILLS.map(pill => {
-                          const isPillActive = referredBy.trim().toLowerCase() === pill.toLowerCase();
-                          return (
-                            <button
-                              key={pill}
-                              type="button"
-                              aria-pressed={isPillActive}
-                              onClick={() => {
-                                setReferredBy(pill);
-                                setIsReferralMenuOpen(false);
-                              }}
-                              className={`h-10 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer border ${
-                                isPillActive
+                        {/* QUICK SOURCE PILLS — a tap immediately writes referred_by. */}
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {REFERRAL_QUICK_PILLS.map(pill => {
+                            const isPillActive = referredBy.trim().toLowerCase() === pill.toLowerCase();
+                            return (
+                              <button
+                                key={pill}
+                                type="button"
+                                aria-pressed={isPillActive}
+                                onClick={() => {
+                                  setReferredBy(pill);
+                                  setIsReferralMenuOpen(false);
+                                }}
+                                className={`h-10 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer border ${isPillActive
                                   ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-sm'
                                   : 'bg-[#EFEEFC] text-[#5D5FEF] border-[#5D5FEF]/25 hover:bg-[#E3E2FB]'
-                              }`}
-                            >
-                              {pill}
-                            </button>
-                          );
-                        })}
-                      </div>
+                                  }`}
+                              >
+                                {pill}
+                              </button>
+                            );
+                          })}
+                        </div>
 
-                      {/* TYPEAHEAD COMBOBOX — menu anchors directly beneath the input so it
+                        {/* TYPEAHEAD COMBOBOX — menu anchors directly beneath the input so it
                           never drifts horizontally off-screen on narrow/mobile widths. */}
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={referredBy}
-                          onChange={(e) => {
-                            const next = e.target.value;
-                            setReferredBy(next);
-                            setIsReferralMenuOpen(next.trim().length >= 2);
-                          }}
-                          placeholder="e.g. Supratim, Instagram, Flyer..."
-                          className="w-full h-11 rounded-lg border border-[#E0E0E0] text-sm px-3 outline-none focus:border-[#5D5FEF]"
-                        />
-                        {isReferralMenuOpen && visibleReferralSuggestions.length > 0 && (
-                          <ul
-                            aria-label="Customer referral suggestions"
-                            className="absolute left-0 right-0 z-50 mt-1 w-full bg-white border border-[#E0E0E0] rounded-xl shadow-lg max-h-48 overflow-y-auto divide-y divide-gray-50"
-                          >
-                            {visibleReferralSuggestions.map(suggestion => (
-                              <li key={suggestion}>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setReferredBy(suggestion);
-                                    setIsReferralMenuOpen(false);
-                                  }}
-                                  className="w-full min-h-[40px] px-3 py-2 flex items-center gap-1.5 text-left text-[13px] font-medium text-gray-600 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer transition-colors"
-                                >
-                                  <span className="text-[11px] opacity-80 shrink-0">🤝</span>
-                                  <span className="truncate">{suggestion}</span>
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={referredBy}
+                            onChange={(e) => {
+                              const next = e.target.value;
+                              setReferredBy(next);
+                              setIsReferralMenuOpen(next.trim().length >= 2);
+                            }}
+                            placeholder="e.g. Supratim, Instagram, Flyer..."
+                            className="w-full h-11 rounded-lg border border-[#E0E0E0] text-sm px-3 outline-none focus:border-[#5D5FEF]"
+                          />
+                          {isReferralMenuOpen && visibleReferralSuggestions.length > 0 && (
+                            <ul
+                              aria-label="Customer referral suggestions"
+                              className="absolute left-0 right-0 z-50 mt-1 w-full bg-white border border-[#E0E0E0] rounded-xl shadow-lg max-h-48 overflow-y-auto divide-y divide-gray-50"
+                            >
+                              {visibleReferralSuggestions.map(suggestion => (
+                                <li key={suggestion}>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setReferredBy(suggestion);
+                                      setIsReferralMenuOpen(false);
+                                    }}
+                                    className="w-full min-h-[40px] px-3 py-2 flex items-center gap-1.5 text-left text-[13px] font-medium text-gray-600 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer transition-colors"
+                                  >
+                                    <span className="text-[11px] opacity-80 shrink-0">🤝</span>
+                                    <span className="truncate">{suggestion}</span>
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
                       </div>
-                    </div>
 
-                    {/* Row 2: Delivery destination address (full width). Optional when every
+                      {/* Row 2: Delivery destination address (full width). Optional when every
                         scheduled day is Pickup; required as soon as any day is a Delivery day. */}
-                    <div ref={addressContainerRef} className="relative">
-                      <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
-                        Delivery Destination Address
-                        {!hasDeliveryDay && selectedDays.length > 0 && (
-                          <span className="font-normal normal-case text-gray-400"> (Optional — all scheduled days are Pickup)</span>
-                        )}
-                      </label>
-                      <input
-                        ref={deliveryAddressInputRef}
-                        type="text"
-                        value={deliveryAddress}
-                        onChange={(e) => {
-                          handleAddressChange(e.target.value);
-                          if (formErrors.deliveryAddress) setFormErrors(prev => ({ ...prev, deliveryAddress: undefined }));
-                        }}
-                        required={hasDeliveryDay}
-                        placeholder="Type address..."
-                          className={`w-full px-3 py-1.5 border rounded-lg outline-none focus:border-[#5D5FEF] ${
-                            formErrors.deliveryAddress ? 'border-red-400 bg-red-50/30' : 'border-[#E0E0E0]'
-                          }`}
+                      <div ref={addressContainerRef} className="relative">
+                        <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
+                          Delivery Destination Address
+                          {!hasDeliveryDay && selectedDays.length > 0 && (
+                            <span className="font-normal normal-case text-gray-400"> (Optional — all scheduled days are Pickup)</span>
+                          )}
+                        </label>
+                        <input
+                          ref={deliveryAddressInputRef}
+                          type="text"
+                          value={deliveryAddress}
+                          onChange={(e) => {
+                            handleAddressChange(e.target.value);
+                            if (formErrors.deliveryAddress) setFormErrors(prev => ({ ...prev, deliveryAddress: undefined }));
+                          }}
+                          required={hasDeliveryDay}
+                          placeholder="Type address..."
+                          className={`w-full px-3 py-1.5 border rounded-lg outline-none focus:border-[#5D5FEF] ${formErrors.deliveryAddress ? 'border-red-400 bg-red-50/30' : 'border-[#E0E0E0]'
+                            }`}
                         />
                         {formErrors.deliveryAddress && (
                           <p className="text-[10.5px] font-semibold text-red-500 mt-1 flex items-center gap-1">
@@ -3655,114 +3759,109 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         )}
                       </div>
 
-                    {/* Row 3: Delivery Schedule — 6 day buttons + per-day Delivery/Pickup pills.
+                      {/* Row 3: Delivery Schedule — 6 day buttons + per-day Delivery/Pickup pills.
                         Unified with the master Kitchen Pickup switch: toggling any pill keeps the
                         switch in sync (all Pickup ⇒ ON; any Delivery ⇒ OFF). */}
-                    <div>
-                      <div className="flex items-center justify-between gap-3 bg-[#FCFCFD] border border-gray-200 rounded-lg px-3.5 py-2.5 mb-2">
-                        <div className="min-w-0">
-                          <span className="block text-[11px] font-semibold text-[#A2A4B0] uppercase tracking-wide">
-                            🛍️ Kitchen Pickup
-                          </span>
-                          <span className="block text-[10.5px] text-gray-400 mt-0.5 leading-snug">
-                            {pickupModeSubtitle}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={allDaysArePickup}
-                          onClick={() => {
-                            const next = !allDaysArePickup;
-                            if (next) {
-                              // Global Kitchen Pickup → every active schedule day becomes pickup
-                              // (makes the Delivery Destination Address optional).
-                              setPickupDays([...selectedDays]);
-                              setAddressSuggestions([]);
-                            } else {
-                              // Back to delivery for every day → clear pickup flags (each active
-                              // day defaults back to Delivery) and drop the legacy placeholder
-                              // marker so a real destination address is required again.
-                              setPickupDays([]);
-                              if (deliveryAddress.trim().toUpperCase() === 'KITCHEN PICKUP') {
-                                setDeliveryAddress('');
+                      <div>
+                        <div className="flex items-center justify-between gap-3 bg-[#FCFCFD] border border-gray-200 rounded-lg px-3.5 py-2.5 mb-2">
+                          <div className="min-w-0">
+                            <span className="block text-[11px] font-semibold text-[#A2A4B0] uppercase tracking-wide">
+                              🛍️ Kitchen Pickup
+                            </span>
+                            <span className="block text-[10.5px] text-gray-400 mt-0.5 leading-snug">
+                              {pickupModeSubtitle}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={allDaysArePickup}
+                            onClick={() => {
+                              const next = !allDaysArePickup;
+                              if (next) {
+                                // Global Kitchen Pickup → every active schedule day becomes pickup
+                                // (makes the Delivery Destination Address optional).
+                                setPickupDays([...selectedDays]);
+                                setAddressSuggestions([]);
+                              } else {
+                                // Back to delivery for every day → clear pickup flags (each active
+                                // day defaults back to Delivery) and drop the legacy placeholder
+                                // marker so a real destination address is required again.
+                                setPickupDays([]);
+                                if (deliveryAddress.trim().toUpperCase() === 'KITCHEN PICKUP') {
+                                  setDeliveryAddress('');
+                                }
                               }
-                            }
-                            if (formErrors.deliveryAddress) setFormErrors(prev => ({ ...prev, deliveryAddress: undefined }));
-                          }}
-                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#5D5FEF] ${
-                            allDaysArePickup ? 'bg-[#5D5FEF]' : 'bg-gray-300'
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                              allDaysArePickup ? 'translate-x-6' : 'translate-x-1'
-                            }`}
-                          />
-                        </button>
-                      </div>
-
-                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                        Delivery Schedule
-                      </label>
-                      <div className="grid grid-cols-6 gap-2 sm:gap-3 w-full">
-                        {SCHEDULE_DAYS.map((d) => {
-                          const isDayActive = selectedDays.includes(d.full);
-                          const isPickupDay = pickupDays.includes(d.full);
-                          return (
-                            <div key={d.full} className="flex flex-col items-stretch gap-1.5 min-w-0">
-                              <button
-                                type="button"
-                                onClick={() => toggleScheduleDay(d.full)}
-                                aria-pressed={isDayActive}
-                                className={`w-full h-12 sm:h-11 px-2 sm:px-3 rounded-xl text-xs sm:text-sm border transition-all flex items-center justify-center cursor-pointer touch-manipulation ${
-                                  isDayActive
-                                    ? '!bg-blue-600 !border-blue-600 shadow-sm'
-                                    : 'bg-white border-gray-300 hover:bg-gray-50'
+                              if (formErrors.deliveryAddress) setFormErrors(prev => ({ ...prev, deliveryAddress: undefined }));
+                            }}
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#5D5FEF] ${allDaysArePickup ? 'bg-[#5D5FEF]' : 'bg-gray-300'
+                              }`}
+                          >
+                            <span
+                              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${allDaysArePickup ? 'translate-x-6' : 'translate-x-1'
                                 }`}
-                              >
-                                <span className={isDayActive ? '!text-white font-bold' : 'text-gray-800 font-semibold'}>
-                                  {d.short}
-                                </span>
-                              </button>
-                              {isDayActive && (
+                            />
+                          </button>
+                        </div>
+
+                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                          Delivery Schedule
+                        </label>
+                        <div className="grid grid-cols-6 gap-2 sm:gap-3 w-full">
+                          {SCHEDULE_DAYS.map((d) => {
+                            const isDayActive = selectedDays.includes(d.full);
+                            const isPickupDay = pickupDays.includes(d.full);
+                            return (
+                              <div key={d.full} className="flex flex-col items-stretch gap-1.5 min-w-0">
                                 <button
                                   type="button"
-                                  onClick={() => togglePickupDay(d.full)}
-                                  aria-pressed={isPickupDay}
-                                  title={
-                                    isPickupDay
-                                      ? `${d.full}: customer picks up from the kitchen`
-                                      : `${d.full}: deliver to the customer's address`
-                                  }
-                                  className={`w-full h-6 px-1 rounded-md border text-[9px] sm:text-[10px] font-bold transition-all flex items-center justify-center cursor-pointer touch-manipulation whitespace-nowrap ${
-                                    isPickupDay
+                                  onClick={() => toggleScheduleDay(d.full)}
+                                  aria-pressed={isDayActive}
+                                  className={`w-full h-12 sm:h-11 px-2 sm:px-3 rounded-xl text-xs sm:text-sm border transition-all flex items-center justify-center cursor-pointer touch-manipulation ${isDayActive
+                                    ? '!bg-blue-600 !border-blue-600 shadow-sm'
+                                    : 'bg-white border-gray-300 hover:bg-gray-50'
+                                    }`}
+                                >
+                                  <span className={isDayActive ? '!text-white font-bold' : 'text-gray-800 font-semibold'}>
+                                    {d.short}
+                                  </span>
+                                </button>
+                                {isDayActive && (
+                                  <button
+                                    type="button"
+                                    onClick={() => togglePickupDay(d.full)}
+                                    aria-pressed={isPickupDay}
+                                    title={
+                                      isPickupDay
+                                        ? `${d.full}: customer picks up from the kitchen`
+                                        : `${d.full}: deliver to the customer's address`
+                                    }
+                                    className={`w-full h-6 px-1 rounded-md border text-[9px] sm:text-[10px] font-bold transition-all flex items-center justify-center cursor-pointer touch-manipulation whitespace-nowrap ${isPickupDay
                                       ? 'bg-purple-50 border-purple-300 text-purple-700'
                                       : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                                  }`}
-                                >
-                                  {isPickupDay ? '🛍️ Pickup' : '🚗 Delivery'}
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <p className="text-xs text-gray-500 mt-1.5">
-                        {selectedDays?.length
-                          ? `${selectedDays.map((d) => d.substring(0, 3)).join(', ')}${
-                              pickupDayCount > 0 ? ` • ${pickupDayCount} Pickup day${pickupDayCount === 1 ? '' : 's'}` : ''
+                                      }`}
+                                  >
+                                    {isPickupDay ? '🛍️ Pickup' : '🚗 Delivery'}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1.5">
+                          {selectedDays?.length
+                            ? `${selectedDays.map((d) => d.substring(0, 3)).join(', ')}${pickupDayCount > 0 ? ` • ${pickupDayCount} Pickup day${pickupDayCount === 1 ? '' : 's'}` : ''
                             }`
-                          : 'No delivery days selected'}
-                      </p>
+                            : 'No delivery days selected'}
+                        </p>
+                      </div>
                     </div>
-                  </div>
                   )}
 
                   {/* SECTION: EDIT_SUBSCRIPTION_PLAN */}
                   {activeDrawerTab === 'plan' && (
                     <div data-section="edit-subscription-plan" className="w-full space-y-4 pt-2">
-                      {/* Row 1: Plan Selector (Strict 1-Row 3-Column Grid) */}
+                      {/* Row 1: Plan Selector */}
                       <div>
                         <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
                           Subscription Plan
@@ -3778,11 +3877,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   setPlanTier(plan.key);
                                   setTotalTiffinCredits(plan.credits);
                                 }}
-                                className={`w-full h-12 sm:h-11 px-3 rounded-xl text-sm border transition-all flex items-center justify-center gap-1.5 cursor-pointer touch-manipulation ${
-                                  isSelected
-                                    ? '!bg-blue-600 !border-blue-600 shadow-sm'
-                                    : 'bg-white border-gray-300 hover:bg-gray-50'
-                                }`}
+                                className={`w-full h-12 sm:h-11 px-3 rounded-xl text-sm border transition-all flex items-center justify-center gap-1.5 cursor-pointer touch-manipulation ${isSelected
+                                  ? '!bg-blue-600 !border-blue-600 shadow-sm'
+                                  : 'bg-white border-gray-300 hover:bg-gray-50'
+                                  }`}
                               >
                                 <span className={isSelected ? '!text-white font-bold' : 'text-gray-800 font-semibold'}>
                                   {plan.label}
@@ -3796,569 +3894,594 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         </div>
                       </div>
 
-                      {/* Row 2: Credits Stepper + Start Date (Strict 2-Column Grid) */}
-                      <div className="grid grid-cols-2 gap-3 w-full">
+                      {/* Row 2: 3-Column Grid: Start Date + Total Credits + Projected End Date */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full">
+                        {/* Start Date */}
                         <div>
                           <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                            Credits (Override)
+                            Start Date
+                          </label>
+                          <input
+                            type="date"
+                            value={startDate || ''}
+                            onChange={(e) => setStartDate(e.target.value)}
+                            className="w-full h-12 px-3 text-sm font-semibold border border-gray-300 rounded-xl text-gray-800 focus:outline-none focus:border-blue-500 bg-white"
+                          />
+                        </div>
+
+                        {/* Credits Stepper */}
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                            Credits (Meals)
                           </label>
                           <div className="flex items-center border border-gray-300 rounded-xl overflow-hidden h-12 bg-white">
                             <button
                               type="button"
-                              onClick={() => setTotalTiffinCredits((prev: number) => Math.max(1, (Number(prev) || 1) - 1))}
-                              className="w-12 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-r border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center"
+                              onClick={() => handleUpdateCredits((Number(totalTiffinCredits) || 1) - 1)}
+                              className="w-10 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-r border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center"
                             >
                               −
                             </button>
-                            <span className="flex-1 text-center text-base font-bold text-gray-900">
+                            <span className="flex-1 text-center text-sm font-bold text-gray-900">
                               {totalTiffinCredits ?? 20}
                             </span>
                             <button
                               type="button"
-                              onClick={() => setTotalTiffinCredits((prev: number) => (Number(prev) || 0) + 1)}
-                              className="w-12 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-l border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center"
+                              onClick={() => handleUpdateCredits((Number(totalTiffinCredits) || 0) + 1)}
+                              className="w-10 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-l border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center"
                             >
                               +
                             </button>
                           </div>
                         </div>
 
+                        {/* Auto-calculated End Date */}
                         <div>
-                          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                            Start Date (Optional)
-                          </label>
-                          <input
-                            type="date"
-                            value={startDate || ''}
-                            onChange={(e) => setStartDate(e.target.value)}
-                            className="w-full h-12 px-3 text-base border border-gray-300 rounded-xl text-gray-800 focus:outline-none focus:border-blue-500 bg-white"
-                          />
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">
+                              End Date
+                            </label>
+                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-100">
+                              AUTO (Mon-Fri)
+                            </span>
+                          </div>
+                          <div className="w-full h-12 px-3 border border-gray-200 rounded-xl bg-gray-50/80 flex items-center justify-between text-sm font-bold text-gray-800">
+                            <span>
+                              {computedEndDate ? formatShortLastDay(computedEndDate) : '—'}
+                            </span>
+                            <span className="text-xs text-gray-400 font-normal">
+                              {computedEndDate ? `(${computedEndDate})` : 'Set start date'}
+                            </span>
+                          </div>
                         </div>
                       </div>
 
+                      {/* Delivery Usage Summary Banner */}
+                      {selectedCustomer && (
+                        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center justify-between text-xs">
+                          <span className="text-gray-600 font-medium">Cycle Delivery Progress:</span>
+                          <span className="font-bold text-gray-900">
+                            {selectedCustomer.used_credits ?? 0} delivered /{' '}
+                            {Math.max(0, (totalTiffinCredits ?? 20) - (selectedCustomer.used_credits ?? 0))} remaining
+                          </span>
+                        </div>
+                      )}
                     </div>
-
                   )}
 
                   {/* SECTION: EDIT_DIETARY_CONFIG */}
                   {/* ═════ DIETARY CONFIGURATION — PREMIUM FORM ═════ */}
                   {/* TAB 3 — MEAL CONFIG */}
                   {activeDrawerTab === 'meal' && (
-                  <div className="bg-white border border-gray-100 rounded-xl overflow-hidden" data-section="edit-dietary-config">
-                    <div className="px-5 py-3 bg-gray-50 border-b border-gray-100">
-                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Dietary Configuration</span>
-                      <span className="block text-[11px] text-blue-600 font-medium mt-0.5">
-                        📋 {getSummaryString()}
-                      </span>
-                    </div>
+                    <div className="bg-white border border-gray-100 rounded-xl overflow-hidden" data-section="edit-dietary-config">
+                      <div className="px-5 py-3 bg-gray-50 border-b border-gray-100">
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Dietary Configuration</span>
+                        <span className="block text-[11px] text-blue-600 font-medium mt-0.5">
+                          📋 {getSummaryString()}
+                        </span>
+                      </div>
 
-                    <div className="p-5 space-y-5">
-                      {/* GRID ROW 1: Meal Type + Portion Size */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="min-w-0">
-                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Meal Type</label>
-                          <div className="flex gap-2">
-                            {['Veg', 'Non-veg'].map(option => (
-                              <button
-                                key={option}
-                                type="button"
-                                onClick={() => handleMealTypeChange(option)}
-                                className={`flex-1 h-10 px-3 rounded-lg text-xs font-semibold border transition-all ${
-                                  mealType === option
+                      <div className="p-5 space-y-5">
+                        {/* GRID ROW 1: Meal Type + Portion Size */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="min-w-0">
+                            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Meal Type</label>
+                            <div className="flex gap-2">
+                              {['Veg', 'Non-veg'].map(option => (
+                                <button
+                                  key={option}
+                                  type="button"
+                                  onClick={() => handleMealTypeChange(option)}
+                                  className={`flex-1 h-10 px-3 rounded-lg text-xs font-semibold border transition-all ${mealType === option
                                     ? 'bg-blue-50 border-blue-500 text-blue-700'
                                     : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                                }`}
-                              >
-                                {option}
-                              </button>
+                                    }`}
+                                >
+                                  {option}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="min-w-0">
+                            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Portion Size</label>
+                            <div className="grid grid-cols-2 gap-2">
+                              {[
+                                { label: 'RG', value: PORTION_RG, title: 'RG — Full Regular (2x 8oz containers)' },
+                                { label: 'LG', value: PORTION_LG, title: 'LG — Full Large (2x 12oz containers)' },
+                                { label: 'Half RG', value: PORTION_HALF_RG, title: 'Half RG — Single 8oz container' },
+                                { label: 'Half LG', value: PORTION_HALF_LG, title: 'Half LG — Single 12oz container' },
+                              ].map(opt => (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  title={opt.title}
+                                  onClick={() => handlePortionChange(opt.value)}
+                                  className={`flex-1 h-9 px-2 rounded-lg text-xs font-semibold border transition-all ${portionSize === opt.value
+                                    ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                    : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                                    }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* GRID ROW 2: Roti Count + Curries / Dal Allocation */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* Bread Counts — Roti & Pronthi steppers */}
+                          <div className="grid grid-cols-2 gap-4">
+                            {/* Roti Stepper */}
+                            <div>
+                              <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Roti</label>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsRotiCountCustom(true);
+                                    setRotiCount(Math.max(0, (rotiCount === '' ? 0 : Number(rotiCount)) - 1));
+                                  }}
+                                  className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                >−</button>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={rotiCount}
+                                  onChange={(e) => {
+                                    setIsRotiCountCustom(true);
+                                    setRotiCount(e.target.value ? parseInt(e.target.value) : '');
+                                  }}
+                                  className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsRotiCountCustom(true);
+                                    setRotiCount((rotiCount === '' ? 0 : Number(rotiCount)) + 1);
+                                  }}
+                                  className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                >+</button>
+                              </div>
+                              {showRotiStandardHint && (
+                                <p className="mt-2 text-[10px] leading-snug text-gray-400">
+                                  Standard for {portionSize || PORTION_RG} is {defaultRotiForPortion} rotis.{' '}
+                                  <button
+                                    type="button"
+                                    onClick={handleSetRotiToStandard}
+                                    className="inline p-0 border-0 bg-transparent text-blue-600 font-semibold hover:underline cursor-pointer align-baseline"
+                                  >
+                                    [Set to standard]
+                                  </button>
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Pronthi Stepper */}
+                            <div>
+                              <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Pronthi</label>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setPronthiCount(Math.max(0, (pronthiCount === '' ? 0 : Number(pronthiCount)) - 1))}
+                                  className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                >−</button>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={pronthiCount}
+                                  onChange={(e) => setPronthiCount(e.target.value ? parseInt(e.target.value) : '')}
+                                  className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setPronthiCount((pronthiCount === '' ? 0 : Number(pronthiCount)) + 1)}
+                                  className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                >+</button>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Curries / Dal — curry steppers + weekly non-veg pattern selector */}
+                          <div className="min-w-0">
+                            <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                              Curries / Dal
+                              {portionSize && (
+                                <span className="text-[10px] text-gray-400 font-normal normal-case ml-1">
+                                  ({totalCurryCount}/{curryContainerLimit} containers/day)
+                                </span>
+                              )}
+                            </label>
+                            <div className="bg-white border border-gray-100 rounded-lg p-3 space-y-2">
+                              {/* ── Non-Veg weekly day split (RG / LG) ── */}
+                              {mealType === 'Non-veg' && !isHalfPortion(portionSize) && (
+                                <div className="space-y-3">
+                                  {/* Row 1: M/W/F quick pills */}
+                                  <div>
+                                    <span className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
+                                      Mon, Wed, Fri (Non-Veg Days)
+                                    </span>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {([
+                                        { key: 'default', label: '1 Sabji + 1 Chicken (Default)' },
+                                        { key: 'dal-chicken', label: '1 Dal + 1 Chicken' },
+                                        { key: 'double-chicken', label: '2x Chicken' },
+                                        { key: 'double-gravy', label: '2x Gravy' },
+                                        { key: 'custom', label: 'Custom' },
+                                      ] as const).map(opt => (
+                                        <button
+                                          key={opt.key}
+                                          type="button"
+                                          onClick={() => {
+                                            if (opt.key === 'custom') {
+                                              setMwfSideMode('custom');
+                                              return;
+                                            }
+                                            const preset = MWF_PRESETS[opt.key];
+                                            setDalCount(preset.dal);
+                                            setSabjiCount(preset.sabji);
+                                            setChickenCount(preset.chicken);
+                                            setGravyCount(preset.gravy || 0);
+                                            setMwfSideMode(opt.key);
+                                          }}
+                                          className={`px-2.5 py-1.5 rounded-lg text-[10.5px] font-semibold border transition-all ${mwfSideMode === opt.key
+                                            ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                            : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                            }`}
+                                        >
+                                          {opt.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    {mwfSideMode === 'custom' && (
+                                      <div className="mt-2 space-y-1.5">
+                                        {[
+                                          { label: 'Dal', key: 'dal' as const, count: dalCount, set: setDalCount, color: 'text-amber-700' },
+                                          { label: 'Sabji', key: 'sabji' as const, count: sabjiCount, set: setSabjiCount, color: 'text-green-700' },
+                                          { label: 'Chicken', key: 'chicken' as const, count: chickenCount, set: setChickenCount, color: 'text-red-600' },
+                                          { label: 'Gravy', key: 'gravy' as const, count: gravyCount, set: setGravyCount, color: 'text-orange-600' },
+                                        ].map(item => (
+                                          <div key={item.key} className="flex items-center gap-2 bg-white rounded-md border border-gray-100 px-3 py-1.5">
+                                            <span className={`text-xs font-semibold uppercase shrink-0 ${item.color}`}>{item.label}</span>
+                                            <div className="flex items-center gap-1 ml-auto">
+                                              <button
+                                                type="button"
+                                                onClick={() => item.set(Math.max(0, item.count - 1))}
+                                                disabled={item.count === 0}
+                                                className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
+                                              >−</button>
+                                              <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
+                                              <button
+                                                type="button"
+                                                onClick={() => item.set(item.count + 1)}
+                                                className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 text-sm flex items-center justify-center shrink-0"
+                                              >+</button>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+
+
+                                  {/* Row 2: Tue/Thu quick pills */}
+                                  <div>
+                                    <span className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
+                                      Tue, Thu (Veg Days)
+                                    </span>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {([
+                                        { key: 'default', label: '1 Dal + 1 Sabji (Default)' },
+                                        { key: 'double-dal', label: '2x Dal (No Sabji)' },
+                                        { key: 'double-sabji', label: '2x Sabji (No Dal)' },
+                                        { key: 'custom', label: 'Custom' },
+                                      ] as const).map(opt => (
+                                        <button
+                                          key={opt.key}
+                                          type="button"
+                                          onClick={() => {
+                                            if (opt.key === 'custom') {
+                                              setVegDaySideMode('custom');
+                                              return;
+                                            }
+                                            const preset = TTH_PRESETS[opt.key];
+                                            setTthDal(preset.dal);
+                                            setTthSabji(preset.sabji);
+                                            setTthChicken(preset.chicken);
+                                            setTthGravy(preset.gravy || 0);
+                                            setVegDaySideMode(opt.key);
+                                          }}
+                                          className={`px-2.5 py-1.5 rounded-lg text-[10.5px] font-semibold border transition-all ${vegDaySideMode === opt.key
+                                            ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                            : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                            }`}
+                                        >
+                                          {opt.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    {vegDaySideMode === 'custom' && (
+                                      <div className="mt-2 space-y-1.5">
+                                        {[
+                                          { label: 'Dal', key: 'dal' as const, count: tthDal, set: setTthDal, color: 'text-amber-700' },
+                                          { label: 'Sabji', key: 'sabji' as const, count: tthSabji, set: setTthSabji, color: 'text-green-700' },
+                                        ].map(item => (
+                                          <div key={item.key} className="flex items-center gap-2 bg-white rounded-md border border-gray-100 px-3 py-1.5">
+                                            <span className={`text-xs font-semibold uppercase shrink-0 ${item.color}`}>{item.label}</span>
+                                            <div className="flex items-center gap-1 ml-auto">
+                                              <button
+                                                type="button"
+                                                onClick={() => item.set(Math.max(0, item.count - 1))}
+                                                disabled={item.count === 0}
+                                                className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
+                                              >−</button>
+                                              <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
+                                              <button
+                                                type="button"
+                                                onClick={() => item.set(item.count + 1)}
+                                                className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 text-sm flex items-center justify-center shrink-0"
+                                              >+</button>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* ── Veg (and unselected type) curry steppers ── */}
+                              {mealType !== 'Non-veg' && !isHalfPortion(portionSize) && (
+                                <div className="space-y-1.5">
+                                  {[
+                                    { label: 'Dal', key: 'dal' as const, count: dalCount, color: 'text-amber-700' },
+                                    { label: 'Sabji', key: 'sabji' as const, count: sabjiCount, color: 'text-green-700' },
+                                  ].map(item => (
+                                    <div key={item.key} className="flex items-center gap-2 bg-white rounded-md border border-gray-100 px-3 py-1.5">
+                                      <span className={`text-xs font-semibold uppercase shrink-0 ${item.color}`}>{item.label}</span>
+                                      <div className="flex items-center gap-1 ml-auto">
+                                        <button
+                                          type="button"
+                                          onClick={() => { if (item.count > 0) applySideCountChange(item.key, item.count - 1); }}
+                                          disabled={item.count === 0}
+                                          className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
+                                        >−</button>
+                                        <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => { if (totalCurryCount < curryContainerLimit) applySideCountChange(item.key, item.count + 1); }}
+                                          disabled={totalCurryCount >= curryContainerLimit}
+                                          className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
+                                        >+</button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* ── Half portion profile: single-select toggle ── */}
+                              {isHalfPortion(portionSize) && (
+                                <div className="grid grid-cols-2 gap-2">
+                                  {[
+                                    { label: 'Dal', key: 'dal', active: dalCount === 1 },
+                                    { label: 'Sabji', key: 'sabji', active: sabjiCount === 1 },
+                                    ...(mealType === 'Non-veg' ? [
+                                      { label: 'Chicken', key: 'chicken', active: chickenCount === 1 },
+                                      { label: 'Gravy', key: 'gravy', active: gravyCount === 1 },
+                                    ] : []),
+                                  ].map(item => (
+                                    <button
+                                      key={item.key}
+                                      type="button"
+                                      onClick={() => {
+                                        setDalCount(item.key === 'dal' ? 1 : 0);
+                                        setSabjiCount(item.key === 'sabji' ? 1 : 0);
+                                        setChickenCount(item.key === 'chicken' ? 1 : 0);
+                                        setGravyCount(item.key === 'gravy' ? 1 : 0);
+                                      }}
+                                      className={`h-9 px-3 rounded-lg text-xs font-semibold border transition-all ${item.active
+                                        ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                        : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                        }`}
+                                    >1 {item.label}</button>
+                                  ))}
+                                </div>
+                              )}
+
+                              {customCurryPillText && (
+                                <div className="mt-1 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
+                                  ⚡ {customCurryPillText}
+                                </div>
+                              )}
+                              {customHalfNote && (
+                                <div className="mt-3 px-3.5 py-2 bg-amber-50/90 border border-amber-200 rounded-lg flex items-center gap-1.5 text-xs font-semibold text-amber-800">
+                                  <span className="text-amber-500">⚡</span>
+                                  <span>{customHalfNote}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* SIDES — Salad & Dessert live outside Curries / Dal so they never
+                          occupy a curry container slot or change (n/2 containers/day). */}
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                            Sides
+                          </label>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Salad</label>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setSaladCount(Math.max(0, saladCount - 1))}
+                                  disabled={saladCount === 0}
+                                  className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
+                                >−</button>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={saladCount}
+                                  onChange={(e) => setSaladCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
+                                  className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setSaladCount(saladCount + 1)}
+                                  className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                >+</button>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Dessert</label>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setDessertCount(Math.max(0, dessertCount - 1))}
+                                  disabled={dessertCount === 0}
+                                  className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
+                                >−</button>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={dessertCount}
+                                  onChange={(e) => setDessertCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
+                                  className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setDessertCount(dessertCount + 1)}
+                                  className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                >+</button>
+                              </div>
+                            </div>
+                          </div>
+                          {extraAddonNote && (
+                            <div className="mt-2 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
+                              ⚡ {extraAddonNote}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* ROW 3: Rice Portion */}
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Rice Portion</label>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            {[
+                              { key: 'rg', label: 'Regular', val: riceRg, set: setRiceRg },
+                              { key: 'lg', label: 'Large', val: riceLg, set: setRiceLg },
+                              { key: 'xl', label: 'XL', val: riceXl, set: setRiceXl },
+                            ].map(rice => (
+                              <div key={rice.key} className="bg-white border border-gray-100 rounded-lg p-3 w-full flex flex-col items-center justify-center gap-3">
+                                <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{rice.label}</span>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => rice.set(Math.max(0, rice.val - 1))}
+                                    className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
+                                  >−</button>
+                                  <span className="w-8 text-center font-semibold text-sm text-gray-700">{rice.val}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => rice.set(rice.val + 1)}
+                                    className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
+                                  >+</button>
+                                </div>
+                              </div>
                             ))}
                           </div>
                         </div>
 
-                        <div className="min-w-0">
-                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Portion Size</label>
-                          <div className="grid grid-cols-2 gap-2">
-                            {[
-                              { label: 'RG', value: PORTION_RG, title: 'RG — Full Regular (2x 8oz containers)' },
-                              { label: 'LG', value: PORTION_LG, title: 'LG — Full Large (2x 12oz containers)' },
-                              { label: 'Half RG', value: PORTION_HALF_RG, title: 'Half RG — Single 8oz container' },
-                              { label: 'Half LG', value: PORTION_HALF_LG, title: 'Half LG — Single 12oz container' },
-                            ].map(opt => (
+                        {/* ROW 5: Special Instructions */}
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Special Instructions</label>
+                          <textarea
+                            rows={2}
+                            value={specialInstructions}
+                            onChange={(e) => setSpecialInstructions(e.target.value)}
+                            placeholder="e.g. Less spicy, No onions, Extra napkins..."
+                            className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none resize-none focus:border-blue-500 text-gray-700 font-sans leading-relaxed"
+                          />
+                        </div>
+
+                        {/* DISCOUNT */}
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Discount</label>
+                          <div className="flex gap-2">
+                            {([
+                              { key: 'none', label: 'No Discount' },
+                              { key: 'flat', label: '$ Flat' },
+                              { key: 'percent', label: '% Off' },
+                            ] as const).map(opt => (
                               <button
-                                key={opt.value}
+                                key={opt.key}
                                 type="button"
-                                title={opt.title}
-                                onClick={() => handlePortionChange(opt.value)}
-                                className={`flex-1 h-9 px-2 rounded-lg text-xs font-semibold border transition-all ${
-                                  portionSize === opt.value
-                                    ? 'bg-blue-50 border-blue-500 text-blue-700'
-                                    : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                                }`}
+                                onClick={() => setDiscountType(opt.key)}
+                                className={`flex-1 h-9 px-3 rounded-lg text-xs font-semibold border transition-all ${discountType === opt.key
+                                  ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                  : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                                  }`}
                               >
                                 {opt.label}
                               </button>
                             ))}
                           </div>
-                        </div>
-                      </div>
 
-                      {/* GRID ROW 2: Roti Count + Curries / Dal Allocation */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {/* Bread Counts — Roti & Pronthi steppers */}
-                        <div className="grid grid-cols-2 gap-4">
-                          {/* Roti Stepper */}
-                          <div>
-                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Roti</label>
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setIsRotiCountCustom(true);
-                                  setRotiCount(Math.max(0, (rotiCount === '' ? 0 : Number(rotiCount)) - 1));
-                                }}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
-                              >−</button>
-                              <input
-                                type="number"
-                                min={0}
-                                value={rotiCount}
-                                onChange={(e) => {
-                                  setIsRotiCountCustom(true);
-                                  setRotiCount(e.target.value ? parseInt(e.target.value) : '');
-                                }}
-                                className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setIsRotiCountCustom(true);
-                                  setRotiCount((rotiCount === '' ? 0 : Number(rotiCount)) + 1);
-                                }}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
-                              >+</button>
-                            </div>
-                            {showRotiStandardHint && (
-                              <p className="mt-2 text-[10px] leading-snug text-gray-400">
-                                Standard for {portionSize || PORTION_RG} is {defaultRotiForPortion} rotis.{' '}
-                                <button
-                                  type="button"
-                                  onClick={handleSetRotiToStandard}
-                                  className="inline p-0 border-0 bg-transparent text-blue-600 font-semibold hover:underline cursor-pointer align-baseline"
-                                >
-                                  [Set to standard]
-                                </button>
-                              </p>
-                            )}
-                          </div>
-
-                          {/* Pronthi Stepper */}
-                          <div>
-                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Pronthi</label>
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => setPronthiCount(Math.max(0, (pronthiCount === '' ? 0 : Number(pronthiCount)) - 1))}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
-                              >−</button>
-                              <input
-                                type="number"
-                                min={0}
-                                value={pronthiCount}
-                                onChange={(e) => setPronthiCount(e.target.value ? parseInt(e.target.value) : '')}
-                                className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setPronthiCount((pronthiCount === '' ? 0 : Number(pronthiCount)) + 1)}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
-                              >+</button>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Curries / Dal — curry steppers + weekly non-veg pattern selector */}
-                        <div className="min-w-0">
-                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                            Curries / Dal
-                            {portionSize && (
-                              <span className="text-[10px] text-gray-400 font-normal normal-case ml-1">
-                                ({totalCurryCount}/{curryContainerLimit} containers/day)
-                              </span>
-                            )}
-                          </label>
-                          <div className="bg-white border border-gray-100 rounded-lg p-3 space-y-2">
-                            {/* ── Non-Veg weekly day split (RG / LG) ── */}
-                            {mealType === 'Non-veg' && !isHalfPortion(portionSize) && (
-                              <div className="space-y-3">
-                                {/* Row 1: M/W/F quick pills */}
-                                <div>
-                                  <span className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                                    Mon, Wed, Fri (Non-Veg Days)
-                                  </span>
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {([
-                                      { key: 'default', label: '1 Sabji + 1 Chicken (Default)' },
-                                      { key: 'dal-chicken', label: '1 Dal + 1 Chicken' },
-                                      { key: 'double-chicken', label: '2x Chicken' },
-                                      { key: 'double-gravy', label: '2x Gravy' },
-                                      { key: 'custom', label: 'Custom' },
-                                    ] as const).map(opt => (
-                                      <button
-                                        key={opt.key}
-                                        type="button"
-                                        onClick={() => {
-                                          if (opt.key === 'custom') {
-                                            setMwfSideMode('custom');
-                                            return;
-                                          }
-                                          const preset = MWF_PRESETS[opt.key];
-                                          setDalCount(preset.dal);
-                                          setSabjiCount(preset.sabji);
-                                          setChickenCount(preset.chicken);
-                                          setGravyCount(preset.gravy || 0);
-                                          setMwfSideMode(opt.key);
-                                        }}
-                                        className={`px-2.5 py-1.5 rounded-lg text-[10.5px] font-semibold border transition-all ${
-                                          mwfSideMode === opt.key
-                                            ? 'bg-blue-50 border-blue-500 text-blue-700'
-                                            : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        {opt.label}
-                                      </button>
-                                    ))}
-                                  </div>
-                                  {mwfSideMode === 'custom' && (
-                                    <div className="mt-2 space-y-1.5">
-                                      {[
-                                        { label: 'Dal', key: 'dal' as const, count: dalCount, set: setDalCount, color: 'text-amber-700' },
-                                        { label: 'Sabji', key: 'sabji' as const, count: sabjiCount, set: setSabjiCount, color: 'text-green-700' },
-                                        { label: 'Chicken', key: 'chicken' as const, count: chickenCount, set: setChickenCount, color: 'text-red-600' },
-                                        { label: 'Gravy', key: 'gravy' as const, count: gravyCount, set: setGravyCount, color: 'text-orange-600' },
-                                      ].map(item => (
-                                        <div key={item.key} className="flex items-center gap-2 bg-white rounded-md border border-gray-100 px-3 py-1.5">
-                                          <span className={`text-xs font-semibold uppercase shrink-0 ${item.color}`}>{item.label}</span>
-                                          <div className="flex items-center gap-1 ml-auto">
-                                            <button
-                                              type="button"
-                                              onClick={() => item.set(Math.max(0, item.count - 1))}
-                                              disabled={item.count === 0}
-                                              className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
-                                            >−</button>
-                                            <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
-                                            <button
-                                              type="button"
-                                              onClick={() => item.set(item.count + 1)}
-                                              className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 text-sm flex items-center justify-center shrink-0"
-                                            >+</button>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-
-
-                                {/* Row 2: Tue/Thu quick pills */}
-                                <div>
-                                  <span className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                                    Tue, Thu (Veg Days)
-                                  </span>
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {([
-                                      { key: 'default', label: '1 Dal + 1 Sabji (Default)' },
-                                      { key: 'double-dal', label: '2x Dal (No Sabji)' },
-                                      { key: 'double-sabji', label: '2x Sabji (No Dal)' },
-                                      { key: 'custom', label: 'Custom' },
-                                    ] as const).map(opt => (
-                                      <button
-                                        key={opt.key}
-                                        type="button"
-                                        onClick={() => {
-                                          if (opt.key === 'custom') {
-                                            setVegDaySideMode('custom');
-                                            return;
-                                          }
-                                          const preset = TTH_PRESETS[opt.key];
-                                          setTthDal(preset.dal);
-                                          setTthSabji(preset.sabji);
-                                          setTthChicken(preset.chicken);
-                                          setTthGravy(preset.gravy || 0);
-                                          setVegDaySideMode(opt.key);
-                                        }}
-                                        className={`px-2.5 py-1.5 rounded-lg text-[10.5px] font-semibold border transition-all ${
-                                          vegDaySideMode === opt.key
-                                            ? 'bg-blue-50 border-blue-500 text-blue-700'
-                                            : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        {opt.label}
-                                      </button>
-                                    ))}
-                                  </div>
-                                  {vegDaySideMode === 'custom' && (
-                                    <div className="mt-2 space-y-1.5">
-                                      {[
-                                        { label: 'Dal', key: 'dal' as const, count: tthDal, set: setTthDal, color: 'text-amber-700' },
-                                        { label: 'Sabji', key: 'sabji' as const, count: tthSabji, set: setTthSabji, color: 'text-green-700' },
-                                      ].map(item => (
-                                        <div key={item.key} className="flex items-center gap-2 bg-white rounded-md border border-gray-100 px-3 py-1.5">
-                                          <span className={`text-xs font-semibold uppercase shrink-0 ${item.color}`}>{item.label}</span>
-                                          <div className="flex items-center gap-1 ml-auto">
-                                            <button
-                                              type="button"
-                                              onClick={() => item.set(Math.max(0, item.count - 1))}
-                                              disabled={item.count === 0}
-                                              className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
-                                            >−</button>
-                                            <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
-                                            <button
-                                              type="button"
-                                              onClick={() => item.set(item.count + 1)}
-                                              className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 text-sm flex items-center justify-center shrink-0"
-                                            >+</button>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
+                          {discountType !== 'none' && (
+                            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
+                                  {discountType === 'flat' ? 'Discount Amount ($)' : 'Discount Percentage (%)'}
+                                </label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={discountType === 'percent' ? '1' : '0.01'}
+                                  value={discountValue}
+                                  onChange={(e) => setDiscountValue(e.target.value)}
+                                  placeholder={discountType === 'flat' ? 'e.g. 2.50' : 'e.g. 10'}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
+                                />
                               </div>
-                            )}
-
-                            {/* ── Veg (and unselected type) curry steppers ── */}
-                            {mealType !== 'Non-veg' && !isHalfPortion(portionSize) && (
-                              <div className="space-y-1.5">
-                                {[
-                                  { label: 'Dal', key: 'dal' as const, count: dalCount, color: 'text-amber-700' },
-                                  { label: 'Sabji', key: 'sabji' as const, count: sabjiCount, color: 'text-green-700' },
-                                ].map(item => (
-                                  <div key={item.key} className="flex items-center gap-2 bg-white rounded-md border border-gray-100 px-3 py-1.5">
-                                    <span className={`text-xs font-semibold uppercase shrink-0 ${item.color}`}>{item.label}</span>
-                                    <div className="flex items-center gap-1 ml-auto">
-                                      <button
-                                        type="button"
-                                        onClick={() => { if (item.count > 0) applySideCountChange(item.key, item.count - 1); }}
-                                        disabled={item.count === 0}
-                                        className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
-                                      >−</button>
-                                      <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
-                                      <button
-                                        type="button"
-                                        onClick={() => { if (totalCurryCount < curryContainerLimit) applySideCountChange(item.key, item.count + 1); }}
-                                        disabled={totalCurryCount >= curryContainerLimit}
-                                        className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
-                                      >+</button>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-
-                            {/* ── Half portion profile: single-select toggle ── */}
-                            {isHalfPortion(portionSize) && (
-                              <div className="grid grid-cols-2 gap-2">
-                                {[
-                                  { label: 'Dal', key: 'dal', active: dalCount === 1 },
-                                  { label: 'Sabji', key: 'sabji', active: sabjiCount === 1 },
-                                  ...(mealType === 'Non-veg' ? [
-                                    { label: 'Chicken', key: 'chicken', active: chickenCount === 1 },
-                                    { label: 'Gravy', key: 'gravy', active: gravyCount === 1 },
-                                  ] : []),
-                                ].map(item => (
-                                  <button
-                                    key={item.key}
-                                    type="button"
-                                    onClick={() => {
-                                      setDalCount(item.key === 'dal' ? 1 : 0);
-                                      setSabjiCount(item.key === 'sabji' ? 1 : 0);
-                                      setChickenCount(item.key === 'chicken' ? 1 : 0);
-                                      setGravyCount(item.key === 'gravy' ? 1 : 0);
-                                    }}
-                                    className={`h-9 px-3 rounded-lg text-xs font-semibold border transition-all ${
-                                      item.active
-                                        ? 'bg-blue-50 border-blue-500 text-blue-700'
-                                        : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                                    }`}
-                                  >1 {item.label}</button>
-                                ))}
-                              </div>
-                            )}
-
-                            {customCurryPillText && (
-                              <div className="mt-1 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
-                                ⚡ {customCurryPillText}
-                              </div>
-                            )}
-                            {customHalfNote && (
-                              <div className="mt-3 px-3.5 py-2 bg-amber-50/90 border border-amber-200 rounded-lg flex items-center gap-1.5 text-xs font-semibold text-amber-800">
-                                <span className="text-amber-500">⚡</span>
-                                <span>{customHalfNote}</span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* SIDES — Salad & Dessert live outside Curries / Dal so they never
-                          occupy a curry container slot or change (n/2 containers/day). */}
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                          Sides
-                        </label>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Salad</label>
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => setSaladCount(Math.max(0, saladCount - 1))}
-                                disabled={saladCount === 0}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
-                              >−</button>
-                              <input
-                                type="number"
-                                min={0}
-                                value={saladCount}
-                                onChange={(e) => setSaladCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
-                                className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setSaladCount(saladCount + 1)}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
-                              >+</button>
-                            </div>
-                          </div>
-                          <div>
-                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Dessert</label>
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => setDessertCount(Math.max(0, dessertCount - 1))}
-                                disabled={dessertCount === 0}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
-                              >−</button>
-                              <input
-                                type="number"
-                                min={0}
-                                value={dessertCount}
-                                onChange={(e) => setDessertCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
-                                className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setDessertCount(dessertCount + 1)}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
-                              >+</button>
-                            </div>
-                          </div>
-                        </div>
-                        {extraAddonNote && (
-                          <div className="mt-2 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
-                            ⚡ {extraAddonNote}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* ROW 3: Rice Portion */}
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Rice Portion</label>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          {[
-                            { key: 'rg', label: 'Regular', val: riceRg, set: setRiceRg },
-                            { key: 'lg', label: 'Large', val: riceLg, set: setRiceLg },
-                            { key: 'xl', label: 'XL', val: riceXl, set: setRiceXl },
-                          ].map(rice => (
-                            <div key={rice.key} className="bg-white border border-gray-100 rounded-lg p-3 w-full flex flex-col items-center justify-center gap-3">
-                              <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{rice.label}</span>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => rice.set(Math.max(0, rice.val - 1))}
-                                  className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
-                                >−</button>
-                                <span className="w-8 text-center font-semibold text-sm text-gray-700">{rice.val}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => rice.set(rice.val + 1)}
-                                  className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
-                                >+</button>
+                              <div>
+                                <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
+                                  Promo / Reason
+                                </label>
+                                <input
+                                  type="text"
+                                  value={discountNote}
+                                  onChange={(e) => setDiscountNote(e.target.value)}
+                                  placeholder="e.g. First order promo, referral..."
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
+                                />
                               </div>
                             </div>
-                          ))}
+                          )}
                         </div>
-                      </div>
-
-                      {/* ROW 5: Special Instructions */}
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Special Instructions</label>
-                        <textarea
-                          rows={2}
-                          value={specialInstructions}
-                          onChange={(e) => setSpecialInstructions(e.target.value)}
-                          placeholder="e.g. Less spicy, No onions, Extra napkins..."
-                          className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none resize-none focus:border-blue-500 text-gray-700 font-sans leading-relaxed"
-                        />
-                      </div>
-
-                      {/* DISCOUNT */}
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Discount</label>
-                        <div className="flex gap-2">
-                          {([
-                            { key: 'none', label: 'No Discount' },
-                            { key: 'flat', label: '$ Flat' },
-                            { key: 'percent', label: '% Off' },
-                          ] as const).map(opt => (
-                            <button
-                              key={opt.key}
-                              type="button"
-                              onClick={() => setDiscountType(opt.key)}
-                              className={`flex-1 h-9 px-3 rounded-lg text-xs font-semibold border transition-all ${
-                                discountType === opt.key
-                                  ? 'bg-blue-50 border-blue-500 text-blue-700'
-                                  : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
-
-                        {discountType !== 'none' && (
-                          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <div>
-                              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                                {discountType === 'flat' ? 'Discount Amount ($)' : 'Discount Percentage (%)'}
-                              </label>
-                              <input
-                                type="number"
-                                min={0}
-                                step={discountType === 'percent' ? '1' : '0.01'}
-                                value={discountValue}
-                                onChange={(e) => setDiscountValue(e.target.value)}
-                                placeholder={discountType === 'flat' ? 'e.g. 2.50' : 'e.g. 10'}
-                                className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                                Promo / Reason
-                              </label>
-                              <input
-                                type="text"
-                                value={discountNote}
-                                onChange={(e) => setDiscountNote(e.target.value)}
-                                placeholder="e.g. First order promo, referral..."
-                                className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
-                              />
-                            </div>
-                          </div>
-                        )}
                       </div>
                     </div>
-                  </div>
                   )}
 
                   {/* SUBSCRIPTION MANAGEMENT SECTION */}
@@ -4366,11 +4489,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     <div className="space-y-2 pt-2">
                       {/* Pause/Cancel date info banner (only shown when paused/cancelled) */}
                       {((selectedCustomer.subscription_status || 'active') === 'paused' || (selectedCustomer.subscription_status || 'active') === 'cancelled') && (
-                        <div className={`px-3 py-2 rounded-lg border text-[11px] font-medium ${
-                          (selectedCustomer.subscription_status || 'active') === 'cancelled'
-                            ? 'bg-red-50 border-red-200 text-red-600'
-                            : 'bg-amber-50 border-amber-200 text-amber-600'
-                        }`}>
+                        <div className={`px-3 py-2 rounded-lg border text-[11px] font-medium ${(selectedCustomer.subscription_status || 'active') === 'cancelled'
+                          ? 'bg-red-50 border-red-200 text-red-600'
+                          : 'bg-amber-50 border-amber-200 text-amber-600'
+                          }`}>
                           {(selectedCustomer.subscription_status || 'active') === 'paused' && selectedCustomer.pause_start_date && (
                             <span>Paused: {selectedCustomer.pause_start_date}{selectedCustomer.pause_end_date ? ` → ${selectedCustomer.pause_end_date}` : ' → Indefinite'}</span>
                           )}
@@ -4394,7 +4516,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         return (
                           <div className="rounded-lg border border-amber-300 bg-amber-50 text-amber-800 p-3 space-y-1.5">
                             <p className="text-[11.5px] font-semibold leading-snug">
-                              ⚠️ {isScheduledPause ? 'Pause' : 'Cancellation'} scheduled after{' '}
+                              <AlertTriangle className="w-3.5 h-3.5 text-amber-500" /> {isScheduledPause ? 'Pause' : 'Cancellation'} scheduled after{' '}
                               <strong>{scheduledDate ? formatShortLastDay(scheduledDate) : '—'}</strong> — their last tiffin day.
                             </p>
                             <p className="text-[11px] text-amber-700 leading-snug">
@@ -4419,7 +4541,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               })}
                               className="w-full mt-0.5 px-3 py-2 bg-white text-amber-800 border border-amber-400 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
                             >
-                              {isPending ? 'Clearing…' : '↩️ Undo Cancellation & Keep Active'}
+                              {isPending ? 'Clearing…' : <span className="flex items-center gap-1"><Undo2 className="w-3.5 h-3.5" /> Undo Cancellation & Keep Active</span>}
                             </button>
                           </div>
                         );
@@ -4428,80 +4550,80 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       {/* Action Buttons — hidden while a scheduled cancel/pause is pending
                           (the Undo card above owns the only available action). */}
                       {!(selectedCustomer.scheduled_status === 'cancelled' || selectedCustomer.scheduled_cancel_date) ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        {(selectedCustomer.subscription_status || 'active') === 'active' && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPauseStartDate(toLocalDateKey(new Date()));
-                                setPauseEndDate('');
-                                setIsIndefinitePause(false);
-                                setShowPauseModal(true);
-                              }}
-                              className="px-3 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition-colors"
-                            >
-                              ⏸️ Pause Service
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setCancelReason('');
-                                setCancelDate(toLocalDateKey(new Date()));
-                                setShowCancelModal(true);
-                              }}
-                              className="px-3 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-[11px] font-bold hover:bg-red-100 transition-colors"
-                            >
-                              🛑 Cancel Service
-                            </button>
-                          </>
-                        )}
-                        {(selectedCustomer.subscription_status || 'active') === 'paused' && (
-                          <>
+                        <div className="grid grid-cols-2 gap-2">
+                          {(selectedCustomer.subscription_status || 'active') === 'active' && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPauseStartDate(toLocalDateKey(new Date()));
+                                  setPauseEndDate('');
+                                  setIsIndefinitePause(false);
+                                  setShowPauseModal(true);
+                                }}
+                                className="px-3 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition-colors"
+                              >
+                                <Pause className="w-3.5 h-3.5" /> Pause Service
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCancelReason('');
+                                  setCancelDate(toLocalDateKey(new Date()));
+                                  setShowCancelModal(true);
+                                }}
+                                className="px-3 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-[11px] font-bold hover:bg-red-100 transition-colors"
+                              >
+                                <Ban className="w-3.5 h-3.5" /> Cancel Service
+                              </button>
+                            </>
+                          )}
+                          {(selectedCustomer.subscription_status || 'active') === 'paused' && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={isPending}
+                                onClick={() => startTransition(async () => {
+                                  await resumeCustomer(selectedCustomer.id);
+                                  setSelectedCustomer({ ...selectedCustomer, subscription_status: 'active', pause_start_date: null, pause_end_date: null });
+                                  closePanelGracefully();
+                                })}
+                                className="px-3 py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg text-[11px] font-bold hover:bg-green-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                              >
+                                {isPending ? 'Resuming...' : <span className="flex items-center gap-1"><Play className="w-3.5 h-3.5" /> Resume Service</span>}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCancelReason('');
+                                  setCancelDate(toLocalDateKey(new Date()));
+                                  setShowCancelModal(true);
+                                }}
+                                className="px-3 py-2.5 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                              >
+                                🛑 Cancel Service
+                              </button>
+                            </>
+                          )}
+                          {(selectedCustomer.subscription_status || 'active') === 'cancelled' && (
                             <button
                               type="button"
                               disabled={isPending}
                               onClick={() => startTransition(async () => {
-                                await resumeCustomer(selectedCustomer.id);
-                                setSelectedCustomer({ ...selectedCustomer, subscription_status: 'active', pause_start_date: null, pause_end_date: null });
-                                closePanelGracefully();
+                                try {
+                                  await reactivateCustomer(selectedCustomer.id);
+                                  showToast(`${selectedCustomer.full_name} reactivated successfully`);
+                                  closePanelGracefully();
+                                } catch (err) {
+                                  showToast(err instanceof Error ? err.message : 'Failed to reactivate customer', 'error');
+                                }
                               })}
-                              className="px-3 py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg text-[11px] font-bold hover:bg-green-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                              className="col-span-2 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-bold hover:bg-emerald-100 transition-colors disabled:opacity-50"
                             >
-                              {isPending ? 'Resuming...' : '▶️ Resume Service'}
+                              {isPending ? 'Reactivating...' : '✔️ Reactivate Service'}
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setCancelReason('');
-                                setCancelDate(toLocalDateKey(new Date()));
-                                setShowCancelModal(true);
-                              }}
-                              className="px-3 py-2.5 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
-                            >
-                              🛑 Cancel Service
-                            </button>
-                          </>
-                        )}
-                        {(selectedCustomer.subscription_status || 'active') === 'cancelled' && (
-                          <button
-                            type="button"
-                            disabled={isPending}
-                            onClick={() => startTransition(async () => {
-                              try {
-                                await reactivateCustomer(selectedCustomer.id);
-                                showToast(`${selectedCustomer.full_name} reactivated successfully`);
-                                closePanelGracefully();
-                              } catch (err) {
-                                showToast(err instanceof Error ? err.message : 'Failed to reactivate customer', 'error');
-                              }
-                            })}
-                            className="col-span-2 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-bold hover:bg-emerald-100 transition-colors disabled:opacity-50"
-                          >
-                            {isPending ? 'Reactivating...' : '✔️ Reactivate Service'}
-                          </button>
-                        )}
-                      </div>
+                          )}
+                        </div>
                       ) : null}
                     </div>
                   )}
@@ -4563,11 +4685,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     value={pauseEndDate}
                     onChange={(e) => setPauseEndDate(e.target.value)}
                     disabled={isIndefinitePause}
-                    className={`w-full px-3 py-2 border rounded-lg outline-none text-[13px] transition-all ${
-                      isIndefinitePause
-                        ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
-                        : 'border-[#E0E0E0] focus:border-[#5D5FEF]'
-                    }`}
+                    className={`w-full px-3 py-2 border rounded-lg outline-none text-[13px] transition-all ${isIndefinitePause
+                      ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
+                      : 'border-[#E0E0E0] focus:border-[#5D5FEF]'
+                      }`}
                   />
                 </div>
               </div>
@@ -4596,22 +4717,22 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         setSelectedCustomer(
                           isScheduledPause
                             ? {
-                                // Stays active through the last tiffin day; pause begins the day after.
-                                ...selectedCustomer,
-                                subscription_status: 'active',
-                                pause_start_date: null,
-                                pause_end_date: endDate,
-                                scheduled_cancel_date: lastServiceDate,
-                                scheduled_status: 'paused',
-                              }
+                              // Stays active through the last tiffin day; pause begins the day after.
+                              ...selectedCustomer,
+                              subscription_status: 'active',
+                              pause_start_date: null,
+                              pause_end_date: endDate,
+                              scheduled_cancel_date: lastServiceDate,
+                              scheduled_status: 'paused',
+                            }
                             : {
-                                ...selectedCustomer,
-                                subscription_status: 'paused',
-                                pause_start_date: lastServiceDate,
-                                pause_end_date: endDate,
-                                scheduled_cancel_date: null,
-                                scheduled_status: null,
-                              }
+                              ...selectedCustomer,
+                              subscription_status: 'paused',
+                              pause_start_date: lastServiceDate,
+                              pause_end_date: endDate,
+                              scheduled_cancel_date: null,
+                              scheduled_status: null,
+                            }
                         );
                         closePanelGracefully();
                       }
@@ -4702,21 +4823,21 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         setSelectedCustomer(
                           isScheduledCancel
                             ? {
-                                // Stays active through the last tiffin day; cancelled after it.
-                                ...selectedCustomer,
-                                cancellation_reason: cancelReason.trim() || null,
-                                cancelled_at: null,
-                                scheduled_cancel_date: cancelDate,
-                                scheduled_status: 'cancelled',
-                              }
+                              // Stays active through the last tiffin day; cancelled after it.
+                              ...selectedCustomer,
+                              cancellation_reason: cancelReason.trim() || null,
+                              cancelled_at: null,
+                              scheduled_cancel_date: cancelDate,
+                              scheduled_status: 'cancelled',
+                            }
                             : {
-                                ...selectedCustomer,
-                                subscription_status: 'cancelled',
-                                cancellation_reason: cancelReason.trim() || null,
-                                cancelled_at: cancelledAt,
-                                scheduled_cancel_date: null,
-                                scheduled_status: null,
-                              }
+                              ...selectedCustomer,
+                              subscription_status: 'cancelled',
+                              cancellation_reason: cancelReason.trim() || null,
+                              cancelled_at: cancelledAt,
+                              scheduled_cancel_date: null,
+                              scheduled_status: null,
+                            }
                         );
                         closePanelGracefully();
                       }
@@ -4969,12 +5090,11 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       {/* TOAST NOTIFICATION */}
       {toast && (
         <div
-          className={`fixed bottom-5 right-5 z-[70] px-4 py-2.5 rounded-lg text-white text-[13px] font-semibold shadow-lg flex items-center gap-2 transition-all ${
-            toast.kind === 'success' ? 'bg-emerald-600' : 'bg-red-600'
-          }`}
+          className={`fixed bottom-5 right-5 z-[70] px-4 py-2.5 rounded-lg text-white text-[13px] font-semibold shadow-lg flex items-center gap-2 transition-all ${toast.kind === 'success' ? 'bg-emerald-600' : 'bg-red-600'
+            }`}
           role="status"
         >
-          <span>{toast.kind === 'success' ? '✓' : '✕'}</span>
+          {toast.kind === 'success' ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
           {toast.message}
         </div>
       )}

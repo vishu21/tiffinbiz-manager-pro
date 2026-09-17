@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback, useRef, useTransition } from 'react';
+import { Printer, CalendarOff, AlertTriangle, UtensilsCrossed, Settings2, Scale, Soup, Flame, Leaf, MapPin, Truck, Pause, Undo2, Check, Ban, Search, Folder, FileText, Package, Wheat, Zap } from 'lucide-react';
 import {
   fetchDailyMenu,
   saveDailyMenu,
@@ -16,15 +17,18 @@ import {
   reloadSchemaCache,
 } from './actions';
 import type { Recipe, DailyOverrideRow } from './actions';
+import PrepDatePicker from '@/app/components/PrepDatePicker';
 import {
   getRecipesWithIngredients,
   type RecipeWithIngredients,
 } from '@/app/admin/recipes/actions';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import type { MealConfigPayload } from '@/app/admin/actions';
 import PrepQuickEditSheet, { type QuickEditSaveRequest } from './PrepQuickEditSheet';
-import { isPickupOnDay } from '@/app/utils/customerPickup';
+import { isPickupOnDay, parseActiveScheduleDays } from '@/app/utils/customerPickup';
 import { computePrepMetrics, resolveSideAddons } from './prepCalculations';
+import DriverDispatchModal from './components/DriverDispatchModal';
 
 type Customer = {
   id: string;
@@ -52,6 +56,10 @@ type Customer = {
   scheduled_cancel_date?: string | null;
   scheduled_status?: 'cancelled' | 'paused' | null;
   start_date?: string | null;
+  cycle_end_date?: string | null;
+  total_credits?: number | null;
+  total_tiffin_credits?: number | null;
+  used_credits?: number | null;
   discount_type?: 'flat' | 'percent' | null;
   discount_value?: number | null;
   discount_note?: string | null;
@@ -59,6 +67,15 @@ type Customer = {
   curry_config?: string | null;
   isSkipped?: boolean;
   created_at: string;
+  plan_tier?: string | null;
+  isExpiredRenewalPending?: boolean;
+  expiredOnDate?: string;
+};
+
+type KitchenClosure = {
+  id: string;
+  closure_date: string;
+  reason: string;
 };
 
 const EMPTY_OVERRIDES: Record<string, DailyOverrideRow> = {};
@@ -95,44 +112,144 @@ const daysBetweenKeys = (from: string, to: string): number => {
   return Math.round((end.getTime() - start.getTime()) / 86_400_000);
 };
 
-const isScheduledOn = (
-  customer: Pick<
-    Customer,
-    'delivery_schedule' | 'subscription_status' | 'scheduled_cancel_date' | 'start_date'
-  >,
+const isDeliveryDay = (date: Date): boolean => {
+  const day = date.getDay();
+  return day !== 0 && day !== 6;
+};
+
+const calculateTargetLastDay = (
+  startDateStr: string | null | undefined,
+  totalMeals: number | null | undefined,
+): string | null => {
+  if (!startDateStr || !totalMeals || totalMeals <= 0) return null;
+
+  let normalized = startDateStr.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(normalized)) {
+    const [m, d, y] = normalized.split('/');
+    normalized = `${y}-${m}-${d}`;
+  }
+
+  const date = new Date(`${normalized}T00:00:00`);
+  if (isNaN(date.getTime())) return null;
+
+  let mealsCounted = 0;
+  if (isDeliveryDay(date)) {
+    mealsCounted = 1;
+  }
+
+  while (mealsCounted < totalMeals) {
+    date.setDate(date.getDate() + 1);
+    if (isDeliveryDay(date)) {
+      mealsCounted++;
+    }
+    if (mealsCounted > 730) return null;
+  }
+
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const resolveCustomerTotalMeals = (customer: Customer): number => {
+  const dbCredits = customer.total_tiffin_credits ?? customer.total_credits;
+  if (typeof dbCredits === 'number' && dbCredits > 0) {
+    return dbCredits;
+  }
+
+  const tier = (customer.plan_tier || '').toLowerCase();
+  if (tier === 'trial') return 1;
+  if (tier === 'monthly') return 20;
+  if (tier === 'weekly') return 5;
+
+  const combinedInfo = `${customer.notes || ''} ${customer.delivery_schedule || ''}`.toLowerCase();
+  if (combinedInfo.includes('month') || combinedInfo.includes('20')) {
+    return 20;
+  }
+  if (combinedInfo.includes('trial') || combinedInfo.includes('1')) {
+    return 1;
+  }
+  return 5;
+};
+
+const deliveryDaysBetweenKeys = (startKey: string, endKey: string): number => {
+  const start = new Date(`${startKey}T00:00:00`);
+  const end = new Date(`${endKey}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) return 0;
+
+  let count = 0;
+  const cursor = new Date(start);
+  // Advance day by day through and including the target delivery date
+  while (cursor < end) {
+    cursor.setDate(cursor.getDate() + 1);
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) {
+      count++;
+    }
+  }
+  return count;
+};
+
+const getDeliveryScheduleStatus = (
+  customer: Customer,
   activeDay: string,
   dateKey: string,
-): boolean => {
+): 'active' | 'pending_renewal' | 'lapsed' | false => {
   const schedule = customer.delivery_schedule || '';
   if (!schedule || schedule === '—') return false;
-
-  const subStatus = (customer.subscription_status || 'active').toLowerCase();
-  if (subStatus !== 'active') return false;
-
-  const scheduledDate = customer.scheduled_cancel_date;
-  if (scheduledDate && dateKey > scheduledDate) return false;
 
   const startDate = customer.start_date;
   if (startDate && dateKey < startDate) return false;
 
+  // Weekday and schedule match checks
   const shortDay = activeDay.substring(0, 3);
-
   const exceptionMatch = schedule.match(/\[EXCEPT:(.*?)\]/i);
-  if (exceptionMatch) {
-    const exceptionString = exceptionMatch[1];
-    if (exceptionString.includes(shortDay)) return false;
-  }
+  if (exceptionMatch && exceptionMatch[1].includes(shortDay)) return false;
 
   const isWeekday = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].includes(activeDay);
-  if (schedule.includes('Monday to Friday') && isWeekday) {
-    return true;
+  const dayMatches =
+    (schedule.includes('Monday to Friday') && isWeekday) ||
+    schedule.includes(activeDay) ||
+    schedule.includes(shortDay);
+
+  if (!dayMatches) return false;
+
+  // Determine effective plan end date
+  const totalMeals = resolveCustomerTotalMeals(customer);
+  const computedEnd = calculateTargetLastDay(customer.start_date, totalMeals);
+  const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
+  const effectiveEnd = explicitEnd || computedEnd;
+
+  // Scheduled cancellation check: only cuts off ON or AFTER that date
+  const scheduledCancel = customer.scheduled_cancel_date;
+  if (scheduledCancel && dateKey > scheduledCancel) {
+    return false; // Not delivered after cancellation date
   }
 
-  if (schedule.includes(activeDay) || schedule.includes(shortDay)) {
-    return true;
+  // Check against effective end date
+  if (effectiveEnd) {
+    if (dateKey <= effectiveEnd) {
+      // ✅ Customer was active and entitled to delivery on this historical date!
+      return 'active';
+    }
+
+    const deliveryDaysSinceEnd = deliveryDaysBetweenKeys(effectiveEnd, dateKey);
+    // If explicitly cancelled, don't show "pending_renewal" in grace days
+    if (customer.scheduled_status === 'cancelled') {
+      return false;
+    }
+
+    if (deliveryDaysSinceEnd >= 1 && deliveryDaysSinceEnd <= 3) {
+      return 'pending_renewal';
+    }
+    return 'lapsed';
   }
 
-  return false;
+  return 'active';
+};
+
+const isScheduledOn = (customer: Customer, activeDay: string, dateKey: string): boolean => {
+  return getDeliveryScheduleStatus(customer, activeDay, dateKey) === 'active';
 };
 
 const MAX_DELIVERY_LOOKAHEAD_DAYS = 14;
@@ -278,18 +395,29 @@ const formatSizeBadge = (portionSize: string | null | undefined): string => {
 const formatTypeBadge = (mealType: string | null | undefined): 'V' | 'NV' =>
   String(mealType || '').toLowerCase().includes('non') ? 'NV' : 'V';
 
+const getIngredientCountHint = (ingredientName: string, totalOz: number): string | null => {
+  const lower = ingredientName.toLowerCase();
+  if (lower.includes('tomato')) {
+    const count = Math.round((totalOz / 4.2) * 2) / 2;
+    const roundedInt = Math.round(count);
+    return count < 1 ? '~1 med' : `~${roundedInt} med`;
+  }
+  return null;
+};
+
 const formatBatchBreakdownLines = (
-  rows: Array<{ name: string; totalOz: number }>,
-): string[] =>
-  rows.length === 0
-    ? ['No ingredient standards defined.']
-    : rows.map(row => {
-        const hint = getIngredientCountHint(row.name, row.totalOz);
-        // Shorten "Tomatoes (Pureed)" -> "Tomatoes", "Onions (Chopped)" -> "Onions" for print scannability
-        const cleanName = row.name.replace(/\s*\([^)]*\)/g, '').trim();
-        const hintText = hint ? ` (${hint})` : '';
-        return `${cleanName}: ${Math.round(row.totalOz)} oz${hintText}`;
-      });
+  rows?: Array<{ name: string; totalOz: number }> | null,
+): string[] => {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return ['No ingredient standards defined.'];
+  }
+  return rows.map(row => {
+    const hint = getIngredientCountHint(row.name, row.totalOz);
+    const cleanName = row.name.replace(/\s*\([^)]*\)/g, '').trim();
+    const hintText = hint ? ` (${hint})` : '';
+    return `${cleanName}: ${Math.round(row.totalOz)} oz${hintText}`;
+  });
+};
 
 const formatShortRice = (riceCount: string | null | undefined): string => {
   if (!hasRiceToPack(riceCount)) return '—';
@@ -602,6 +730,7 @@ const formatSidesBadge = (salad: number, dessert: number): string => {
 };
 
 const buildAlertSummary = (input: {
+  isLastDay: boolean;
   customRule: string | null;
   todayOverride: string | null;
   notes: string | null;
@@ -610,11 +739,11 @@ const buildAlertSummary = (input: {
   isChickenDay: boolean;
 }): string | null => {
   const tokens: string[] = [];
+  if (input.isLastDay) tokens.push('LAST DELIVERY DAY');
   if (input.todayOverride) tokens.push(input.todayOverride);
   if (input.customRule) tokens.push(input.customRule);
 
-  const normalized = `${input.deliveryInstructions || ''} ${input.notes || ''} ${input.customRule || ''
-    }`
+  const normalized = `${input.deliveryInstructions || ''} ${input.notes || ''} ${input.customRule || ''}`
     .toLowerCase()
     .replace(/daal/g, 'dal');
 
@@ -688,23 +817,13 @@ const buildAlertSummary = (input: {
   return cleaned.length > 0 ? cleaned.join(' · ') : null;
 };
 
-// Count hint helper for whole produce items (e.g. Medium Tomatoes)
-const getIngredientCountHint = (ingredientName: string, totalOz: number): string | null => {
-  const lower = ingredientName.toLowerCase();
-  if (lower.includes('tomato')) {
-    const count = Math.round((totalOz / 4.2) * 2) / 2;
-    const roundedInt = Math.round(count);
-    return count < 1 ? '~1 med' : `~${roundedInt} med`;
-  }
-  return null;
-};
-
 type QuickSaveRequest = QuickEditSaveRequest;
 
 export default function PrepDashboardClient({ initialCustomers }: { initialCustomers: Customer[] }) {
   const [selectedDate, setSelectedDate] = useState<Date>(() =>
     resolveNextActiveDeliveryDate(initialCustomers)
   );
+  const [isDispatchModalOpen, setIsDispatchModalOpen] = useState(false);
 
   const activeDay = DAYS_OF_WEEK[(selectedDate.getDay() + 6) % 7];
 
@@ -733,7 +852,50 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   >({});
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
   const [schemaReloading, setSchemaReloading] = useState(false);
+  const [isLapsedTrayOpen, setIsLapsedTrayOpen] = useState(false);
   const router = useRouter();
+
+  const selectedDateKey = toLocalDateKey(selectedDate);
+  const dateStr = selectedDateKey;
+
+  // Map of all closures in database (keyed by 'YYYY-MM-DD' -> reason)
+  const [closuresMap, setClosuresMap] = useState<Map<string, string>>(new Map());
+
+  // Fetch all closures so pills and calendar can highlight off-days across weeks
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const { createClient } = await import('@/utils/supabase/client');
+        const supabase = createClient();
+        const { data } = await supabase
+          .from('kitchen_closures')
+          .select('id, closure_date, reason');
+
+        if (isMounted && data) {
+          const map = new Map<string, string>();
+          data.forEach(c => map.set(c.closure_date, c.reason));
+          setClosuresMap(map);
+        }
+      } catch (err) {
+        console.error('[Prep] Failed to fetch closures:', err);
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Active closure for the single currently selected date
+  const activeClosure = useMemo(() => {
+    if (!closuresMap.has(selectedDateKey)) return null;
+    return {
+      id: selectedDateKey,
+      closure_date: selectedDateKey,
+      reason: closuresMap.get(selectedDateKey) || 'Kitchen Holiday',
+    };
+  }, [closuresMap, selectedDateKey]);
 
   const openQuickEdit = (customer: Customer) => {
     setQuickEditCustomer(customer);
@@ -905,9 +1067,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const saveInFlightRef = useRef(false);
 
-  const selectedDateKey = toLocalDateKey(selectedDate);
-  const dateStr = selectedDateKey;
-
   const selectedDateFormatted = selectedDate.toLocaleDateString('en-US', {
     weekday: 'short',
     month: 'short',
@@ -932,6 +1091,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     day: 'numeric',
     year: 'numeric',
   });
+
+  const isPreppingToday = useMemo(() => {
+    return toLocalDateKey(new Date()) === selectedDateKey;
+  }, [selectedDateKey]);
 
   const isPreppingTomorrow = useMemo(() => {
     const tomorrow = new Date();
@@ -1142,8 +1305,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       const probe = await checkDailyOverrideTable();
       if (!probe.exists) {
         setPersistenceWarning(
-          `The customer_daily_overrides table still isn't reachable${probe.message ? ` (${probe.message})` : ''
-          }.`
+          `The customer_daily_overrides table still isn't reachable${probe.message ? ` (${probe.message})` : ''}.`
         );
         return;
       }
@@ -1206,7 +1368,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
   useEffect(() => {
     if (!isMenuLoading) triggerAutoSave();
-  }, [veg1, veg2, nonVeg, isMenuLoading]);
+  }, [veg1, veg2, nonVeg, isMenuLoading, triggerAutoSave]);
 
   const refreshRecipes = useCallback(async () => {
     try {
@@ -1266,6 +1428,15 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     }
   };
 
+  const activeDalRecipes = useMemo(
+    () => batchRecipes.filter(r => r.category === 'dal' && r.is_active !== false),
+    [batchRecipes],
+  );
+  const activeSabjiRecipes = useMemo(
+    () => batchRecipes.filter(r => r.category === 'sabji' && r.is_active !== false),
+    [batchRecipes],
+  );
+
   const handleSelectDal = (dalId: string) => {
     setSelectedDalId(dalId);
     const recipe = activeDalRecipes.find(r => r.id === dalId);
@@ -1286,14 +1457,39 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     };
   }, []);
 
-  const goToDay = (targetDayName: string) => {
-    const targetIndex = DAYS_OF_WEEK.indexOf(targetDayName);
-    if (targetIndex === -1) return;
-    const jsTargetDay = targetIndex < 6 ? targetIndex + 1 : 0;
-    const diff = jsTargetDay - selectedDate.getDay();
-    const newDate = new Date(selectedDate);
-    newDate.setDate(selectedDate.getDate() + diff);
-    setSelectedDate(newDate);
+  // Find Monday of the currently viewed week
+  const currentWeekMonday = useMemo(() => {
+    const d = new Date(selectedDate);
+    const day = d.getDay(); // 0 = Sun, 1 = Mon...
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    d.setDate(diff);
+    d.setHours(12, 0, 0, 0);
+    return d;
+  }, [selectedDate]);
+
+  // Generate all 7 dates (Mon -> Sun) for the active week
+  const weekDays = useMemo(() => {
+    return Array.from({ length: 7 }, (_, i) => {
+      const date = new Date(currentWeekMonday);
+      date.setDate(currentWeekMonday.getDate() + i);
+      const dayName = DAYS_OF_WEEK[i];
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const dStr = String(date.getDate()).padStart(2, '0');
+      return {
+        name: dayName,
+        short: dayName.substring(0, 3),
+        dayNum: date.getDate(),
+        dateKey: `${y}-${m}-${dStr}`,
+        dateObj: date,
+      };
+    });
+  }, [currentWeekMonday]);
+
+  const changeWeek = (direction: 'prev' | 'next') => {
+    const nextDate = new Date(selectedDate);
+    nextDate.setDate(selectedDate.getDate() + (direction === 'next' ? 7 : -7));
+    setSelectedDate(nextDate);
   };
 
   const isChickenDay = useMemo(() => {
@@ -1322,32 +1518,62 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     return byId;
   }, [mergedCustomers]);
 
-  const activeCustomers = useMemo(() => {
-    return resolvedCustomers.filter(customer =>
-      isScheduledOn(customer, activeDay, selectedDateKey)
-    );
+  // 1. Gather all customers for this date (scheduled deliveries + recently expired cycles)
+  const { visibleManifestCustomers, lapsedCustomers } = useMemo(() => {
+    const manifestList: Customer[] = [];
+    const lapsedList: Customer[] = [];
+
+    resolvedCustomers.forEach(customer => {
+      const status = getDeliveryScheduleStatus(customer, activeDay, selectedDateKey);
+      if (!status) return;
+
+      const totalMeals = resolveCustomerTotalMeals(customer);
+      const computedEnd = calculateTargetLastDay(customer.start_date, totalMeals);
+      const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
+      const effectiveEnd = explicitEnd || computedEnd || '';
+
+      if (status === 'lapsed') {
+        lapsedList.push({
+          ...customer,
+          isExpiredRenewalPending: true,
+          expiredOnDate: effectiveEnd,
+        });
+      } else if (status === 'pending_renewal') {
+        manifestList.push({
+          ...customer,
+          isExpiredRenewalPending: true,
+          expiredOnDate: effectiveEnd,
+        });
+      } else {
+        manifestList.push(customer);
+      }
+    });
+
+    return { visibleManifestCustomers: manifestList, lapsedCustomers: lapsedList };
   }, [resolvedCustomers, activeDay, selectedDateKey]);
 
+  // 2. Cooking metrics: strictly excludes expired and skipped orders (or zero if kitchen is closed)
+  const activeCookingCustomers = useMemo(() => {
+    if (activeClosure) return [];
+    return visibleManifestCustomers.filter(c => !c.isExpiredRenewalPending && !c.isSkipped);
+  }, [visibleManifestCustomers, activeClosure]);
+
+  const activeCustomers = activeCookingCustomers;
+
+  // 3. Table list: active deliveries sorted by packing order, expired renewals pinned to the bottom
   const manifestCustomers = useMemo(() =>
-    [...activeCustomers].sort(kitchenOrderSort),
-    [activeCustomers],
+    [...visibleManifestCustomers].sort((a, b) => {
+      if (a.isExpiredRenewalPending && !b.isExpiredRenewalPending) return 1;
+      if (!a.isExpiredRenewalPending && b.isExpiredRenewalPending) return -1;
+      return kitchenOrderSort(a, b);
+    }),
+    [visibleManifestCustomers],
   );
 
+  // 4. Batch prep calculator & top cards only count active meals to cook
   const metrics = useMemo(
-    () => computePrepMetrics(activeCustomers, isChickenDay),
-    [activeCustomers, isChickenDay],
-  );
-
-  const chickenStationPackLG = metrics.chickenPackLG + metrics.gravyPackLG;
-  const chickenStationPackRG = metrics.chickenPackRG + metrics.gravyPackRG;
-
-  const activeDalRecipes = useMemo(
-    () => batchRecipes.filter(r => r.category === 'dal' && r.is_active !== false),
-    [batchRecipes],
-  );
-  const activeSabjiRecipes = useMemo(
-    () => batchRecipes.filter(r => r.category === 'sabji' && r.is_active !== false),
-    [batchRecipes],
+    () => computePrepMetrics(activeCookingCustomers, isChickenDay),
+    [activeCookingCustomers, isChickenDay],
   );
 
   const selectedDalRecipe = useMemo(
@@ -1396,56 +1622,143 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   return (
     <div className="flex flex-col h-screen bg-[#F9FBFC] overflow-hidden font-sans text-[#292D32] print:h-auto print:overflow-visible print:bg-white">
 
-      {/* HEADER SECTION */}
-      <div className="bg-white border-b border-[#EEEEEE] shrink-0 print:hidden">
-        <div className="px-8 py-5 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-[22px] font-bold text-[#11142D]">Kitchen Prep and Packaging</h1>
-            <span className="px-3 py-1 rounded-md text-[11px] font-black bg-gray-100 text-gray-700 border border-gray-200 uppercase tracking-wider">
-              🚚 {metrics.totalMeals} deliveries
-            </span>
-            <span className="text-base text-gray-500 font-semibold border-l border-gray-200 pl-3">
-              For Delivery: {formattedTargetDate}
-            </span>
-            {isPreppingTomorrow && (
-              <span className="text-xs bg-indigo-50 text-indigo-700 font-medium px-2 py-0.5 rounded-full">
-                🌙 Prepping for Tomorrow
+      {/* UNIFIED SINGLE-ROW HEADER */}
+      <div className="px-6 py-2.5 bg-white border-b border-[#EEEEEE] flex items-center justify-between gap-4 shrink-0 whitespace-nowrap print:hidden">
+        {/* Left: Title + Operational Metrics Group */}
+        <div className="flex items-center gap-3 shrink-0">
+          <h1 className="text-[17px] font-black text-[#11142D] tracking-tight">
+            Kitchen Prep &amp; Packaging
+          </h1>
+
+          <div className="h-5 w-px bg-gray-200 hidden sm:block" />
+
+          {/* Production Counts & Badges */}
+          <div className="flex items-center gap-2">
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs">
+              <span className="font-bold text-gray-900">{metrics.totalMeals} Orders</span>
+              <span className="text-gray-300">|</span>
+              <div className="flex items-center gap-1.5 font-semibold text-[11px]">
+                <span className="text-emerald-700">
+                  {activeCustomers.filter(c => !c.isSkipped && !c.meal_type?.toLowerCase().includes('non')).length} Veg
+                </span>
+                <span className="text-gray-300">·</span>
+                <span className="text-rose-700">
+                  {activeCustomers.filter(c => !c.isSkipped && c.meal_type?.toLowerCase().includes('non')).length} Non-Veg
+                </span>
+              </div>
+            </div>
+
+            {activeClosure ? (
+              <span className="px-2 py-1 rounded-lg text-[11px] font-bold uppercase bg-amber-50 text-amber-800 border border-amber-200">
+                Closed
+              </span>
+            ) : (
+              <span
+                className={`px-2 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wide border ${isChickenDay
+                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                  : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  }`}
+              >
+                {isChickenDay ? 'NV Day' : 'Veg Day'}
               </span>
             )}
           </div>
-          <p className="text-[13px] text-gray-500 mt-1">Real-time production metrics for line chefs.</p>
-          <div className="flex flex-wrap items-center space-x-4 gap-2">
-            <span className={`px-3 py-1 rounded-md text-[11px] font-black tracking-wider uppercase border shadow-sm ${isChickenDay
-                ? 'bg-red-600 text-white border-red-700 animate-pulse'
-                : 'bg-green-600 text-white border-green-700'
-              }`}>
-              {isChickenDay ? '🍗 Non-Veg Day' : '🥬 Veg Day'}
-            </span>
+        </div>
 
-            <div className="flex flex-wrap bg-[#F4F4FE] p-1 rounded-lg border border-[#EFEEFC] gap-2">
-              {DAYS_OF_WEEK.map(day => (
-                <button
-                  key={day}
-                  onClick={() => goToDay(day)}
-                  className={`px-4 py-1.5 text-[12px] font-bold rounded-md transition-all ${activeDay === day
-                      ? 'bg-[#5D5FEF] text-white shadow-sm'
-                      : 'text-[#7A7C87] hover:text-[#5D5FEF] hover:bg-white/50'
-                    }`}
-                >
-                  {day.substring(0, 3)}
-                </button>
-              ))}
+        {/* Center: Target Prep Date Context */}
+        <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-gray-50/70 border border-gray-200/80 rounded-lg text-xs font-semibold text-gray-500">
+          <span>Prep target:</span>
+          <strong className="text-gray-900">{formattedTargetDate}</strong>
+          {isPreppingToday ? (
+            <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+              Today
+            </span>
+          ) : isPreppingTomorrow ? (
+            <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100">
+              Tomorrow
+            </span>
+          ) : null}
+        </div>
+
+        {/* Right: Consolidated Date Navigation Strip + Print */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs">
+            {/* Prev Week Button */}
+            <button
+              type="button"
+              onClick={() => changeWeek('prev')}
+              title="Previous Week"
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors"
+            >
+              ‹
+            </button>
+
+            {/* 7-Day Day Selector Strip */}
+            <div className="flex items-center gap-0.5 px-1">
+              {weekDays.map((item) => {
+                const isSelected = selectedDateKey === item.dateKey;
+                const isClosed = closuresMap.has(item.dateKey);
+                const isWeekend = item.short === 'Sat' || item.short === 'Sun';
+
+                return (
+                  <button
+                    key={item.dateKey}
+                    type="button"
+                    onClick={() => setSelectedDate(item.dateObj)}
+                    title={isClosed ? `Kitchen Closed: ${closuresMap.get(item.dateKey)}` : undefined}
+                    className={`px-2 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer relative flex items-center gap-0.5
+                      ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
+                      ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs ring-2 ring-amber-300' : ''}
+                      ${!isSelected && isClosed ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200' : ''}
+                      ${!isSelected && !isClosed && isWeekend ? 'text-gray-400 opacity-40 hover:opacity-80 hover:bg-white' : ''}
+                      ${!isSelected && !isClosed && !isWeekend ? 'text-gray-600 hover:bg-white hover:text-gray-900' : ''}
+                    `}
+                  >
+                    <span className={isClosed && !isSelected ? 'line-through decoration-amber-600' : ''}>
+                      {item.short}
+                    </span>
+                    <span className="opacity-80 font-normal text-[10.5px]">{item.dayNum}</span>
+                    {isClosed && (
+                      <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : 'bg-amber-600'}`} />
+                    )}
+                  </button>
+                );
+              })}
             </div>
-            <input
-              type="date"
-              value={selectedDateKey}
-              onChange={(e) => {
-                const picked = new Date(e.target.value + 'T12:00:00');
+
+            {/* Next Week Button */}
+            <button
+              type="button"
+              onClick={() => changeWeek('next')}
+              title="Next Week"
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors"
+            >
+              ›
+            </button>
+
+            {/* Inline Calendar Popover Divider */}
+            <div className="h-4 w-px bg-gray-200 mx-1" />
+
+            {/* Mini Calendar Picker */}
+            <PrepDatePicker
+              selectedDate={selectedDateKey}
+              onChange={(newDateStr) => {
+                const picked = new Date(`${newDateStr}T12:00:00`);
                 if (!isNaN(picked.getTime())) setSelectedDate(picked);
               }}
-              className="px-2 py-1.5 text-[12px] font-semibold bg-white border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-gray-700 cursor-pointer"
+              closures={Array.from(closuresMap.keys())}
             />
           </div>
+
+          {/* Print Manifest CTA */}
+          <button
+            type="button"
+            onClick={() => window.print()}
+            className="h-9 inline-flex items-center gap-1.5 px-3.5 border border-gray-200 rounded-xl shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Print</span>
+          </button>
         </div>
       </div>
 
@@ -1467,6 +1780,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           </div>
 
           <div className="grid grid-cols-4 divide-x divide-black border-b border-black">
+            {/* 1. Sabji */}
             <div className="p-2 min-w-0">
               <span className="block text-[10px] font-black uppercase tracking-wide text-black">
                 Sabji · {printSabjiName}
@@ -1474,17 +1788,19 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               <span className="mt-0.5 block text-2xl font-black text-black">
                 {metrics.sabjiOz} oz
               </span>
-              <p className="text-[11px] font-bold leading-snug text-black">
-                Regular: {metrics.sabjiPackRG}, Large: {metrics.sabjiPackLG}
-              </p>
-              {/* Change text-[10px] leading-snug to text-[9px] leading-tight */}
-<div className="mt-1 space-y-0.5 text-[9px] font-medium leading-tight text-black">
-  {sabjiBreakdownLines.map((line, index) => (
-    <div key={index} className="truncate">• {line}</div>
-  ))}
-</div>
+              <div className="mt-0.5 inline-flex items-center gap-1.5 text-[13px] font-black text-black leading-tight border border-black/30 bg-gray-100/80 px-1.5 py-0.5 rounded">
+                <span>Rg: <strong>{metrics.sabjiPackRG}</strong></span>
+                <span>·</span>
+                <span>Lg: <strong>{metrics.sabjiPackLG}</strong></span>
+              </div>
+              <div className="mt-1 space-y-0.5 text-[9px] font-medium leading-tight text-black">
+                {sabjiBreakdownLines.map((line, index) => (
+                  <div key={index} className="truncate">• {line}</div>
+                ))}
+              </div>
             </div>
 
+            {/* 2. Daal */}
             <div className="p-2 min-w-0">
               <span className="block text-[10px] font-black uppercase tracking-wide text-black">
                 Daal · {printDalName}
@@ -1492,36 +1808,42 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               <span className="mt-0.5 block text-2xl font-black text-black">
                 {metrics.dalOz} oz
               </span>
-              <p className="text-[11px] font-bold leading-snug text-black">
-                Regular: {metrics.dalPackRG}, Large: {metrics.dalPackLG}
-              </p>
+              <div className="mt-0.5 inline-flex items-center gap-1.5 text-[13px] font-black text-black leading-tight border border-black/30 bg-gray-100/80 px-1.5 py-0.5 rounded">
+                <span>Rg: <strong>{metrics.dalPackRG}</strong></span>
+                <span>·</span>
+                <span>Lg: <strong>{metrics.dalPackLG}</strong></span>
+              </div>
               <div className="mt-1 space-y-0.5 text-[9px] font-medium leading-tight text-black">
-  {dalBreakdownLines.map((line, index) => (
-    <div key={index} className="truncate">• {line}</div>
-  ))}
-</div>
+                {dalBreakdownLines.map((line, index) => (
+                  <div key={index} className="truncate">• {line}</div>
+                ))}
+              </div>
             </div>
 
+            {/* 3. Chicken */}
             <div className="p-2 min-w-0">
               <span className="block text-[10px] font-black uppercase tracking-wide text-black">
                 Chicken · {printChickenName || 'Veg Day'}
               </span>
               {isChickenDay ? (
                 <>
-                  <span className="mt-0.5 block text-xl font-bold text-black">
+                  <span className="mt-0.5 block text-xl font-black text-black">
                     {metrics.chickenLegs} Legs
                   </span>
-                  <p className="text-[11px] font-bold leading-snug text-black">
-                    Regular: {chickenStationPackRG}, Large: {chickenStationPackLG}
-                  </p>
+                  <div className="mt-0.5 inline-flex items-center gap-1.5 text-[13px] font-black text-black leading-tight border border-black/30 bg-gray-100/80 px-1.5 py-0.5 rounded">
+                    <span>Rg: <strong>{metrics.chickenPackRG + metrics.gravyPackRG}</strong></span>
+                    <span>·</span>
+                    <span>Lg: <strong>{metrics.chickenPackLG + metrics.gravyPackLG}</strong></span>
+                  </div>
                 </>
               ) : (
-                <p className="mt-1 text-[10.5px] font-bold leading-snug text-black">
+                <p className="mt-1 text-[11px] font-bold leading-snug text-black">
                   Veg Day — chicken station idle.
                 </p>
               )}
             </div>
 
+            {/* 4. Breads & Sides */}
             <div className="p-2 min-w-0">
               <span className="block text-[10px] font-black uppercase tracking-wide text-black">
                 Breads &amp; Sides
@@ -1530,13 +1852,25 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 {metrics.totalRoti} Roti
                 {metrics.totalPronthi > 0 ? ` + ${metrics.totalPronthi} Pronthi` : ''}
               </span>
-              <p className="text-[11px] font-bold leading-snug text-black">
-                Rice — Regular: {metrics.rice.rg}, Large: {metrics.rice.lg}
-                {metrics.rice.xl > 0 ? `, XL: ${metrics.rice.xl}` : ''}
-              </p>
-              <p className="mt-1 text-[11px] font-bold leading-snug text-black break-words">
-                {printSidesLabel}
-              </p>
+              <div className="mt-0.5 flex flex-col gap-0.5">
+                <div className="inline-flex items-center gap-1.5 text-[12.5px] font-black text-black leading-tight">
+                  <span>Rice:</span>
+                  <span className="border border-black/30 bg-gray-100/80 px-1 py-0.2 rounded text-[12px]">
+                    Rg <strong>{metrics.rice.rg}</strong>
+                  </span>
+                  <span className="border border-black/30 bg-gray-100/80 px-1 py-0.2 rounded text-[12px]">
+                    Lg <strong>{metrics.rice.lg}</strong>
+                  </span>
+                  {metrics.rice.xl > 0 && (
+                    <span className="border border-black/30 bg-gray-100/80 px-1 py-0.2 rounded text-[12px]">
+                      XL <strong>{metrics.rice.xl}</strong>
+                    </span>
+                  )}
+                </div>
+                <div className="text-[12px] font-black text-black leading-tight">
+                  {printSidesLabel}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1557,7 +1891,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               </tr>
             </thead>
             <tbody>
-              {manifestCustomers.filter(c => !c.isSkipped).length === 0 ? (
+              {manifestCustomers.filter(c => !c.isSkipped && !c.isExpiredRenewalPending).length === 0 ? (
                 <tr>
                   <td colSpan={8} className="text-center">
                     No active kitchen deliveries routed for {activeDay}.
@@ -1565,7 +1899,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 </tr>
               ) : (
                 manifestCustomers
-                  .filter(c => !c.isSkipped)
+                  .filter(c => !c.isSkipped && !c.isExpiredRenewalPending)
                   .map(customer => {
                     const override = dailyOverrides[customer.id];
                     const baseRow = baseCustomerById.get(customer.id);
@@ -1576,7 +1910,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     const hasTodayOverride =
                       todayDeviation !== null && todayDeviation !== 'one-time change';
                     const todayOverrideLabel = hasTodayOverride
-                      ? `⚡ Today: ${todayDeviation}`
+                      ? `Today: ${todayDeviation}`
                       : null;
                     const customRule = hasTodayOverride
                       ? null
@@ -1622,7 +1956,39 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       filteredRawNotes.length > 0
                         ? [...new Set(filteredRawNotes.map(v => v.trim()))].join(' · ')
                         : null;
+                    const normalizedSelected = selectedDateKey.slice(0, 10);
+
+                    const explicitEnd = customer.cycle_end_date
+                      ? customer.cycle_end_date.slice(0, 10)
+                      : null;
+                    const isExplicitEnd = explicitEnd === normalizedSelected;
+
+                    let totalMeals = typeof customer.total_tiffin_credits === 'number' && customer.total_tiffin_credits > 0
+                      ? customer.total_tiffin_credits
+                      : typeof customer.total_credits === 'number' && customer.total_credits > 0
+                        ? customer.total_credits
+                        : 0;
+
+                    if (!totalMeals) {
+                      const combinedInfo = `${customer.plan_tier || ''} ${customer.notes || ''} ${customer.delivery_schedule || ''}`.toLowerCase();
+                      if (combinedInfo.includes('month') || combinedInfo.includes('20')) {
+                        totalMeals = 20;
+                      } else if (combinedInfo.includes('trial') || combinedInfo.includes('1')) {
+                        totalMeals = 1;
+                      } else {
+                        totalMeals = 5;
+                      }
+                    }
+
+                    const computedEnd = calculateTargetLastDay(
+                      customer.start_date,
+                      totalMeals,
+                    );
+                    const isComputedEnd = computedEnd === normalizedSelected;
+
+                    const isLastDay = isExplicitEnd || isComputedEnd;
                     const alertText = buildAlertSummary({
+                      isLastDay,
                       customRule,
                       todayOverride: todayOverrideLabel,
                       notes: noteText,
@@ -1662,7 +2028,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                         <td className="text-center font-bold">{rotiText}</td>
                         <td className="text-center font-bold">{riceText}</td>
                         <td className="text-left font-black uppercase break-words">
-                          {alertText ?? '—'}
+                          {alertText
+                            ? alertText.replace(/[\u{1F300}-\u{1FAFF}|\u{2600}-\u{27BF}]/gu, '').replace(/\s{2,}/g, ' ').trim()
+                            : '—'}
                         </td>
                       </tr>
                     );
@@ -1672,11 +2040,34 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           </table>
         </div>
 
+        {/* KITCHEN CLOSURE / HOLIDAY BANNER */}
+        {activeClosure && (
+          <div className="flex items-center justify-between gap-3 px-5 py-3.5 bg-gradient-to-r from-amber-500 to-amber-600 border border-amber-600 rounded-xl text-white shadow-sm print:hidden">
+            <div className="flex items-center gap-3">
+              <CalendarOff className="w-6 h-6" />
+              <div>
+                <h4 className="text-sm font-black tracking-wide uppercase">
+                  Kitchen Closed — {activeClosure.reason || 'Holiday'}
+                </h4>
+                <p className="text-xs text-amber-100 font-medium">
+                  Deliveries are paused for this date. Affected customers have been compensated with replacement credits.
+                </p>
+              </div>
+            </div>
+            <Link
+              href="/admin/closures"
+              className="shrink-0 px-3.5 py-1.5 rounded-lg bg-white hover:bg-amber-50 text-amber-900 font-bold text-xs shadow-xs transition-colors"
+            >
+              Manage in Kitchen Holidays →
+            </Link>
+          </div>
+        )}
+
         {/* Degraded-persistence banner */}
         {persistenceWarning && (
           <div className="flex items-start justify-between gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[12.5px] font-semibold print:hidden">
             <div className="flex items-start gap-2 min-w-0 leading-snug">
-              <span aria-hidden="true">⚠️</span>
+              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
               <span>{persistenceWarning}</span>
             </div>
             <button
@@ -1690,247 +2081,290 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           </div>
         )}
 
-        {/* TODAY'S KITCHEN MENU + BATCH PREP CALCULATOR */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 print:hidden items-start">
-          <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4">
-            <div className="flex items-center justify-between gap-2 mb-3">
-              <div className="flex items-center gap-2.5">
-                <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
-                  🍽️ Today&apos;s Kitchen Menu
-                </span>
-                <a
-                  href="/admin/recipes"
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded transition-colors"
-                >
-                  ⚙️ Manage Recipes
-                </a>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] font-bold text-gray-400 whitespace-nowrap">
-                  {isMenuSelectionSaving ? '⏳ Saving...' : '✓ Saved'}
-                </span>
-                <span className="text-[11px] font-semibold text-gray-400">
-                  {formattedTargetDate}
+        {/* MENU SELECTOR & DUAL-COLUMN BATCH PREP CALCULATOR */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 print:hidden items-stretch">
+          {/* Left Column (Menu Selectors): 4 of 12 columns */}
+          <div className="lg:col-span-4 bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-gray-100">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
+                    Today&apos;s Menu
+                  </span>
+                  <a
+                    href="/admin/recipes"
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded transition-colors"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" /> Manage
+                  </a>
+                </div>
+                <span className="text-[10.5px] font-bold text-gray-400">
+                  {isMenuSelectionSaving ? '⏳ Saving...' : <span className="flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Saved</span>}
                 </span>
               </div>
+
+              <div className="flex flex-col gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10.5px] font-bold text-amber-700 uppercase tracking-wider">
+                    Today&apos;s Dal
+                  </span>
+                  <select
+                    value={selectedDalId}
+                    onChange={e => handleSelectDal(e.target.value)}
+                    className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-9"
+                  >
+                    <option value="">— Not selected —</option>
+                    {activeDalRecipes.map(r => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10.5px] font-bold text-green-700 uppercase tracking-wider">
+                    Today&apos;s Sabji
+                  </span>
+                  <select
+                    value={selectedSabjiId}
+                    onChange={e => handleSelectSabji(e.target.value)}
+                    className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-9"
+                  >
+                    <option value="">— Not selected —</option>
+                    {activeSabjiRecipes.map(r => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10.5px] font-bold text-rose-700 uppercase tracking-wider">
+                    Today&apos;s Non-Veg
+                  </span>
+                  <select
+                    value={nonVeg}
+                    onChange={e => setNonVeg(e.target.value)}
+                    disabled={isVegDay || isMenuLoading}
+                    className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-9 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="Chicken Curry">Chicken Curry</option>
+                    <option value="">None (Veg Day)</option>
+                  </select>
+                </label>
+              </div>
+
+              {menuSelectionError && (
+                <p className="mt-3 text-[11.5px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500" /> {menuSelectionError}
+                </p>
+              )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <label className="flex flex-col gap-1">
-                <span className="text-[10.5px] font-bold text-amber-700 uppercase tracking-wider">
-                  Today&apos;s Dal
-                </span>
-                <select
-                  value={selectedDalId}
-                  onChange={e => handleSelectDal(e.target.value)}
-                  className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-10"
-                >
-                  <option value="">— Not selected —</option>
-                  {activeDalRecipes.map(r => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="flex flex-col gap-1">
-                <span className="text-[10.5px] font-bold text-green-700 uppercase tracking-wider">
-                  Today&apos;s Sabji
-                </span>
-                <select
-                  value={selectedSabjiId}
-                  onChange={e => handleSelectSabji(e.target.value)}
-                  className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-10"
-                >
-                  <option value="">— Not selected —</option>
-                  {activeSabjiRecipes.map(r => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <div className="pt-3 mt-3 border-t border-gray-100 text-[11px] font-medium text-gray-400">
+              Selections dynamically scale recipe batches on the right.
             </div>
-
-            {menuSelectionError && (
-              <p className="mt-3 text-[11.5px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg">
-                ⚠️ {menuSelectionError}
-              </p>
-            )}
           </div>
 
-          <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4">
-            <div className="flex items-center justify-between gap-2 mb-3">
-              <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
-                ⚖️ Batch Prep Calculator
-              </span>
-              <span className="text-[11px] font-semibold text-gray-400">
-                {metrics.dalPackRG + metrics.dalPackLG + metrics.sabjiPackRG + metrics.sabjiPackLG} containers
-              </span>
-            </div>
-            {!selectedDalRecipe && !selectedSabjiRecipe ? (
-              <p className="text-[12px] text-gray-400 py-6 text-center">
-                Select a Dal or Sabji above to see the scaled raw-ingredient weights.
-              </p>
-            ) : (
-              <div className="space-y-4">
-                {selectedDalRecipe && (
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-1.5">
-                      <span className="text-[12px] font-bold text-amber-700">
-                        Dal · {selectedDalRecipe.name}
-                      </span>
-                      <span className="text-[10.5px] font-bold text-gray-400">
-                        {metrics.dalPackRG} × 8 oz (RG) · {metrics.dalPackLG} × 12 oz (LG)
-                      </span>
-                    </div>
-                    {dalBatchRows.length === 0 ? (
-                      <p className="text-[11.5px] text-gray-400 italic">
-                        No ingredients defined for this recipe.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1">
-                        {dalBatchRows.map(row => {
-                          const countHint = getIngredientCountHint(row.name, row.totalOz);
-                          return (
-                            <li
-                              key={row.id}
-                              className="flex items-baseline justify-between gap-3 text-[12px] border-b border-gray-50 pb-1"
-                            >
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span className="font-semibold text-gray-700 truncate">{row.name}:</span>
-                                {countHint && (
-                                  <span className="text-[10.5px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded shrink-0">
-                                    {countHint}
-                                  </span>
-                                )}
-                              </div>
-                              <span className="shrink-0 font-mono font-bold text-gray-900">
-                                {formatOz(row.totalOz)}  ({formatWeight(row.totalOz)})
-                              </span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </div>
-                )}
-
-                {selectedSabjiRecipe && (
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-1.5">
-                      <span className="text-[12px] font-bold text-green-700">
-                        Sabji · {selectedSabjiRecipe.name}
-                      </span>
-                      <span className="text-[10.5px] font-bold text-gray-400">
-                        {metrics.sabjiPackRG} × 8 oz (RG) · {metrics.sabjiPackLG} × 12 oz (LG)
-                      </span>
-                    </div>
-                    {sabjiBatchRows.length === 0 ? (
-                      <p className="text-[11.5px] text-gray-400 italic">
-                        No ingredients defined for this recipe.
-                      </p>
-                    ) : (
-                      <ul className="space-y-1">
-                        {sabjiBatchRows.map(row => {
-                          const countHint = getIngredientCountHint(row.name, row.totalOz);
-                          return (
-                            <li
-                              key={row.id}
-                              className="flex items-baseline justify-between gap-3 text-[12px] border-b border-gray-50 pb-1"
-                            >
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span className="font-semibold text-gray-700 truncate">{row.name}:</span>
-                                {countHint && (
-                                  <span className="text-[10.5px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded shrink-0">
-                                    {countHint}
-                                  </span>
-                                )}
-                              </div>
-                              <span className="shrink-0 font-mono font-bold text-gray-900">
-                                {formatOz(row.totalOz)}  ({formatWeight(row.totalOz)})
-                              </span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </div>
-                )}
+          {/* Right Column (Batch Prep Calculator with 2 inner columns): 8 of 12 columns */}
+          <div className="lg:col-span-8 bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-gray-100">
+                <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
+                  Raw Ingredient
+                </span>
+                <span className="text-[11px] font-semibold text-gray-500 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded-md">
+                  {metrics.dalPackRG + metrics.dalPackLG + metrics.sabjiPackRG + metrics.sabjiPackLG} containers
+                </span>
               </div>
-            )}
+
+              {!selectedDalRecipe && !selectedSabjiRecipe ? (
+                <p className="text-[12px] text-gray-400 py-10 text-center">
+                  Select a Dal or Sabji on the left to view scaled raw-ingredient weights.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+                  {/* Left inner column: Dal */}
+                  <div className="bg-amber-50/20 border border-amber-100 rounded-xl p-3 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2 pb-1.5 border-b border-amber-100">
+                        <span className="text-[12px] font-bold text-amber-800 truncate">
+                          Dal · {selectedDalRecipe ? selectedDalRecipe.name.replace(/daal/gi, 'Dal') : 'Not Selected'}
+                        </span>
+                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded shrink-0">
+                          {metrics.dalPackRG} RG · {metrics.dalPackLG} LG
+                        </span>
+                      </div>
+                      {!selectedDalRecipe ? (
+                        <p className="text-xs text-gray-400 italic py-2">Select a Dal to view.</p>
+                      ) : dalBatchRows.length === 0 ? (
+                        <p className="text-xs text-gray-400 italic py-2">No ingredients defined.</p>
+                      ) : (
+                        <ul className="space-y-1">
+                          {dalBatchRows.map(row => (
+                            <li
+                              key={row.id}
+                              className="flex items-baseline justify-between gap-2 text-[11.5px] border-b border-gray-50 pb-0.5"
+                            >
+                              <span className="font-semibold text-gray-700 truncate min-w-0">
+                                {row.name.replace(/daal/gi, 'Dal')}:
+                              </span>
+                              <span className="shrink-0 font-mono font-bold text-gray-900 text-[11px]">
+                                {formatOz(row.totalOz)} ({formatWeight(row.totalOz)})
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right inner column: Sabji */}
+                  <div className="bg-emerald-50/20 border border-emerald-100 rounded-xl p-3 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2 pb-1.5 border-b border-emerald-100">
+                        <span className="text-[12px] font-bold text-emerald-800 truncate">
+                          Sabji · {selectedSabjiRecipe ? selectedSabjiRecipe.name : 'Not Selected'}
+                        </span>
+                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded shrink-0">
+                          {metrics.sabjiPackRG} RG · {metrics.sabjiPackLG} LG
+                        </span>
+                      </div>
+                      {!selectedSabjiRecipe ? (
+                        <p className="text-xs text-gray-400 italic py-2">Select a Sabji to view.</p>
+                      ) : sabjiBatchRows.length === 0 ? (
+                        <p className="text-xs text-gray-400 italic py-2">No ingredients defined.</p>
+                      ) : (
+                        <ul className="space-y-1">
+                          {sabjiBatchRows.map(row => (
+                            <li
+                              key={row.id}
+                              className="flex items-baseline justify-between gap-2 text-[11.5px] border-b border-gray-50 pb-0.5"
+                            >
+                              <span className="font-semibold text-gray-700 truncate min-w-0">
+                                {row.name}:
+                              </span>
+                              <span className="shrink-0 font-mono font-bold text-gray-900 text-[11px]">
+                                {formatOz(row.totalOz)} ({formatWeight(row.totalOz)})
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* 3-STATION GRID */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 print:hidden items-stretch">
 
-          <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-3 flex flex-col">
-            <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide mb-2">🍞 Breads &amp; Sides</span>
+          {/* Card 1: Breads & Sides */}
+          <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-3 flex flex-col justify-between">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="inline-flex items-center gap-1.5 text-gray-400">
+                <Wheat className="w-3.5 h-3.5 shrink-0 text-amber-600" strokeWidth={2} />
+                <span className="text-[11.5px] font-bold uppercase tracking-wide">
+                  Breads &amp; Sides
+                </span>
+              </div>
+              <span className="text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-100 px-1.5 py-0.5 rounded whitespace-nowrap">
+                {metrics.totalRiceContainers} Rice Boxes
+              </span>
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center justify-between gap-1 mb-1.5">
-                  <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Breads</span>
-                  <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded whitespace-nowrap">{metrics.totalRoti + metrics.totalPronthi} TOTAL</span>
+              {/* Breads Metric */}
+              <div className="min-w-0">
+                <span className="text-xs font-bold text-gray-700 uppercase tracking-wider truncate block">
+                  ROTI
+                </span>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-black text-gray-900">
+                    {metrics.totalRoti}
+                  </span>
+                  <span className="text-xs font-bold text-gray-500 uppercase">Roti</span>
+                  {metrics.totalPronthi > 0 && (
+                    <span className="text-xs font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded ml-1">
+                      +{metrics.totalPronthi}P
+                    </span>
+                  )}
                 </div>
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-gray-500 font-medium">Roti</span>
+
+                <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1 space-y-1">
+                  <div className="flex justify-between">
+                    <span className="font-semibold text-gray-600">Roti</span>
                     <span className="font-bold text-gray-900">{metrics.totalRoti}</span>
                   </div>
-                  {metrics.totalPronthi > 0 && (
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="bg-amber-400 text-amber-950 font-bold px-1.5 py-0.5 rounded text-[10px]">Pronthi</span>
-                      <span className="font-bold text-gray-900">{metrics.totalPronthi}</span>
+                  {metrics.totalPronthi > 0 ? (
+                    <div className="flex justify-between">
+                      <span className="font-semibold text-amber-900">Pronthi</span>
+                      <span className="font-bold text-amber-900">{metrics.totalPronthi}</span>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between text-gray-400">
+                      <span>Pronthi</span>
+                      <span>0</span>
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center justify-between gap-1 mb-1.5">
-                  <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Rice</span>
-                  <span className="text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-100 px-1.5 py-0.5 rounded whitespace-nowrap">{metrics.totalRiceContainers} Boxes</span>
+              {/* Rice Metric */}
+              <div className="min-w-0">
+                <span className="text-xs font-bold text-blue-600 uppercase tracking-wider truncate block">
+                  RICE
+                </span>
+                <div className="text-2xl font-black text-blue-600">
+                  {metrics.totalRiceContainers} <span className="text-xs font-bold text-blue-500 uppercase font-sans">Boxes</span>
                 </div>
-                <div className="space-y-1">
+
+                <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1 space-y-1">
+                  <div className="flex justify-between">
+                    <span className="font-semibold text-gray-600">LG Box</span>
+                    <span className="font-bold text-gray-900">{metrics.rice.lg}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-semibold text-gray-600">RG Box</span>
+                    <span className="font-bold text-gray-900">{metrics.rice.rg}</span>
+                  </div>
                   {metrics.rice.xl > 0 && (
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-500 font-medium">XL Box</span>
+                    <div className="flex justify-between">
+                      <span className="font-semibold text-gray-600">XL Box</span>
                       <span className="font-bold text-gray-900">{metrics.rice.xl}</span>
                     </div>
                   )}
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-gray-500 font-medium">LG Box</span>
-                    <span className="font-bold text-gray-900">{metrics.rice.lg}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-gray-500 font-medium">RG Box</span>
-                    <span className="font-bold text-gray-900">{metrics.rice.rg}</span>
-                  </div>
                 </div>
               </div>
             </div>
 
             <div className="flex items-center gap-2.5 pt-2 mt-2 border-t border-gray-100">
-              <span className="text-xs font-semibold text-emerald-700">🥗 {metrics.saladCount} Salad</span>
-              <span className="text-xs font-semibold text-amber-800">🍮 {metrics.dessertCount} Dessert</span>
+              <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                {metrics.saladCount} Salad
+              </span>
+              <span className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">
+                {metrics.dessertCount} Dessert
+              </span>
             </div>
           </div>
 
-          {/* Card 2: Dal & Sabji (green top accent) */}
+          {/* Card 2: Dal & Sabji */}
           <div className="bg-white rounded-xl shadow-sm p-3 flex flex-col border-x border-b border-[#EEEEEE] border-t-4 border-t-green-500">
-            {/* Header: station title only */}
             <div className="flex items-center justify-between gap-2 mb-2">
-              <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
-                🍲 Dal &amp; Sabji
-              </span>
+              <div className="inline-flex items-center gap-1.5 text-gray-400">
+                <Soup className="w-3.5 h-3.5 shrink-0 text-emerald-600" strokeWidth={2} />
+                <span className="text-[11.5px] font-bold uppercase tracking-wide">
+                  Dal &amp; Sabji
+                </span>
+              </div>
             </div>
 
-            {/* Strict 2-column grid (SABJI | DAL) */}
             <div className="grid grid-cols-2 gap-3">
-              {/* Left column: SABJI */}
               <div className="min-w-0">
                 <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider truncate block">
                   {veg2 ? `SABJI · ${veg2}` : 'SABJI'}
@@ -1950,7 +2384,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 </div>
               </div>
 
-              {/* Right column: DAL */}
               <div className="min-w-0">
                 <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider truncate block">
                   {veg1 ? `DAL · ${veg1}` : 'DAL'}
@@ -1972,46 +2405,62 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             </div>
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm p-3 flex flex-col border-x border-b border-[#EEEEEE] border-t-4 border-t-red-500">
+          {/* Card 3: Non-Veg */}
+          <div className="bg-white rounded-xl shadow-sm p-3 flex flex-col justify-between border-x border-b border-[#EEEEEE] border-t-4 border-t-red-500">
             <div className="flex items-center justify-between gap-2 mb-2">
-              <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">🍗 Non-Veg</span>
-              <select
-                value={nonVeg}
-                onChange={(e) => setNonVeg(e.target.value)}
-                disabled={isMenuLoading}
-                className="text-xs rounded-md border border-gray-200 py-1 px-2 bg-gray-50 focus:bg-white outline-none focus:border-red-400 disabled:opacity-40 disabled:cursor-wait"
-              >
-                <option value="Chicken Curry">Chicken Curry</option>
-                <option value="">None (Veg Day)</option>
-              </select>
+              <div className="inline-flex items-center gap-1.5 text-gray-400">
+                <Flame className="w-3.5 h-3.5 shrink-0 text-rose-600" strokeWidth={2} />
+                <span className="text-[11.5px] font-bold uppercase tracking-wide">
+                  Non-Veg Station
+                </span>
+              </div>
+              {isChickenDay && metrics.chickenOz > 0 && (
+                <span className="text-[10.5px] font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded">
+                  {nonVeg || 'Chicken Curry'}
+                </span>
+              )}
             </div>
+
             {isVegDay || metrics.chickenOz === 0 ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-center border-2 border-gray-200 rounded-lg py-6 px-3">
-                <span className="text-[12px] font-bold text-gray-400">🌿 VEG ONLY DAY - Chicken Station Idle</span>
+              <div className="flex-1 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-lg py-6 px-3">
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                  <Leaf className="w-3.5 h-3.5" /> Veg Day — Chicken Station Idle
+                </span>
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3 items-center">
-                <div className="min-w-0">
-                  <span className="block text-xs font-bold text-red-600 uppercase tracking-wider mb-1">CHICKEN CURRY</span>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-2xl font-black text-red-600">{metrics.chickenOz} oz</span>
-                    {metrics.chickenLegs > 0 && (
-                      <span className="text-sm font-semibold text-red-500 font-sans">({metrics.chickenLegs} legs)</span>
-                    )}
-                  </div>
+              <div>
+                <span className="text-xs font-bold text-red-600 uppercase tracking-wider truncate block">
+                  {nonVeg ? `CHICKEN · ${nonVeg}` : 'CHICKEN CURRY'}
+                </span>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-2xl font-black text-red-600">
+                    {metrics.chickenOz} oz
+                  </span>
+                  {metrics.chickenLegs > 0 && (
+                    <span className="text-xs font-bold text-red-500 font-sans">
+                      ({metrics.chickenLegs} legs)
+                    </span>
+                  )}
                 </div>
-                <div className="bg-gray-50/80 rounded-lg p-2 border border-gray-100 text-xs space-y-1">
-                  <div className="flex justify-between items-center text-gray-600 font-medium">
-                    <span>LG (12 oz)</span>
+
+                <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1 space-y-1">
+                  <div className="flex justify-between">
+                    <span className="font-semibold text-gray-600">LG (12 oz)</span>
                     <span className="font-bold text-gray-900">{metrics.chickenPackLG}</span>
                   </div>
-                  <div className="flex justify-between items-center text-gray-600 font-medium">
-                    <span>RG (8 oz)</span>
+                  <div className="flex justify-between">
+                    <span className="font-semibold text-gray-600">RG (8 oz)</span>
                     <span className="font-bold text-gray-900">{metrics.chickenPackRG}</span>
                   </div>
                 </div>
               </div>
             )}
+
+            <div className="pt-2 mt-2 border-t border-gray-100 text-[11px] font-semibold text-gray-500">
+              {isChickenDay
+                ? `${metrics.chickenPackLG + metrics.chickenPackRG} total NV orders`
+                : 'No non-veg deliveries today'}
+            </div>
           </div>
 
         </div>
@@ -2020,9 +2469,15 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         <div className="bg-white border border-[#EEEEEE] rounded-xl shadow-sm overflow-hidden w-full print:hidden">
           <div className="px-5 py-3 border-b border-[#F5F5F5] bg-[#FCFCFD] flex justify-between items-center print:hidden">
             <h3 className="text-[12px] font-bold text-[#11142D] uppercase tracking-wide">Kitchen Packing Manifest</h3>
-            <button onClick={() => window.print()} className="text-[11.5px] font-bold text-[#5D5FEF] bg-[#F4F4FE] border border-[#EFEEFC] px-3 py-1 rounded-md hover:bg-[#5D5FEF] hover:text-white transition-all">
-              🖨️ Print Checklist
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsDispatchModalOpen(true)}
+                className="inline-flex items-center gap-1 text-[11.5px] font-bold text-white bg-[#D97746] hover:bg-[#c46535] px-3 py-1.5 rounded-md shadow-sm transition-all cursor-pointer"
+              >
+                <MapPin className="w-4 h-4" /> Dispatch Driver
+              </button>
+            </div>
           </div>
           <div className="w-full overflow-x-auto -mx-2 sm:mx-0 px-2 sm:px-0">
             <table className="min-w-[650px] w-full text-left text-[13px]">
@@ -2039,266 +2494,391 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#F6F6F6] print:divide-slate-300">
-                {activeCustomers.length === 0 ? (
+                {activeCustomers.length === 0 && manifestCustomers.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="py-8 text-center text-gray-400 font-medium print:py-1 print:px-1.5 print:text-[11px]">No active kitchen deliveries routed for {activeDay}.</td>
                   </tr>
                 ) : (
-                  manifestCustomers.map(customer => (
-                    <tr
-                      key={customer.id}
-                      onClick={() => openQuickEdit(customer)}
-                      className={`cursor-pointer hover:bg-gray-50/80 transition-colors h-11 break-inside-avoid print:bg-white print:cursor-default ${customer.isSkipped ? 'opacity-60 print:hidden' : ''
-                        }`}
-                      style={{ pageBreakInside: 'avoid' }}
-                    >
-                      <td className="hidden print:table-cell w-8 text-center align-middle print:py-1 print:px-1.5 print:text-[11px]">
-                        <div className="w-4 h-4 border border-black rounded-sm print:block hidden" />
-                      </td>
-                      <td className="pl-5 font-bold text-[#11142D] text-[13.5px] print:py-1 print:px-1.5 print:text-[11px]">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className={`truncate print:whitespace-normal print:overflow-visible ${customer.isSkipped ? 'opacity-50 line-through' : ''}`}>{customer.full_name}</span>
-                          {(() => {
-                            const scheduledDate = customer.scheduled_cancel_date;
-                            if (!scheduledDate) return null;
-                            if (scheduledDate === selectedDateKey) {
-                              return (
-                                <span
-                                  title={`Last tiffin day — service ${customer.scheduled_status === 'paused' ? 'pauses' : 'ends'} after today. Collect tiffin bags/boxes or add a goodbye note.`}
-                                  className="shrink-0 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded whitespace-nowrap"
-                                >
-                                  LAST DAY
-                                </span>
-                              );
-                            }
-                            const daysUntilEnd = daysBetweenKeys(selectedDateKey, scheduledDate);
-                            if (daysUntilEnd > 0 && daysUntilEnd <= 3) {
-                              return (
-                                <span className="shrink-0 text-[10px] text-amber-600 whitespace-nowrap">
-                                  Ends {formatShortDate(scheduledDate)}
-                                </span>
-                              );
-                            }
-                            return null;
-                          })()}
-                        </div>
-                      </td>
-                      <td
-                        className="text-xs text-gray-600 max-w-[200px] truncate print:table-cell print:max-w-none print:whitespace-normal print:overflow-visible print:py-1 print:px-1.5 print:text-[11px]"
-                        title={customer.delivery_address || ""}
+                  manifestCustomers.map(customer => {
+                    const normalizedSelected = selectedDateKey.slice(0, 10);
+                    const scheduledDate = customer.scheduled_cancel_date;
+                    const explicitEnd = customer.cycle_end_date?.slice(0, 10);
+                    const isExplicitEnd = explicitEnd === normalizedSelected || scheduledDate === selectedDateKey;
+
+                    let totalMeals = typeof customer.total_tiffin_credits === 'number' && customer.total_tiffin_credits > 0
+                      ? customer.total_tiffin_credits
+                      : typeof customer.total_credits === 'number' && customer.total_credits > 0
+                        ? customer.total_credits
+                        : 0;
+
+                    if (!totalMeals) {
+                      const combinedInfo = `${customer.plan_tier || ''} ${customer.notes || ''} ${customer.delivery_schedule || ''}`.toLowerCase();
+                      if (combinedInfo.includes('month') || combinedInfo.includes('20')) {
+                        totalMeals = 20;
+                      } else if (combinedInfo.includes('trial') || combinedInfo.includes('1')) {
+                        totalMeals = 1;
+                      } else {
+                        totalMeals = 5;
+                      }
+                    }
+
+                    const computedEnd = customer.start_date
+                      ? calculateTargetLastDay(customer.start_date, totalMeals)
+                      : null;
+                    const isComputedEnd = computedEnd === normalizedSelected;
+                    const isLastDay = isExplicitEnd || isComputedEnd;
+
+                    return (
+                      <tr
+                        key={customer.id}
+                        onClick={() => openQuickEdit(customer)}
+                        className={`cursor-pointer transition-colors h-11 break-inside-avoid print:bg-white print:cursor-default ${customer.isExpiredRenewalPending
+                          ? 'bg-amber-50/40 hover:bg-amber-50/70 border-l-4 border-l-amber-400 opacity-80 print:hidden'
+                          : customer.isSkipped
+                            ? 'opacity-60 hover:bg-gray-50/80 print:hidden'
+                            : 'hover:bg-gray-50/80'
+                          }`}
+                        style={{ pageBreakInside: 'avoid' }}
                       >
-                        {isPickupOnDay(customer, activeDay) ? (
-                          <>
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100 text-[10.5px] font-bold uppercase tracking-wide whitespace-nowrap print:hidden">
-                              Pickup
+                        <td className="hidden print:table-cell w-8 text-center align-middle print:py-1 print:px-1.5 print:text-[11px]">
+                          <div className="w-4 h-4 border border-black rounded-sm print:block hidden" />
+                        </td>
+                        <td className="pl-5 font-bold text-[#11142D] text-[13.5px] print:py-1 print:px-1.5 print:text-[11px]">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`truncate print:whitespace-normal print:overflow-visible ${customer.isSkipped ? 'opacity-50 line-through' : ''}`}>
+                              {customer.full_name}
                             </span>
-                            <span className="hidden print:inline-block font-black tracking-wider whitespace-nowrap">
-                              [PICKUP]
-                            </span>
-                          </>
-                        ) : (
-                          customer.delivery_address || "—"
-                        )}
-                      </td>
-                      <td className="print:hidden">
-                        <span className={`px-2 py-0.5 rounded text-[10.5px] font-black tracking-wide border uppercase ${customer.meal_type?.toLowerCase().includes('non')
+
+                            {/* RENEWAL PENDING OR LAST DAY PILL BADGE */}
+                            {customer.isExpiredRenewalPending ? (
+                              <span
+                                title={`Subscription ended on ${customer.expiredOnDate}. Click row to extend.`}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-sm shrink-0 whitespace-nowrap"
+                              >
+                                <span>⏳</span>
+                                <span>RENEWAL PENDING</span>
+                                <span className="text-[9.5px] font-normal opacity-80">
+                                  (Ended {customer.expiredOnDate ? formatShortDate(customer.expiredOnDate) : 'recently'})
+                                </span>
+                              </span>
+                            ) : isLastDay ? (
+                              <span
+                                title="Final meal delivery of subscription cycle. Collect empty tiffin containers and bag."
+                                className="inline-flex items-center px-2 py-0.5 rounded-md text-[10.5px] font-black bg-rose-100 text-rose-800 border border-rose-300 shadow-sm shrink-0 whitespace-nowrap animate-pulse"
+                              >
+                                LAST DAY
+                              </span>
+                            ) : null}
+
+                            {scheduledDate && (
+                              (() => {
+                                const daysUntilEnd = daysBetweenKeys(selectedDateKey, scheduledDate);
+                                if (daysUntilEnd > 0 && daysUntilEnd <= 3) {
+                                  return (
+                                    <span className="shrink-0 text-[10px] text-amber-600 whitespace-nowrap">
+                                      Ends {formatShortDate(scheduledDate)}
+                                    </span>
+                                  );
+                                }
+                                return null;
+                              })()
+                            )}
+                          </div>
+                        </td>
+                        <td
+                          className="text-xs text-gray-600 max-w-[200px] truncate print:table-cell print:max-w-none print:whitespace-normal print:overflow-visible print:py-1 print:px-1.5 print:text-[11px]"
+                          title={customer.delivery_address || ''}
+                        >
+                          {isPickupOnDay(customer, activeDay) ? (
+                            <>
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 border border-indigo-100 text-[10.5px] font-bold uppercase tracking-wide whitespace-nowrap print:hidden">
+                                Pickup
+                              </span>
+                              <span className="hidden print:inline-block font-black tracking-wider whitespace-nowrap">
+                                [PICKUP]
+                              </span>
+                            </>
+                          ) : (
+                            customer.delivery_address || '—'
+                          )}
+                        </td>
+                        <td className="print:hidden">
+                          <span className={`px-2 py-0.5 rounded text-[10.5px] font-black tracking-wide border uppercase ${customer.meal_type?.toLowerCase().includes('non')
                             ? 'bg-red-50 text-red-600 border-red-100'
                             : 'bg-green-50 text-green-600 border-green-100'
-                          }`}>
-                          {customer.meal_type?.toLowerCase().includes('non') ? 'Non-Veg' : 'Veg'}
-                        </span>
-                      </td>
-                      <td className="font-bold text-gray-700 uppercase text-[12px] print:py-1 print:px-1.5 print:text-[11px]">
-                        {customer.isSkipped ? (
-                          <span className="text-gray-300 font-mono">—</span>
-                        ) : (
-                          <>
-                            {formatPortionLabel(customer.portion_size)}
-                            <span className="text-[10px] text-gray-400 font-medium ml-1">
-                              ({getPortionContainerSpec(customer.portion_size)})
+                            }`}>
+                            {customer.meal_type?.toLowerCase().includes('non') ? 'Non-Veg' : 'Veg'}
+                          </span>
+                        </td>
+                        <td className="font-bold text-gray-700 uppercase text-[12px] print:py-1 print:px-1.5 print:text-[11px]">
+                          {customer.isSkipped ? (
+                            <span className="text-gray-300 font-mono">—</span>
+                          ) : (
+                            <span className={customer.isExpiredRenewalPending ? 'opacity-60' : ''}>
+                              {formatPortionLabel(customer.portion_size)}
+                              <span className="text-[10px] text-gray-400 font-medium ml-1">
+                                ({getPortionContainerSpec(customer.portion_size)})
+                              </span>
                             </span>
-                          </>
-                        )}
-                      </td>
-                      <td className="print:py-1 print:px-1.5 print:text-[11px]">
-                        {(() => {
-                          if (customer.isSkipped) {
-                            return <span className="text-gray-300 font-mono">—</span>;
-                          }
-                          const hasRoti =
-                            typeof customer.roti_count === 'number' && customer.roti_count > 0;
-                          const hasPronthi =
-                            typeof customer.pronthi_count === 'number' && customer.pronthi_count > 0;
-                          if (!hasRoti && !hasPronthi) {
-                            return <span className="text-gray-300 font-mono">—</span>;
-                          }
-                          const breadParts: string[] = [];
-                          if (hasRoti) breadParts.push(`${customer.roti_count} Roti`);
-                          if (hasPronthi) breadParts.push(`${customer.pronthi_count} Pronthi`);
-                          return (
-                            <span className="text-[12px] font-bold font-mono text-[#11142D]">
-                              {breadParts.join(', ')}
-                            </span>
-                          );
-                        })()}
-                      </td>
-                      <td className="font-mono text-blue-700 font-bold uppercase text-[12px] print:py-1 print:px-1.5 print:text-[11px]">
-                        {customer.isSkipped ? (
-                          <span className="text-gray-300 font-mono">—</span>
-                        ) : hasRiceToPack(customer.rice_count) ? (
-                          customer.rice_count
-                        ) : (
-                          <span className="text-gray-300 font-mono">—</span>
-                        )}
-                      </td>
-                      <td className="pr-5 print:py-1 print:px-1.5 print:text-[11px]">
-                        {(() => {
-                          if (customer.isSkipped) {
+                          )}
+                        </td>
+                        <td className="print:py-1 print:px-1.5 print:text-[11px]">
+                          {(() => {
+                            if (customer.isSkipped) {
+                              return <span className="text-gray-300 font-mono">—</span>;
+                            }
+                            const hasRoti =
+                              typeof customer.roti_count === 'number' && customer.roti_count > 0;
+                            const hasPronthi =
+                              typeof customer.pronthi_count === 'number' && customer.pronthi_count > 0;
+                            if (!hasRoti && !hasPronthi) {
+                              return <span className="text-gray-300 font-mono">—</span>;
+                            }
+                            const breadParts: string[] = [];
+                            if (hasRoti) breadParts.push(`${customer.roti_count} Roti`);
+                            if (hasPronthi) breadParts.push(`${customer.pronthi_count} Pronthi`);
                             return (
-                              <div className="flex items-center gap-2">
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 border border-amber-300 text-[10.5px] font-black tracking-wide uppercase whitespace-nowrap">
-                                  ⏸️ SKIPPED
+                              <span className={`text-[12px] font-bold font-mono ${customer.isExpiredRenewalPending ? 'text-gray-500' : 'text-[#11142D]'}`}>
+                                {breadParts.join(', ')}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        <td className="font-mono text-blue-700 font-bold uppercase text-[12px] print:py-1 print:px-1.5 print:text-[11px]">
+                          {customer.isSkipped ? (
+                            <span className="text-gray-300 font-mono">—</span>
+                          ) : hasRiceToPack(customer.rice_count) ? (
+                            <span className={customer.isExpiredRenewalPending ? 'opacity-60 text-gray-600' : ''}>
+                              {customer.rice_count}
+                            </span>
+                          ) : (
+                            <span className="text-gray-300 font-mono">—</span>
+                          )}
+                        </td>
+                        <td className="pr-5 print:py-1 print:px-1.5 print:text-[11px]">
+                          {(() => {
+                            if (customer.isSkipped) {
+                              return (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-100 text-amber-800 border border-amber-300 text-[10.5px] font-black tracking-wide uppercase whitespace-nowrap leading-none">
+                                    <Ban className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2} />
+                                    <span>SKIPPED</span>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={event => {
+                                      event.stopPropagation();
+                                      handleToggleSkip(customer.id, false);
+                                    }}
+                                    disabled={isSkipPending}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-amber-300 bg-white text-amber-800 text-[10.5px] font-bold tracking-wide hover:bg-amber-50 transition-colors whitespace-nowrap leading-none disabled:opacity-60 disabled:cursor-wait cursor-pointer"
+                                  >
+                                    <Undo2 className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2} />
+                                    <span>Undo</span>
+                                  </button>
+                                </div>
+                              );
+                            }
+
+                            if (customer.isExpiredRenewalPending) {
+                              return (
+                                <span className="text-amber-800 font-medium text-xs">
+                                  Cycle ended — click to add days
                                 </span>
-                                <button
-                                  type="button"
-                                  onClick={event => {
-                                    event.stopPropagation();
-                                    handleToggleSkip(customer.id, false);
-                                  }}
-                                  disabled={isSkipPending}
-                                  className="px-2 py-0.5 rounded-md border border-amber-300 bg-white text-amber-800 text-[10.5px] font-black tracking-wide hover:bg-amber-50 transition-colors whitespace-nowrap disabled:opacity-60 disabled:cursor-wait"
-                                >
-                                  ↩️ Undo
-                                </button>
+                              );
+                            }
+
+                            const activeOverride = dailyOverrides[customer.id];
+                            const baseRow = baseCustomerById.get(customer.id);
+                            const todayDeviation =
+                              activeOverride && baseRow && overrideHasMealSnapshot(activeOverride)
+                                ? describeTodayOverride(baseRow, activeOverride)
+                                : null;
+                            const hasTodayOverride =
+                              todayDeviation !== null && todayDeviation !== 'one-time change';
+                            const todayOverrideLabel = hasTodayOverride
+                              ? `Today: ${todayDeviation}`
+                              : null;
+
+                            const customInstruction = hasTodayOverride
+                              ? null
+                              : getCustomInstructionsText(customer);
+
+                            const sideInstruction = (customer.delivery_instructions || '').trim();
+                            const hasSideInstruction =
+                              sideInstruction !== '' &&
+                              sideInstruction !== 'None' &&
+                              sideInstruction !== '—';
+
+                            const strippedSideInstruction = hasSideInstruction
+                              ? stripStandardMealText(sideInstruction)
+                              : '';
+                            const sideText = customInstruction || hasTodayOverride
+                              ? null
+                              : strippedSideInstruction !== ''
+                                ? strippedSideInstruction
+                                : null;
+
+                            const rawNotes = [
+                              customer.dietary_notes,
+                              customer.notes,
+                              customer.side_notes,
+                              customer.custom_instructions,
+                            ].filter(
+                              (v): v is string =>
+                                typeof v === 'string' &&
+                                v.trim() !== '' &&
+                                v.trim() !== '—' &&
+                                v.trim() !== 'None'
+                            );
+                            const noteText =
+                              rawNotes.length > 0
+                                ? [...new Set(rawNotes.map(v => v.trim()))].join(' · ')
+                                : null;
+
+                            const customLabel = customInstruction || null;
+
+                            const sideAddons = resolveSideAddons(customer);
+                            const portion = (customer.portion_size || '').toLowerCase();
+                            const isLg = portion.includes('lg') || portion.includes('large');
+
+                            const isDefaultSides = isLg
+                              ? sideAddons.salad === 1 && sideAddons.dessert === 1
+                              : sideAddons.salad === 0 && sideAddons.dessert === 0;
+
+                            const sidesBadge = isDefaultSides
+                              ? '—'
+                              : formatSidesBadge(sideAddons.salad, sideAddons.dessert);
+
+                            if (
+                              !sideText &&
+                              !customLabel &&
+                              !noteText &&
+                              !todayOverrideLabel &&
+                              sidesBadge === '—'
+                            ) {
+                              return <span className="text-gray-300">—</span>;
+                            }
+
+                            return (
+                              <div className="flex flex-col items-start gap-1 min-w-0 max-w-[320px] print:max-w-none">
+                                {todayOverrideLabel && (
+                                  <span
+                                    className="max-w-full truncate inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-300 rounded-md text-[10.5px] font-black leading-none shadow-sm print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
+                                    title={todayOverrideLabel}
+                                  >
+                                    <Zap className="w-3 h-3 text-amber-600 shrink-0 fill-amber-600" />
+                                    <span className="truncate">{todayOverrideLabel}</span>
+                                  </span>
+                                )}
+                                {customLabel && (
+                                  <span
+                                    className="max-w-full truncate inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10.5px] font-bold leading-none print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
+                                    title={customLabel}
+                                  >
+                                    <Zap className="w-3 h-3 text-amber-500 shrink-0 fill-amber-500" />
+                                    <span className="truncate">{customLabel}</span>
+                                  </span>
+                                )}
+                                {sideText && (
+                                  <span
+                                    className="max-w-full truncate inline-block px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-100 rounded-md text-[10.5px] font-bold leading-none print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
+                                    title={sideText}
+                                  >
+                                    {sideText}
+                                  </span>
+                                )}
+                                {sidesBadge !== '—' && !sideText && (
+                                  <span
+                                    className="max-w-full truncate inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-md text-[10.5px] font-bold leading-none print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
+                                    title={`Sides: ${sidesBadge}`}
+                                  >
+                                    <UtensilsCrossed className="w-3 h-3 shrink-0" strokeWidth={2} />
+                                    <span>SIDES {sidesBadge}</span>
+                                  </span>
+                                )}
+                                {noteText && (
+                                  <span
+                                    className="max-w-full truncate inline-flex items-center gap-1 px-2 py-0.5 bg-yellow-50 text-yellow-800 border border-yellow-200 rounded-md text-[10.5px] font-medium leading-none print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
+                                    title={noteText}
+                                  >
+                                    <AlertTriangle className="w-3 h-3 text-yellow-600 shrink-0" strokeWidth={2} />
+                                    <span className="truncate">{noteText}</span>
+                                  </span>
+                                )}
                               </div>
                             );
-                          }
-
-                          const activeOverride = dailyOverrides[customer.id];
-                          const baseRow = baseCustomerById.get(customer.id);
-                          const todayDeviation =
-                            activeOverride && baseRow && overrideHasMealSnapshot(activeOverride)
-                              ? describeTodayOverride(baseRow, activeOverride)
-                              : null;
-                          const hasTodayOverride =
-                            todayDeviation !== null && todayDeviation !== 'one-time change';
-                          const todayOverrideLabel = hasTodayOverride
-                            ? `⚡ Today: ${todayDeviation}`
-                            : null;
-
-                          const customInstruction = hasTodayOverride
-                            ? null
-                            : getCustomInstructionsText(customer);
-
-                          const sideInstruction = (customer.delivery_instructions || '').trim();
-                          const hasSideInstruction =
-                            sideInstruction !== '' &&
-                            sideInstruction !== 'None' &&
-                            sideInstruction !== '—';
-
-                          const strippedSideInstruction = hasSideInstruction
-                            ? stripStandardMealText(sideInstruction)
-                            : '';
-                          const sideText = customInstruction || hasTodayOverride
-                            ? null
-                            : strippedSideInstruction !== ''
-                              ? strippedSideInstruction
-                              : null;
-
-                          const rawNotes = [
-                            customer.dietary_notes,
-                            customer.notes,
-                            customer.side_notes,
-                            customer.custom_instructions,
-                          ].filter(
-                            (v): v is string =>
-                              typeof v === 'string' &&
-                              v.trim() !== '' &&
-                              v.trim() !== '—' &&
-                              v.trim() !== 'None'
-                          );
-                          const noteText =
-                            rawNotes.length > 0
-                              ? [...new Set(rawNotes.map(v => v.trim()))].join(' · ')
-                              : null;
-
-                          const customLabel = customInstruction ? `⚡ ${customInstruction}` : null;
-
-                          const sideAddons = resolveSideAddons(customer);
-                          const portion = (customer.portion_size || '').toLowerCase();
-                          const isLg = portion.includes('lg') || portion.includes('large');
-
-                          const isDefaultSides = isLg
-                            ? sideAddons.salad === 1 && sideAddons.dessert === 1
-                            : sideAddons.salad === 0 && sideAddons.dessert === 0;
-
-                          const sidesBadge = isDefaultSides
-                            ? '—'
-                            : formatSidesBadge(sideAddons.salad, sideAddons.dessert);
-
-                          if (
-                            !sideText &&
-                            !customLabel &&
-                            !noteText &&
-                            !todayOverrideLabel &&
-                            sidesBadge === '—'
-                          ) {
-                            return <span className="text-gray-300">—</span>;
-                          }
-
-                          return (
-                            <div className="flex flex-col items-start gap-1 min-w-0 max-w-[320px] print:max-w-none">
-                              {todayOverrideLabel && (
-                                <span
-                                  className="max-w-full truncate inline-block px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-300 rounded-md text-[10.5px] font-black leading-snug shadow-sm print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
-                                  title={todayOverrideLabel}
-                                >
-                                  {todayOverrideLabel}
-                                </span>
-                              )}
-                              {customLabel && (
-                                <span
-                                  className="max-w-full truncate inline-block px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10.5px] font-bold leading-snug print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
-                                  title={customLabel}
-                                >
-                                  {customLabel}
-                                </span>
-                              )}
-                              {sideText && (
-                                <span
-                                  className="max-w-full truncate inline-block px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-100 rounded-md text-[10.5px] font-bold leading-snug print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
-                                  title={sideText}
-                                >
-                                  {sideText}
-                                </span>
-                              )}
-                              {sidesBadge !== '—' && !sideText && (
-                                <span
-                                  className="max-w-full truncate inline-block px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-md text-[10.5px] font-bold leading-snug print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
-                                  title={`Sides: ${sidesBadge}`}
-                                >
-                                  🥗 SIDES {sidesBadge}
-                                </span>
-                              )}
-                              {noteText && (
-                                <span
-                                  className="max-w-full truncate inline-block px-2 py-0.5 bg-yellow-50 text-yellow-800 border border-yellow-200 rounded-md text-[10.5px] font-medium leading-snug print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
-                                  title={noteText}
-                                >
-                                  ⚠️ {noteText}
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })()}
-                      </td>
-                    </tr>
-                  ))
+                          })()}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
           </div>
         </div>
+
+        {/* COLLAPSIBLE LAPSED / INACTIVE CUSTOMER TRAY */}
+        {lapsedCustomers.length > 0 && (
+          <div className="mt-4 bg-white border border-amber-200 rounded-xl shadow-xs overflow-hidden print:hidden">
+            <button
+              type="button"
+              onClick={() => setIsLapsedTrayOpen(prev => !prev)}
+              className="w-full px-5 py-3 bg-amber-50/60 hover:bg-amber-100/60 flex items-center justify-between text-left transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5">
+                <Folder className="w-4 h-4" />
+                <div>
+                  <span className="text-xs font-bold text-amber-900 uppercase tracking-wide">
+                    Lapsed / Inactive Subscriptions ({lapsedCustomers.length})
+                  </span>
+                  <p className="text-[11px] text-amber-700 font-medium">
+                    Cycles completed and past grace window. Click to review or reactivate service.
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs font-bold text-amber-800 bg-white border border-amber-300 px-2.5 py-1 rounded-md shadow-xs">
+                {isLapsedTrayOpen ? 'Hide ▲' : 'Show ▼'}
+              </span>
+            </button>
+
+            {isLapsedTrayOpen && (
+              <div className="divide-y divide-gray-100 p-2 bg-white">
+                {lapsedCustomers.map(customer => (
+                  <div
+                    key={customer.id}
+                    onClick={() => openQuickEdit(customer)}
+                    className="px-4 py-2.5 flex items-center justify-between hover:bg-amber-50/40 rounded-lg cursor-pointer transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="font-bold text-gray-800 text-sm capitalize">
+                        {customer.full_name}
+                      </span>
+                      <span className="text-[11px] font-semibold text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">
+                        Ended {customer.expiredOnDate ? formatShortDate(customer.expiredOnDate) : 'previously'}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        {formatPortionLabel(customer.portion_size)} • {customer.roti_count ?? 0} Roti
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openQuickEdit(customer);
+                      }}
+                      className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-md shadow-xs transition-colors"
+                    >
+                      + Reactivate / Extend
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
       </div>
 
@@ -2325,8 +2905,19 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           onCancelVacationPause={() => handleCancelVacationPause(quickEditCustomer.id)}
           hasDayOverride={Boolean(dailyOverrides[quickEditCustomer.id])}
           onClearOverride={handleClearOverride}
+          isExpiredPendingRenewal={quickEditCustomer.isExpiredRenewalPending}
+          expiredOnDate={quickEditCustomer.expiredOnDate}
         />
       )}
+
+      {/* DRIVER ROUTING & DISPATCH MODAL */}
+      <DriverDispatchModal
+        isOpen={isDispatchModalOpen}
+        onClose={() => setIsDispatchModalOpen(false)}
+        manifestCustomers={manifestCustomers}
+        activeDay={activeDay}
+        kitchenAddress="Unit 42, 3270 Singleton Ave, London, ON N6L 0E5"
+      />
     </div>
   );
 }

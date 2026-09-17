@@ -1367,4 +1367,83 @@ export async function saveCustomerOverride(
     schemaAvailable: true,
   };
 }
+export async function renewCustomerSubscription({
+  customerId,
+  creditsToAdd,
+  planTier,
+}: {
+  customerId: string;
+  creditsToAdd: number;
+  planTier?: 'trial' | 'weekly' | 'monthly';
+}): Promise<{ success: boolean; message?: string }> {
+  try {
+    const supabase = await createClient();
 
+    // 1. Fetch current credits
+    const { data: customer, error: fetchErr } = await supabase
+      .from('customers')
+      .select('id, total_tiffin_credits, plan_tier')
+      .eq('id', customerId)
+      .single();
+
+    if (fetchErr || !customer) {
+      return { success: false, message: fetchErr?.message || 'Customer not found' };
+    }
+
+    const currentCredits = Number(customer.total_tiffin_credits) || 0;
+    const newTotal = currentCredits + creditsToAdd;
+    const newTier = planTier || (newTotal >= 20 ? 'monthly' : newTotal > 1 ? 'weekly' : 'trial');
+
+    // 2. Update total_tiffin_credits without modifying start_date
+    const { error: updateErr } = await supabase
+      .from('customers')
+      .update({
+        total_tiffin_credits: newTotal,
+        plan_tier: newTier,
+        subscription_status: 'active',
+        cycle_end_date: null,
+        scheduled_cancel_date: null,
+        scheduled_status: null,
+      })
+      .eq('id', customerId);
+
+    if (updateErr) {
+      return { success: false, message: updateErr.message };
+    }
+
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : 'Failed to extend subscription',
+    };
+  }
+}
+
+export async function endCustomerSubscription(
+  customerId: string,
+  effectiveEndDate: string // Pass the date the cycle actually ended (e.g. "2026-09-16")
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const { createClient } = await import('@/utils/supabase/server');
+    const supabase = await createClient();
+
+    const { error } = await supabase
+      .from('customers')
+      .update({
+        cycle_end_date: effectiveEndDate,
+        scheduled_cancel_date: effectiveEndDate,
+        scheduled_status: 'cancelled',
+        cancellation_reason: 'Non-renewal archived',
+      })
+      .eq('id', customerId);
+
+    if (error) throw error;
+    return { success: true };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: err?.message || 'Could not end subscription.',
+    };
+  }
+}

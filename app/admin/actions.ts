@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/utils/supabase/server';
+import { geocodeAddress } from '../utils/geocoding';
 import { revalidatePath } from 'next/cache';
 import { normalizePickupDays } from '@/app/utils/customerPickup';
 
@@ -18,6 +19,9 @@ type CustomerPayload = {
   full_name: string;
   phone_number: string | null;
   delivery_address: string;
+  cycle_end_date?: string | null;
+  delivery_lat?: number | null;
+  delivery_lng?: number | null;
   dietary_notes: string | null;
   meal_type: string | null;
   portion_size: string | null;
@@ -253,7 +257,7 @@ const probeScheduledColumns = async (
   }
   console.info(
     `[${context}] customers scheduled columns — present: [${present.join(', ') || 'none'}]` +
-      ` | missing: [${missing.join(', ') || 'none'}]`
+    ` | missing: [${missing.join(', ') || 'none'}]`
   );
   return { present, missing };
 };
@@ -297,7 +301,7 @@ const runCustomerStatusUpdate = async (
     if (probe.missing.length > 0) {
       console.error(
         `[${options.context}] customers is missing scheduled column(s): [${probe.missing.join(', ')}]. ` +
-          'Run supabase/migrations/00014_add_scheduled_status.sql in the Supabase SQL Editor.'
+        'Run supabase/migrations/00014_add_scheduled_status.sql in the Supabase SQL Editor.'
       );
       throw new Error(SCHEDULE_MIGRATION_HINT);
     }
@@ -394,6 +398,16 @@ const formatCustomerWriteError = (error: unknown): string =>
 // 1. CREATE CUSTOMER
 export async function createCustomer(payload: CustomerPayload) {
   const supabase = await createClient();
+
+  // Geocode the delivery address if present
+  const coords = payload.delivery_address
+    ? await geocodeAddress(payload.delivery_address)
+    : null;
+  if (coords) {
+    payload.delivery_lat = coords.lat;
+    payload.delivery_lng = coords.lng;
+  }
+
   const normalized = normalizeCustomerPayload(payload);
 
   // Retry loop strips optional columns (pronthi_count / pickup columns) that may not
@@ -415,7 +429,7 @@ export async function createCustomer(payload: CustomerPayload) {
       if (isPickupColumnMissing(error)) {
         console.warn(
           'Database schema is missing is_pickup/pickup_days — retrying without them. ' +
-            'Run supabase/migrations/00011_add_pickup_days.sql to persist per-day pickup data.'
+          'Run supabase/migrations/00011_add_pickup_days.sql to persist per-day pickup data.'
         );
         current = stripPickupColumns(current);
         continue;
@@ -423,7 +437,7 @@ export async function createCustomer(payload: CustomerPayload) {
       if (isReferredByColumnMissing(error)) {
         console.warn(
           'Database schema is missing referred_by — retrying without it. ' +
-            'Run supabase/migrations/00012_add_referred_by.sql to persist referral sources.'
+          'Run supabase/migrations/00012_add_referred_by.sql to persist referral sources.'
         );
         current = stripReferredByColumn(current);
         continue;
@@ -452,6 +466,16 @@ export async function updateCustomer(
   payload: CustomerPayload
 ): Promise<Record<string, unknown> | null> {
   const supabase = await createClient();
+
+  // Geocode the delivery address if present
+  const coords = payload.delivery_address
+    ? await geocodeAddress(payload.delivery_address)
+    : null;
+  if (coords) {
+    payload.delivery_lat = coords.lat;
+    payload.delivery_lng = coords.lng;
+  }
+
   const normalized = normalizeCustomerPayload(payload);
 
   let current = { ...normalized };
@@ -477,7 +501,7 @@ export async function updateCustomer(
     if (isPickupColumnMissing(error)) {
       console.warn(
         'Database schema is missing is_pickup/pickup_days — retrying without them. ' +
-          'Run supabase/migrations/00011_add_pickup_days.sql to persist per-day pickup data.'
+        'Run supabase/migrations/00011_add_pickup_days.sql to persist per-day pickup data.'
       );
       current = stripPickupColumns(current);
       continue;
@@ -485,7 +509,7 @@ export async function updateCustomer(
     if (isReferredByColumnMissing(error)) {
       console.warn(
         'Database schema is missing referred_by — retrying without it. ' +
-          'Run supabase/migrations/00012_add_referred_by.sql to persist referral sources.'
+        'Run supabase/migrations/00012_add_referred_by.sql to persist referral sources.'
       );
       current = stripReferredByColumn(current);
       continue;
@@ -521,19 +545,19 @@ export async function pauseCustomer(id: string, lastServiceDate: string, endDate
     id,
     isScheduled
       ? {
-          // Status stays active; only the schedule + optional resume window are recorded.
-          pause_start_date: null,
-          pause_end_date: endDate,
-          scheduled_cancel_date: effectiveDate,
-          scheduled_status: 'paused',
-        }
+        // Status stays active; only the schedule + optional resume window are recorded.
+        pause_start_date: null,
+        pause_end_date: endDate,
+        scheduled_cancel_date: effectiveDate,
+        scheduled_status: 'paused',
+      }
       : {
-          subscription_status: 'paused',
-          pause_start_date: effectiveDate,
-          pause_end_date: endDate,
-          scheduled_cancel_date: null,
-          scheduled_status: null,
-        },
+        subscription_status: 'paused',
+        pause_start_date: effectiveDate,
+        pause_end_date: endDate,
+        scheduled_cancel_date: null,
+        scheduled_status: null,
+      },
     { context: 'pauseCustomer', requiresScheduledColumns: isScheduled }
   );
 
@@ -555,19 +579,19 @@ export async function cancelCustomer(id: string, reason: string | null, cancelle
     id,
     isScheduled
       ? {
-          // Status stays active; keep the reason so it is shown once the cancel applies.
-          cancellation_reason: reason,
-          cancelled_at: null,
-          scheduled_cancel_date: effectiveDate,
-          scheduled_status: 'cancelled',
-        }
+        // Status stays active; keep the reason so it is shown once the cancel applies.
+        cancellation_reason: reason,
+        cancelled_at: null,
+        scheduled_cancel_date: effectiveDate,
+        scheduled_status: 'cancelled',
+      }
       : {
-          subscription_status: 'cancelled',
-          cancellation_reason: reason,
-          cancelled_at: effective,
-          scheduled_cancel_date: null,
-          scheduled_status: null,
-        },
+        subscription_status: 'cancelled',
+        cancellation_reason: reason,
+        cancelled_at: effective,
+        scheduled_cancel_date: null,
+        scheduled_status: null,
+      },
     { context: 'cancelCustomer', requiresScheduledColumns: isScheduled }
   );
 
@@ -609,22 +633,22 @@ export async function applyScheduledStatusTransitions(): Promise<number> {
     const payload: Record<string, unknown> =
       scheduledStatus === 'cancelled'
         ? {
-            subscription_status: 'cancelled',
-            // Legacy convenience flag: some `customers` schemas carry an is_active
-            // boolean alongside subscription_status. Cleared here when present; the
-            // missing-column retry below strips it when the column does not exist.
-            is_active: false,
-            cancelled_at: new Date(`${scheduledDate}T00:00:00`).toISOString(),
-            scheduled_cancel_date: null,
-            scheduled_status: null,
-          }
+          subscription_status: 'cancelled',
+          // Legacy convenience flag: some `customers` schemas carry an is_active
+          // boolean alongside subscription_status. Cleared here when present; the
+          // missing-column retry below strips it when the column does not exist.
+          is_active: false,
+          cancelled_at: new Date(`${scheduledDate}T00:00:00`).toISOString(),
+          scheduled_cancel_date: null,
+          scheduled_status: null,
+        }
         : {
-            subscription_status: 'paused',
-            pause_start_date: scheduledDate,
-            pause_end_date: row.pause_end_date ?? null,
-            scheduled_cancel_date: null,
-            scheduled_status: null,
-          };
+          subscription_status: 'paused',
+          pause_start_date: scheduledDate,
+          pause_end_date: row.pause_end_date ?? null,
+          scheduled_cancel_date: null,
+          scheduled_status: null,
+        };
 
     let updateError = (
       await supabase.from('customers').update(payload).eq('id', row.id)
@@ -733,7 +757,7 @@ export async function upgradeCustomerPlan(customerId: string, newTier: 'weekly' 
   const credits = TIER_CREDITS[newTier];
   if (!credits) throw new Error('Unknown plan tier');
 
-  const { data: cust } = await supabase
+  const { data: cust, error: fetchError } = await supabase
     .from('customers')
     .select('used_credits')
     .eq('id', customerId)
@@ -742,7 +766,7 @@ export async function upgradeCustomerPlan(customerId: string, newTier: 'weekly' 
   if (!cust) throw new Error('Customer not found');
 
   const used = cust.used_credits || 0;
-  const { error } = await supabase
+  const { error: updateError } = await supabase
     .from('customers')
     .update({
       plan_tier: newTier,
@@ -752,9 +776,9 @@ export async function upgradeCustomerPlan(customerId: string, newTier: 'weekly' 
     })
     .eq('id', customerId);
 
-  if (error) {
-    console.error('Upgrade plan error:', error);
-    throw new Error(error.message);
+  if (updateError) {
+    console.error('Upgrade plan error:', updateError);
+    throw new Error(updateError.message);
   }
 
   revalidatePath('/admin/customers');
@@ -879,11 +903,11 @@ export async function updateCustomerMealConfig(id: string, config: MealConfigPay
 // 9. GET CUSTOMER COUNTS BY STATUS
 export async function getCustomerCounts() {
   const supabase = await createClient();
-  
+
   const { data: all } = await supabase.from('customers').select('subscription_status');
-  
+
   if (!all) return { total: 0, active: 0, paused: 0, cancelled: 0 };
-  
+
   return {
     total: all.length,
     active: all.filter(c => c.subscription_status === 'active' || !c.subscription_status).length,
@@ -909,6 +933,6 @@ export async function searchAddress(query: string) {
     return data;
   } catch (error) {
     console.error("Server-side geocoding failed securely:", error);
-    return []; 
+    return [];
   }
 }

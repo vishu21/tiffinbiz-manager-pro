@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useMemo, useState, useTransition } from 'react';
+import { Soup, X, Trash2, Pencil } from 'lucide-react';
 import {
   getRecipesWithIngredients,
   upsertRecipe,
@@ -123,13 +124,13 @@ export default function RecipeManagerClient({
     setIngredients(
       recipe.ingredients.length > 0
         ? recipe.ingredients.map(ing =>
-            makeDraft({
-              id: ing.id,
-              name: ing.name,
-              raw_oz_per_8oz: ing.raw_oz_per_8oz,
-              raw_oz_per_12oz: ing.raw_oz_per_12oz,
-            })
-          )
+          makeDraft({
+            id: ing.id,
+            name: ing.name,
+            raw_oz_per_8oz: ing.raw_oz_per_8oz,
+            raw_oz_per_12oz: ing.raw_oz_per_12oz,
+          })
+        )
         : [makeDraft()]
     );
     setFormError(null);
@@ -252,7 +253,7 @@ export default function RecipeManagerClient({
 
         {banner && (
           <div className="mb-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[12.5px] font-semibold">
-            ⚠️ {banner}
+            <AlertTriangle className="w-4 h-4 text-amber-500" /> {banner}
           </div>
         )}
 
@@ -266,11 +267,10 @@ export default function RecipeManagerClient({
                   key={tab.key}
                   type="button"
                   onClick={() => setActiveTab(tab.key)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-full border transition-all ${
-                    active
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-full border transition-all ${active
                       ? 'text-[#5D5FEF] bg-[#F4F4FE] border-[#5D5FEF]/30 shadow-xs'
                       : 'text-gray-600 bg-white border-gray-200 hover:bg-gray-50 hover:text-gray-900'
-                  }`}
+                    }`}
                 >
                   {tab.label} ({counts[tab.key]})
                 </button>
@@ -305,7 +305,7 @@ export default function RecipeManagerClient({
                 onClick={() => setSearchQuery('')}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs"
               >
-                ✕
+                <X className="w-3 h-3" />
               </button>
             )}
           </div>
@@ -314,7 +314,7 @@ export default function RecipeManagerClient({
         {/* Recipe grid */}
         {visibleRecipes.length === 0 ? (
           <div className="bg-white border border-dashed border-[#E0E0E0] rounded-2xl py-16 text-center">
-            <p className="text-4xl mb-3">🍲</p>
+            <Soup className="w-8 h-8 mx-auto text-gray-400 mb-3" />
             <p className="text-[13px] font-semibold text-gray-500">
               No dishes found{searchQuery ? ` matching "${searchQuery}"` : activeTab !== 'all' ? ` in ${CATEGORY_LABEL[activeTab]}` : ''}.
             </p>
@@ -349,17 +349,19 @@ export default function RecipeManagerClient({
                         <button
                           type="button"
                           onClick={() => openEdit(recipe)}
-                          className="px-1.5 py-0.5 text-[10.5px] font-semibold text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                          title="Edit dish"
+                          className="w-7 h-7 flex items-center justify-center text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
                         >
-                          ✏️ Edit
+                          <Pencil className="w-3.5 h-3.5" />
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDelete(recipe)}
                           disabled={deletingId === recipe.id}
-                          className="px-1.5 py-0.5 text-[10.5px] font-semibold text-red-500 hover:bg-red-50 rounded transition-colors disabled:opacity-50"
+                          title="Delete dish"
+                          className="w-7 h-7 flex items-center justify-center text-red-500 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
                         >
-                          {deletingId === recipe.id ? '…' : '❌'}
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
@@ -396,16 +398,14 @@ export default function RecipeManagerClient({
                               Total Base
                             </td>
                             <td
-                              className={`pt-1.5 text-xs text-right font-mono font-bold ${
-                                totalRgOz.toFixed(1) === '8.0' ? 'text-gray-400' : 'text-gray-800'
-                              }`}
+                              className={`pt-1.5 text-xs text-right font-mono font-bold ${totalRgOz.toFixed(1) === '8.0' ? 'text-gray-400' : 'text-gray-800'
+                                }`}
                             >
                               {totalRgOz.toFixed(1)} oz
                             </td>
                             <td
-                              className={`pt-1.5 text-xs text-right font-mono font-bold ${
-                                totalLgOz.toFixed(1) === '12.0' ? 'text-gray-400' : 'text-gray-800'
-                              }`}
+                              className={`pt-1.5 text-xs text-right font-mono font-bold ${totalLgOz.toFixed(1) === '12.0' ? 'text-gray-400' : 'text-gray-800'
+                                }`}
                             >
                               {totalLgOz.toFixed(1)} oz
                             </td>
@@ -436,7 +436,7 @@ export default function RecipeManagerClient({
               {/* Drawer Header */}
               <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
                 <h2 className="text-[14px] font-bold text-[#11142D] uppercase tracking-wide">
-                  {editingId ? '✏️ Edit Dish' : '+ Add New Dish'}
+                  {editingId ? <span className="flex items-center gap-1.5"><Pencil className="w-4 h-4" /> Edit Dish</span> : '+ Add New Dish'}
                 </h2>
                 <button
                   type="button"
@@ -480,16 +480,16 @@ export default function RecipeManagerClient({
 
                 {/* Dynamic Draggable Ingredient Rows */}
                 <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10.5px] font-bold text-gray-500 uppercase tracking-wider">
-                      Ingredients (Drag ⠿ to rearrange)
-                    </span>
-                    <span className="text-[10px] text-gray-400">
-                      Raw oz → 8 oz (RG) &amp; 12 oz (LG)
-                    </span>
+                  {/* Single Table-Like Header */}
+                  <div className="flex items-center justify-between px-2 pb-1.5 border-b border-gray-100 text-[10.5px] font-bold uppercase tracking-wider text-gray-500">
+                    <span>Ingredients (Drag ⠿ to rearrange)</span>
+                    <div className="flex items-center gap-2">
+                      <span className="w-[76px] text-center text-amber-700">8 oz (RG)</span>
+                      <span className="w-[76px] text-center text-purple-700">12 oz (LG)</span>
+                    </div>
                   </div>
 
-                  <div className="space-y-1.5">
+                  <div className="space-y-1.5 mt-2">
                     {ingredients.map((row, index) => (
                       <div
                         key={row.key}
@@ -497,67 +497,61 @@ export default function RecipeManagerClient({
                         onDragStart={e => handleDragStart(e, index)}
                         onDragOver={e => handleDragOver(e, index)}
                         onDragEnd={handleDragEnd}
-                        className={`flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-2 p-2 rounded-lg border transition-all ${
-                          draggedIndex === index
+                        className={`flex items-center gap-2 p-1.5 rounded-lg border transition-all ${draggedIndex === index
                             ? 'opacity-40 bg-gray-100 border-dashed border-[#5D5FEF]'
                             : 'bg-white border-transparent hover:border-gray-200'
-                        }`}
+                          }`}
                       >
-                        <div className="flex items-center gap-2 w-full">
-                          {/* Drag Handle */}
-                          <span
-                            title="Drag to rearrange"
-                            className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-700 px-1 select-none text-base font-bold shrink-0"
-                          >
-                            ⠿
-                          </span>
+                        {/* Drag Handle */}
+                        <span
+                          title="Drag to rearrange"
+                          className="cursor-grab active:cursor-grabbing text-gray-400 hover:text-gray-700 px-1 select-none text-base font-bold shrink-0"
+                        >
+                          ⠿
+                        </span>
 
-                          <input
-                            type="text"
-                            value={row.name}
-                            onChange={e => updateIngredient(row.key, { name: e.target.value })}
-                            placeholder={`Ingredient ${index + 1} (e.g. Diced Onions)`}
-                            className="flex-1 min-w-0 text-[12px] px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
-                          />
+                        {/* Ingredient Name */}
+                        <input
+                          type="text"
+                          value={row.name}
+                          onChange={e => updateIngredient(row.key, { name: e.target.value })}
+                          placeholder={`Ingredient ${index + 1} (e.g. Diced Onions)`}
+                          className="flex-1 min-w-0 text-[12px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                        />
 
-                          <button
-                            type="button"
-                            onClick={() => removeIngredient(row.key)}
-                            title="Remove ingredient"
-                            className="shrink-0 w-7 h-7 flex items-center justify-center text-red-500 hover:bg-red-50 rounded-md transition-colors"
-                          >
-                            🗑️
-                          </button>
-                        </div>
+                        {/* Delete Row Button */}
+                        <button
+                          type="button"
+                          onClick={() => removeIngredient(row.key)}
+                          title="Remove ingredient"
+                          className="shrink-0 w-7 h-7 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-500" />
+                        </button>
 
-                        <div className="flex items-center justify-between gap-2 w-full sm:w-auto mt-2 sm:mt-0">
-                          <label className="flex flex-col items-start">
-                            <span className="text-[9.5px] font-bold text-gray-500">8 oz (RG)</span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={row.raw8}
-                              onChange={e => updateIngredient(row.key, { raw8: e.target.value })}
-                              placeholder="8 oz"
-                              title="Raw oz per 8 oz (RG) container"
-                              className="w-[76px] shrink-0 text-[12px] px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-10"
-                            />
-                          </label>
-                          <label className="flex flex-col items-start">
-                            <span className="text-[9.5px] font-bold text-gray-500">12 oz (LG)</span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={row.raw12}
-                              onChange={e => updateIngredient(row.key, { raw12: e.target.value })}
-                              placeholder="12 oz"
-                              title="Raw oz per 12 oz (LG) container"
-                              className="w-[76px] shrink-0 text-[12px] px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-10"
-                            />
-                          </label>
-                        </div>
+                        {/* 8 oz (RG) numeric input */}
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={row.raw8}
+                          onChange={e => updateIngredient(row.key, { raw8: e.target.value })}
+                          placeholder="0.00"
+                          title="Raw oz per 8 oz (RG) container"
+                          className="w-[76px] shrink-0 text-center font-semibold text-[12px] px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                        />
+
+                        {/* 12 oz (LG) numeric input */}
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={row.raw12}
+                          onChange={e => updateIngredient(row.key, { raw12: e.target.value })}
+                          placeholder="0.00"
+                          title="Raw oz per 12 oz (LG) container"
+                          className="w-[76px] shrink-0 text-center font-semibold text-[12px] px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                        />
                       </div>
                     ))}
                   </div>
@@ -565,7 +559,7 @@ export default function RecipeManagerClient({
                   <button
                     type="button"
                     onClick={addIngredientRow}
-                    className="mt-2 px-3 py-1.5 text-[11.5px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#EBEBFD] rounded-lg transition-colors"
+                    className="mt-2.5 px-3 py-1.5 text-[11.5px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#EBEBFD] rounded-lg transition-colors"
                   >
                     + Add Another Ingredient
                   </button>

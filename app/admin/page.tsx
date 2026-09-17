@@ -1,4 +1,5 @@
 import { createClient } from '@/utils/supabase/server';
+import { Circle } from 'lucide-react';
 
 export default async function AdminDashboard() {
   const supabase = await createClient();
@@ -23,15 +24,15 @@ export default async function AdminDashboard() {
           <p className="text-3xl font-bold mt-2">{totalAll}</p>
         </div>
         <div className="p-6 bg-white rounded-lg shadow border border-green-100 border-l-4 border-l-green-500">
-          <h2 className="text-gray-500 text-sm font-medium">🟢 Active</h2>
+          <h2 className="text-gray-500 text-sm font-medium"><Circle className="w-2.5 h-2.5 fill-green-500 text-green-500" /> Active</h2>
           <p className="text-3xl font-bold mt-2 text-green-600">{totalActive}</p>
         </div>
         <div className="p-6 bg-white rounded-lg shadow border border-amber-100 border-l-4 border-l-amber-500">
-          <h2 className="text-gray-500 text-sm font-medium">🟡 Paused</h2>
+          <h2 className="text-gray-500 text-sm font-medium"><Circle className="w-2.5 h-2.5 fill-amber-500 text-amber-500" /> Paused</h2>
           <p className="text-3xl font-bold mt-2 text-amber-600">{totalPaused}</p>
         </div>
         <div className="p-6 bg-white rounded-lg shadow border border-red-100 border-l-4 border-l-red-500">
-          <h2 className="text-gray-500 text-sm font-medium">🔴 Cancelled</h2>
+          <h2 className="text-gray-500 text-sm font-medium"><Circle className="w-2.5 h-2.5 fill-red-500 text-red-500" /> Cancelled</h2>
           <p className="text-3xl font-bold mt-2 text-red-600">{totalCancelled}</p>
         </div>
       </div>
