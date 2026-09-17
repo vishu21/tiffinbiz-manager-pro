@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useMemo, useState, useTransition } from 'react';
-import { Soup, X, Trash2, Pencil } from 'lucide-react';
+import { AlertTriangle, Soup, X, Trash2, Pencil } from 'lucide-react';
 import {
   getRecipesWithIngredients,
   upsertRecipe,

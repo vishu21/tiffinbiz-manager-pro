@@ -671,7 +671,7 @@ export default function PrepQuickEditSheet({
 
     startEndSubTransition(async () => {
       try {
-        const res = await endCustomerSubscription(customer.id);
+        const res = await endCustomerSubscription(customer.id, 'Subscription ended from Prep Sheet');
         if (res.success) {
           onClose();
           router.refresh();

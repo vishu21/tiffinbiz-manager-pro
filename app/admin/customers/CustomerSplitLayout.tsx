@@ -2,7 +2,7 @@
 
 import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
-import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Check } from 'lucide-react';
+import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Check, Undo2 } from 'lucide-react';
 import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation } from '@/app/admin/actions';
 import {
   isLegacyPickupCustomer,
@@ -125,6 +125,7 @@ type Customer = {
   skipped_days_count?: number | null;
   payment_status?: 'paid' | 'due' | 'overdue' | null;
   start_date?: string | null;
+  cycle_end_date?: string | null;
   pause_start_date?: string | null;
   pause_end_date?: string | null;
   cancellation_reason?: string | null;
