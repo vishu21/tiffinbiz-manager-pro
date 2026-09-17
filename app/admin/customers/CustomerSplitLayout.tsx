@@ -53,6 +53,7 @@ const isWeekdayDelivery = (date: Date): boolean => {
 const calculateTargetLastDay = (
   startDateStr: string | null | undefined,
   totalMeals: number | null | undefined,
+  closureDates?: Set<string> | Map<string, string> | string[],
 ): string | null => {
   if (!startDateStr || !totalMeals || totalMeals <= 0) return null;
 
@@ -65,14 +66,22 @@ const calculateTargetLastDay = (
   const date = new Date(`${normalized}T00:00:00`);
   if (isNaN(date.getTime())) return null;
 
+  const isClosed = (d: Date): boolean => {
+    if (!closureDates) return false;
+    const key = toLocalDateKey(d);
+    if (closureDates instanceof Set) return closureDates.has(key);
+    if (closureDates instanceof Map) return closureDates.has(key);
+    return closureDates.includes(key);
+  };
+
   let mealsCounted = 0;
-  if (isWeekdayDelivery(date)) {
+  if (isWeekdayDelivery(date) && !isClosed(date)) {
     mealsCounted = 1;
   }
 
   while (mealsCounted < totalMeals) {
     date.setDate(date.getDate() + 1);
-    if (isWeekdayDelivery(date)) {
+    if (isWeekdayDelivery(date) && !isClosed(date)) {
       mealsCounted++;
     }
     if (mealsCounted > 730) return null;
@@ -583,9 +592,53 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [addressSuggestions, setAddressSuggestions] = useState<string[]>([]);
   const [isAddressLoading, setIsAddressLoading] = useState(false);
   const addressContainerRef = useRef<HTMLDivElement>(null);
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);// Restore the missing aiLoading state
   const [aiLoading, setAiLoading] = useState(false);
+
+  // Kitchen Closures Set
+  const [closuresSet, setClosuresSet] = useState<Set<string>>(new Set());
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const handleSync = async () => {
+    setIsSyncing(true);
+    try {
+      const { createClient } = await import('@/utils/supabase/client');
+      const supabase = createClient();
+      const { data } = await supabase.from('kitchen_closures').select('closure_date');
+      if (data) {
+        setClosuresSet(new Set(data.map((c: { closure_date: string }) => c.closure_date)));
+      }
+      router.refresh();
+      showToast('Customer data & closures synced');
+    } catch (err) {
+      showToast('Failed to sync', 'error');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const { createClient } = await import('@/utils/supabase/client');
+        const supabase = createClient();
+        const { data } = await supabase
+          .from('kitchen_closures')
+          .select('closure_date');
+
+        if (isMounted && data) {
+          setClosuresSet(new Set(data.map((c: { closure_date: string }) => c.closure_date)));
+        }
+      } catch (err) {
+        console.error('[Customers] Failed to fetch closures:', err);
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Toast notification state (e.g. success after reactivating a cancelled customer)
   const [toast, setToast] = useState<{ message: string; kind: 'success' | 'error' } | null>(null);
@@ -1061,10 +1114,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     }
   };
 
-  // Live Auto-Calculated Projected End Date (Mon-Fri service)
+  // Live Auto-Calculated Projected End Date (Mon-Fri service + Kitchen Closures)
   const computedEndDate = useMemo(() => {
-    return calculateTargetLastDay(startDate, totalTiffinCredits);
-  }, [startDate, totalTiffinCredits]);
+    return calculateTargetLastDay(startDate, totalTiffinCredits, closuresSet);
+  }, [startDate, totalTiffinCredits, closuresSet]);
   // ═══════════════════════════════════════════════════════════════
   // Custom curry detection — drives the "⚡ Custom" pill and is saved
   // as `is_custom_curry` + `curry_config` (never into dietary notes).
@@ -1543,7 +1596,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     return 0;
   });
 
-// Column subtotals and summary metrics computed from the active filtered view
+  // Column subtotals and summary metrics computed from the active filtered view
   let totalRotis = 0;
   let totalPronthis = 0;
   let riceRgCount = 0;
@@ -2801,23 +2854,67 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   return (
     <div className="flex flex-col h-screen bg-[#FDFDFD] overflow-hidden font-sans antialiased text-[#292D32]">
 
-      {/* 3-PART HEADER: Title/Count · Center Search · Add Customer */}
-      <div className="px-4 sm:px-6 py-3 shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        {/* LEFT: Title + Count Badge */}
-        <div className="flex items-center gap-3 shrink-0">
-          <h1 className="text-[22px] font-bold text-[#11142D] tracking-tight">Customers</h1>
-          <span className="inline-flex items-center justify-center px-2.5 py-0.5 bg-[#F4F5F7] border border-[#E5E7EB] text-[#5E6470] text-xs font-semibold rounded-full min-w-[28px]">
-            {filteredCustomers.length}
-          </span>
+      {/* UNIFIED COMPACT HEADER */}
+      <div className="px-3 sm:px-6 py-2.5 sm:py-3 shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4 bg-white border-b border-[#EEEEEE]">
+        {/* Row 1 on Mobile: Title + Count + Action Buttons */}
+        <div className="flex items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-2">
+            <h1 className="text-[18px] sm:text-[22px] font-bold text-[#11142D] tracking-tight">Customers</h1>
+            <span className="inline-flex items-center justify-center px-2 py-0.5 bg-[#F4F5F7] border border-[#E5E7EB] text-[#5E6470] text-[11px] sm:text-xs font-semibold rounded-full min-w-[24px]">
+              {filteredCustomers.length}
+            </span>
+          </div>
+
+          {/* Action buttons on mobile (< sm) */}
+          <div className="flex sm:hidden items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleSync}
+              disabled={isSyncing}
+              title="Sync data"
+              className="p-2 rounded-lg border border-[#E0E0E0] bg-white text-[#7A7C87] hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <svg
+                className={`w-4 h-4 ${isSyncing ? 'animate-spin text-[#5D5FEF]' : ''}`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              aria-pressed={kitchenMode}
+              onClick={toggleKitchenMode}
+              title="Kitchen Order"
+              className={`p-2 rounded-lg border transition-colors cursor-pointer ${kitchenMode
+                ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
+                : 'bg-white border-[#E0E0E0] text-[#7A7C87]'
+                }`}
+            >
+              <UtensilsCrossed className="w-4 h-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenAddForm}
+              className="px-3 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-lg shadow-sm transition-colors cursor-pointer whitespace-nowrap"
+            >
+              + Add
+            </button>
+          </div>
         </div>
 
-        {/* CENTER: Prominent Centered Search Bar */}
-        <div className="flex-1 max-w-xl mx-auto">
+        {/* Row 2 on Mobile / Center on Desktop: Search Bar */}
+        <div className="w-full sm:flex-1 sm:max-w-xl sm:mx-auto">
           <div className="relative w-full">
-            {/* Icon Container with z-10 and pointer-events-none */}
-            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none z-10">
               <svg
-                className="w-4 h-4 text-gray-400"
+                className="w-3.5 h-3.5 text-gray-400"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -2830,19 +2927,18 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               </svg>
             </div>
             <input
-
               type="text"
               placeholder="Search customer, address, or phone..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full text-[13px] pl-10 pr-9 py-2 bg-[#F9FBFC] border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] focus:bg-white text-[#292D32] placeholder-gray-400 transition-all shadow-sm"
+              className="w-full text-xs sm:text-[13px] pl-9 pr-8 py-2 bg-[#F9FBFC] border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] focus:bg-white text-[#292D32] placeholder-gray-400 transition-all shadow-2xs"
             />
             {searchTerm && (
               <button
                 type="button"
                 aria-label="Clear search"
                 onClick={() => setSearchTerm('')}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 text-sm cursor-pointer z-10"
+                className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-gray-400 hover:text-gray-600 text-sm cursor-pointer z-10"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -2850,22 +2946,47 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           </div>
         </div>
 
-        {/* RIGHT: Kitchen Dispatch toggle + Primary CTA */}
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Desktop-only Action Buttons (>= sm) */}
+        <div className="hidden sm:flex items-center gap-2 shrink-0">
+          {/* Sync Button */}
+          <button
+            type="button"
+            onClick={handleSync}
+            disabled={isSyncing}
+            title="Sync with latest database records and closures"
+            className="flex items-center gap-1.5 px-3 py-2 text-[13px] font-semibold rounded-lg border border-[#E0E0E0] bg-white text-[#7A7C87] hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-50"
+          >
+            <svg
+              className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-[#5D5FEF]' : ''}`}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+            </svg>
+            <span>Sync</span>
+          </button>
+
+          {/* Kitchen Order Button */}
           <button
             type="button"
             aria-pressed={kitchenMode}
             onClick={toggleKitchenMode}
             title="Kitchen Dispatch / Packing Order: Non-Veg first → Large → Regular → Small → A–Z"
-            className={`flex items-center space-x-1.5 px-3 py-2 text-[13px] font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${kitchenMode
-              ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
-              : 'bg-white border-[#E0E0E0] text-[#7A7C87] hover:bg-gray-50'
-              }`}
+            className={`flex items-center space-x-1.5 px-3 py-2 text-[13px] font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+              kitchenMode
+                ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
+                : 'bg-white border-[#E0E0E0] text-[#7A7C87] hover:bg-gray-50'
+            }`}
           >
             <UtensilsCrossed className="w-4 h-4" />
             <span>Kitchen Order</span>
           </button>
 
+          {/* Add Customer CTA */}
           <button
             type="button"
             onClick={handleOpenAddForm}
@@ -2876,23 +2997,23 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         </div>
       </div>
 
-      {/* CONSOLIDATED FILTER BAR: dietary tabs (left) + status pills (right) */}
-      <div className="px-4 sm:px-6 py-3 shrink-0 border-b border-[#EEEEEE] flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-gray-100">
-        <div className="flex items-center gap-6 text-[13px] font-medium text-[#7A7C87] whitespace-nowrap">
-          <button onClick={() => setActiveTab('all')} className={`pb-1 border-b-2 transition-colors ${activeTab === 'all' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
+      {/* CONSOLIDATED FILTER BAR */}
+      <div className="px-3 sm:px-6 py-2.5 shrink-0 border-b border-[#EEEEEE] flex flex-col md:flex-row md:items-center justify-between gap-2 pt-2 border-t border-gray-100">
+        <div className="flex items-center gap-4 sm:gap-6 text-[13px] font-medium text-[#7A7C87] overflow-x-auto whitespace-nowrap scrollbar-none pb-1 md:pb-0 shrink-0">
+          <button type="button" onClick={() => setActiveTab('all')} className={`pb-1 border-b-2 transition-colors cursor-pointer ${activeTab === 'all' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
             All Customers <span className="text-xs text-[#B5B7C0]">({customersForDisplay.length})</span>
           </button>
-          <button onClick={() => setActiveTab('veg')} className={`pb-1 border-b-2 transition-colors ${activeTab === 'veg' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
+          <button type="button" onClick={() => setActiveTab('veg')} className={`pb-1 border-b-2 transition-colors cursor-pointer ${activeTab === 'veg' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
             Vegetarian <span className="text-xs text-[#B5B7C0]">({totalVegCount})</span>
           </button>
-          <button onClick={() => setActiveTab('non-veg')} className={`pb-1 border-b-2 transition-colors ${activeTab === 'non-veg' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
+          <button type="button" onClick={() => setActiveTab('non-veg')} className={`pb-1 border-b-2 transition-colors cursor-pointer ${activeTab === 'non-veg' ? 'border-[#5D5FEF] text-[#5D5FEF] font-bold' : 'border-transparent hover:text-[#11142D]'}`}>
             Non-Vegetarian <span className="text-xs text-[#B5B7C0]">({totalNonVegCount})</span>
           </button>
         </div>
 
         {/* SUBSCRIPTION STATUS FILTER PILLS */}
-        <div className="flex items-center space-x-2">
-          <span className="text-[11px] font-semibold text-[#A2A4B0] uppercase tracking-wider mr-1">Status:</span>
+        <div className="flex items-center space-x-1.5 overflow-x-auto whitespace-nowrap scrollbar-none pb-1 md:pb-0 shrink-0">
+          <span className="text-[11px] font-semibold text-[#A2A4B0] uppercase tracking-wider mr-1 hidden sm:inline">Status:</span>
           {(['all', 'active', 'paused', 'cancelled'] as const).map(status => {
             const statusCounts: Record<string, number> = {
               all: customersForDisplay.length,
@@ -2903,8 +3024,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             return (
               <button
                 key={status}
+                type="button"
                 onClick={() => setStatusFilter(status)}
-                className={`px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider transition-all border ${statusFilter === status
+                className={`px-2.5 sm:px-3 py-1 rounded-full text-[10.5px] sm:text-[11px] font-bold uppercase tracking-wider transition-all border shrink-0 cursor-pointer whitespace-nowrap ${statusFilter === status
                   ? status === 'active'
                     ? 'bg-green-100 text-green-700 border-green-300'
                     : status === 'paused'
@@ -2923,536 +3045,680 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       </div>
 
       {/* DATA VIEW TABLE CONTAINER */}
-      <div className="flex-1 min-h-0 bg-white rounded-xl border border-gray-200 shadow-xs mx-4 sm:mx-6 mb-4 flex flex-col overflow-hidden">
-        {/* SUMMARY METRICS BAR */}
-        {statusFilter !== 'cancelled' && sortedCustomers.length > 0 && (
-          <div className="px-4 py-2 bg-gray-50/90 border-b border-gray-200 flex flex-wrap items-center gap-2.5 text-xs shrink-0">
-            {/* Veg Breakdown (Count + Sizes) */}
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50/80 border border-emerald-200 text-emerald-800">
-              <span className="font-bold text-[11px]">{totalVeg} Veg</span>
-              <span className="text-emerald-300 font-normal">|</span>
-              <span className="text-[10.5px] font-semibold text-emerald-700">
-                {formatSizeTokens(vegSizes)}
-              </span>
-            </div>
+      <div className="flex-1 p-3 sm:p-6 overflow-hidden flex flex-col min-h-0">
+        <div className="bg-white border border-[#EEEEEE] rounded-xl shadow-sm overflow-hidden w-full flex-1 flex flex-col min-h-0">
+          {/* SUMMARY METRICS BAR */}
+          {statusFilter !== 'cancelled' && sortedCustomers.length > 0 && (
+            <div className="px-3 sm:px-4 py-2 bg-gray-50/90 border-b border-gray-200 shrink-0">
+              {/* Mobile View: Natural Content-Sized Flex Wrap (< md) */}
+              <div className="flex flex-wrap items-center gap-1.5 md:hidden">
+                {/* Box 1: Veg */}
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] whitespace-nowrap">
+                  <span className="font-bold">{totalVeg} Veg</span>
+                  <span className="text-emerald-300 font-normal">|</span>
+                  <span className="text-[10px] font-semibold text-emerald-700">
+                    {vegSizes.lg}L · {vegSizes.rg}R{vegSizes.hlg > 0 ? ` · ${vegSizes.hlg}HL` : ''}
+                  </span>
+                </div>
 
-            {/* Non-Veg Breakdown (Count + Sizes) */}
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-50/80 border border-rose-200 text-rose-800">
-              <span className="font-bold text-[11px]">{totalNv} Non-Veg</span>
-              <span className="text-rose-300 font-normal">|</span>
-              <span className="text-[10.5px] font-semibold text-rose-700">
-                {formatSizeTokens(nvSizes)}
-              </span>
-            </div>
+                {/* Box 2: Non-Veg */}
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-50 border border-rose-200 text-rose-800 text-[11px] whitespace-nowrap">
+                  <span className="font-bold">{totalNv} NV</span>
+                  <span className="text-rose-300 font-normal">|</span>
+                  <span className="text-[10px] font-semibold text-rose-700">
+                    {nvSizes.lg}L · {nvSizes.rg}R
+                  </span>
+                </div>
 
-            <div className="h-4 w-px bg-gray-300 hidden sm:block" />
+                {/* Box 3: Breads */}
+                <div className="inline-flex items-center px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-amber-800 font-bold text-[11px] whitespace-nowrap">
+                  <span>🍞 {breadHeaderTotal || '0 Roti'}</span>
+                </div>
 
-            {/* Breads & Rice Totals (Icon-free, matching horizontal pills) */}
-            <div className="inline-flex items-center gap-2">
-              <div className="inline-flex items-center px-2.5 py-1 rounded-lg bg-amber-50/80 border border-amber-200 text-amber-800 font-bold text-[11px]">
-                <span>{breadHeaderTotal || '0 Roti'}</span>
+                {/* Box 4: Rice */}
+                <div className="inline-flex items-center px-2.5 py-1 rounded-md bg-blue-50 border border-blue-200 text-blue-800 font-bold text-[11px] whitespace-nowrap">
+                  <span>🍚 {riceHeaderTotal || '0 Rice'}</span>
+                </div>
               </div>
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50/80 border border-blue-200 text-blue-800 text-[11px]">
-                <span className="font-extrabold uppercase text-[10.5px] text-blue-700">Rice</span>
-                <span className="text-blue-300 font-normal">|</span>
-                <span className="font-semibold text-blue-900">{riceHeaderTotal || '0'}</span>
+
+              {/* Desktop View: Single Inline Bar (>= md) */}
+              <div className="hidden md:flex items-center gap-2.5 text-xs">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50/80 border border-emerald-200 text-emerald-800 text-[11px]">
+                  <span className="font-bold">{totalVeg} Veg</span>
+                  <span className="text-emerald-300 font-normal">|</span>
+                  <span className="text-[10.5px] font-semibold text-emerald-700">{formatSizeTokens(vegSizes)}</span>
+                </div>
+
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-50/80 border border-rose-200 text-rose-800 text-[11px]">
+                  <span className="font-bold">{totalNv} Non-Veg</span>
+                  <span className="text-rose-300 font-normal">|</span>
+                  <span className="text-[10.5px] font-semibold text-rose-700">{formatSizeTokens(nvSizes)}</span>
+                </div>
+
+                <div className="h-4 w-px bg-gray-300" />
+
+                <div className="inline-flex items-center px-2.5 py-1 rounded-lg bg-amber-50/80 border border-amber-200 text-amber-800 font-bold text-[11px]">
+                  <span>{breadHeaderTotal || '0 Roti'}</span>
+                </div>
+
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50/80 border border-blue-200 text-blue-800 text-[11px]">
+                  <span className="font-extrabold uppercase text-[10.5px] text-blue-700">Rice</span>
+                  <span className="text-blue-300 font-normal">|</span>
+                  <span className="font-semibold text-blue-900">{riceHeaderTotal || '0'}</span>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <table className="w-full table-fixed text-left text-[13px] border-collapse">
-            {statusFilter === 'cancelled' ? (
-              renderCancelledTableInner()
+          {/* ========================================================= */}
+          {/* 1. MOBILE CARD FEED (< md: Clean touch cards)             */}
+          {/* ========================================================= */}
+          <div className="md:hidden flex-1 min-h-0 overflow-y-auto divide-y divide-gray-100">
+            {sortedCustomers.length === 0 ? (
+              <div className="p-8 text-center text-gray-400 font-medium text-sm">
+                No customers found matching search.
+              </div>
             ) : (
-              <>
-                <colgroup>
-                  <col className="min-w-[220px]" />
-                  <col className="w-[10%]" />
-                  <col className="w-[10%]" />
-                  <col className="w-[9%]" />
-                  <col className="w-[9%]" />
-                  <col className="w-[100px]" />
-                  <col className="min-w-[140px]" />
-                  <col className="w-[8%]" />
-                  <col className="w-[9%]" />
-                </colgroup>
-                {/* SECTION: CUSTOMERS_TABLE_HEAD */}
-                <thead className="sticky top-0 z-20 bg-white shadow-xs">
-                  <tr className="text-[#A2A4B0] font-bold uppercase text-[10.5px] tracking-wider select-none h-10 bg-white border-b border-gray-200">
-                    <th onClick={cycleNameSort} className="sticky top-0 z-20 bg-white pl-4 py-2 border-b border-gray-200 cursor-pointer select-none hover:text-indigo-600 transition-colors group">
-                      <div className="flex items-center space-x-1">
-                        <span>Customer</span>
-                        <span className="text-[10px] text-gray-400 font-bold opacity-70 group-hover:opacity-100">
-                          {nameSort === 'default' ? ' ↕' : nameSort === 'asc' ? ' ↑' : ' ↓'}
-                        </span>
-                      </div>
-                    </th>
-                    <th onClick={cyclePortionSort} className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200 cursor-pointer select-none hover:text-indigo-600 transition-colors group">
-                      <div className="flex items-center space-x-1">
-                        <span>Meal Plan</span>
-                        <span className="text-[10px] text-gray-400 font-bold opacity-70 group-hover:opacity-100">
-                          {portionSort === 'default' ? ' ⇅' : portionSort === 'desc' ? ' ↓' : ' ↑'}
-                        </span>
-                      </div>
-                    </th>
-                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Plan</th>
-                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Roti / Bread</th>
-                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Rice</th>
-                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Schedule</th>
-                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Notes</th>
-                    <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider text-center">Discount</th>
-                    <th className="sticky top-0 z-20 bg-white py-2 pr-3 border-b border-gray-200 text-center whitespace-nowrap">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#F9FBFC]">
-                  {sortedCustomers.length === 0 ? (
-                    <tr>
-                      <td colSpan={9} className="py-16 text-center">
-                        <div className="flex flex-col items-center justify-center space-y-3">
-                          <Users className="w-6 h-6 text-[#5D5FEF]" />
-                          <h3 className="text-gray-700 font-bold text-[14px]">No customers found matching search</h3>
-                          <p className="text-gray-400 text-xs max-w-xs leading-normal">Verify credentials or spin up a fresh active profile record instantly below.</p>
-                          <button onClick={handleOpenAddForm} className="mt-1 px-4 py-1.5 bg-[#5D5FEF] text-white text-xs font-bold rounded-lg shadow-sm">
-                            + Add Fresh Record
-                          </button>
+              sortedCustomers.map(customer => {
+                const displayPlanSize = normalizePortionToken(customer.portion_size || PORTION_RG);
+                const fulfillment = getCustomerFulfillment(customer);
+                const subStatus = (customer.subscription_status || 'active').toLowerCase();
+                const isNonVeg = (customer.meal_type || '').toLowerCase().includes('non');
+                const scheduleBadge = getScheduleBadgeText(customer);
+                const used = customer.used_credits ?? 0;
+                const total = customer.total_tiffin_credits ?? 20;
+
+                return (
+                  <div
+                    key={customer.id}
+                    onClick={() => handleRowClick(customer)}
+                    className="p-3.5 flex flex-col gap-2.5 bg-white hover:bg-slate-50/70 active:bg-slate-100 transition-colors cursor-pointer"
+                  >
+                    {/* Row 1: Name, Status & Meal Pill */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-[#11142D] text-[14px] capitalize truncate">
+                            {customer.full_name}
+                          </span>
+                          <span
+                            className={`inline-block w-2 h-2 rounded-full shrink-0 ${subStatus === 'cancelled' ? 'bg-red-500' : subStatus === 'paused' ? 'bg-amber-400' : 'bg-green-500'
+                              }`}
+                          />
+                          {customer.plan_tier && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-50 text-indigo-700 border border-indigo-100">
+                              {customer.plan_tier}
+                            </span>
+                          )}
                         </div>
-                      </td>
+
+                        {/* Address / Location */}
+                        <div className="text-xs text-gray-500 mt-0.5 truncate">
+                          {fulfillment.mode === 'pure_pickup' ? (
+                            <span className="font-bold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded text-[10px]">
+                              🛍️ Kitchen Pickup
+                            </span>
+                          ) : (
+                            customer.delivery_address?.split(',')[0] || 'No destination address'
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Meal & Portion Badges */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className={`px-1.5 py-0.5 rounded text-[10.5px] font-black uppercase border ${isNonVeg ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          }`}>
+                          {isNonVeg ? 'NV' : 'Veg'}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded text-[10.5px] font-bold bg-gray-100 text-gray-700 border border-gray-200">
+                          {displayPlanSize}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Row 2: Roti, Rice & Delivery Schedule Specs */}
+                    <div className="flex items-center gap-2 flex-wrap text-xs bg-gray-50 border border-gray-200/70 rounded-lg px-2.5 py-1.5 font-medium">
+                      <span className="font-bold text-gray-900">
+                        🍞 {customer.roti_count ? `${customer.roti_count} Roti` : 'No bread'}
+                        {customer.pronthi_count ? ` + ${customer.pronthi_count}P` : ''}
+                      </span>
+
+                      {customer.rice_count && customer.rice_count !== 'None' && customer.rice_count !== '—' && (
+                        <>
+                          <span className="text-gray-300">·</span>
+                          <span className="font-bold text-blue-700">
+                            🍚 {formatRiceCellText(customer.rice_count)}
+                          </span>
+                        </>
+                      )}
+
+                      {scheduleBadge && (
+                        <>
+                          <span className="text-gray-300">·</span>
+                          <span className="text-gray-600 font-semibold">
+                            📅 {scheduleBadge}
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Row 3: Progress & Edit CTA */}
+                    <div className="flex items-center justify-between text-[11px] text-gray-500 pt-0.5">
+                      <span>
+                        Progress: <strong className="text-gray-800">{used}/{total}</strong> delivered
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditCustomer(customer);
+                        }}
+                        className="text-[#5D5FEF] font-bold px-2 py-0.5 rounded hover:bg-[#F4F4FE]"
+                      >
+                        Edit →
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* ========================================================= */}
+          {/* 2. DESKTOP VIEW (>= md: High-density 9-column Table)       */}
+          {/* ========================================================= */}
+          <div className="hidden md:block flex-1 min-h-0 overflow-y-auto">
+            <table className="w-full table-fixed text-left text-[13px] border-collapse">
+              {statusFilter === 'cancelled' ? (
+                renderCancelledTableInner()
+              ) : (
+                <>
+                  <colgroup>
+                    <col className="min-w-[220px]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[9%]" />
+                    <col className="w-[9%]" />
+                    <col className="w-[100px]" />
+                    <col className="min-w-[140px]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[9%]" />
+                  </colgroup>
+                  {/* SECTION: CUSTOMERS_TABLE_HEAD */}
+                  <thead className="sticky top-0 z-20 bg-white shadow-xs">
+                    <tr className="text-[#A2A4B0] font-bold uppercase text-[10.5px] tracking-wider select-none h-10 bg-white border-b border-gray-200">
+                      <th onClick={cycleNameSort} className="sticky top-0 z-20 bg-white pl-4 py-2 border-b border-gray-200 cursor-pointer select-none hover:text-indigo-600 transition-colors group">
+                        <div className="flex items-center space-x-1">
+                          <span>Customer</span>
+                          <span className="text-[10px] text-gray-400 font-bold opacity-70 group-hover:opacity-100">
+                            {nameSort === 'default' ? ' ↕' : nameSort === 'asc' ? ' ↑' : ' ↓'}
+                          </span>
+                        </div>
+                      </th>
+                      <th onClick={cyclePortionSort} className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200 cursor-pointer select-none hover:text-indigo-600 transition-colors group">
+                        <div className="flex items-center space-x-1">
+                          <span>Meal Plan</span>
+                          <span className="text-[10px] text-gray-400 font-bold opacity-70 group-hover:opacity-100">
+                            {portionSort === 'default' ? ' ⇅' : portionSort === 'desc' ? ' ↓' : ' ↑'}
+                          </span>
+                        </div>
+                      </th>
+                      <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Plan</th>
+                      <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Roti / Bread</th>
+                      <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Rice</th>
+                      <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Schedule</th>
+                      <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200">Notes</th>
+                      <th className="sticky top-0 z-20 bg-white py-2 border-b border-gray-200 text-xs font-semibold text-gray-500 uppercase tracking-wider text-center">Discount</th>
+                      <th className="sticky top-0 z-20 bg-white py-2 pr-3 border-b border-gray-200 text-center whitespace-nowrap">Actions</th>
                     </tr>
-                  ) : (
-                    sortedCustomers.map(customer => {
-                      const displayPlanSize = normalizePortionToken(customer.portion_size || PORTION_RG);
+                  </thead>
+                  <tbody className="divide-y divide-[#F9FBFC]">
+                    {sortedCustomers.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-16 text-center">
+                          <div className="flex flex-col items-center justify-center space-y-3">
+                            <Users className="w-6 h-6 text-[#5D5FEF]" />
+                            <h3 className="text-gray-700 font-bold text-[14px]">No customers found matching search</h3>
+                            <p className="text-gray-400 text-xs max-w-xs leading-normal">Verify credentials or spin up a fresh active profile record instantly below.</p>
+                            <button onClick={handleOpenAddForm} className="mt-1 px-4 py-1.5 bg-[#5D5FEF] text-white text-xs font-bold rounded-lg shadow-sm">
+                              + Add Fresh Record
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      sortedCustomers.map(customer => {
+                        const displayPlanSize = normalizePortionToken(customer.portion_size || PORTION_RG);
 
-                      // Fulfillment mode drives the sub-cell below the customer name:
-                      // pure pickup → single Kitchen Pickup badge; delivery-only → address +
-                      // map link; hybrid (e.g. Harshpreet) → address + map link with a compact
-                      // pickup-day pill underneath so partial pickup days stay visible.
-                      const fulfillment = getCustomerFulfillment(customer);
+                        // Fulfillment mode drives the sub-cell below the customer name:
+                        // pure pickup → single Kitchen Pickup badge; delivery-only → address +
+                        // map link; hybrid (e.g. Harshpreet) → address + map link with a compact
+                        // pickup-day pill underneath so partial pickup days stay visible.
+                        const fulfillment = getCustomerFulfillment(customer);
 
-                      const isLastModified = customer.id === lastModifiedCustomerId;
+                        const isLastModified = customer.id === lastModifiedCustomerId;
 
-                      return (
-                        <tr
-                          key={customer.id}
-                          id={`customer-row-${customer.id}`}
-                          onClick={() => handleRowClick(customer)}
-                          className={`group transition-colors cursor-pointer ${isLastModified
-                            ? 'bg-blue-50/70 border-l-4 border-l-blue-500 transition-colors duration-700 ease-out'
-                            : selectedCustomer?.id === customer.id
-                              ? 'bg-[#F4F4FE]'
-                              : 'bg-white hover:bg-slate-50/80'
-                            }`}
-                        >
-                          {/* SECTION: TABLE_ROW_CUSTOMER_CELL */}
-                          <td
-                            className={`py-2 pl-4 pr-3 rounded-l-xl align-top ${isLastModified ? 'border-l-4 border-l-blue-500' : ''}`}
-                            data-section="table-row-customer-cell"
+                        return (
+                          <tr
+                            key={customer.id}
+                            id={`customer-row-${customer.id}`}
+                            onClick={() => handleRowClick(customer)}
+                            className={`group transition-colors cursor-pointer ${isLastModified
+                              ? 'bg-blue-50/70 border-l-4 border-l-blue-500 transition-colors duration-700 ease-out'
+                              : selectedCustomer?.id === customer.id
+                                ? 'bg-[#F4F4FE]'
+                                : 'bg-white hover:bg-slate-50/80'
+                              }`}
                           >
-                            <div className="flex flex-col min-w-0">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="font-bold text-[#11142D] text-[13px] truncate capitalize">{customer.full_name}</span>
-                                {(() => {
-                                  const subStatus = (customer.subscription_status || 'active').toLowerCase();
-                                  const isPaused = subStatus === 'paused';
-                                  const isCancelled = subStatus === 'cancelled';
-                                  const isUpcoming = !isPaused && !isCancelled && !!customer.start_date && customer.start_date > todayKey;
-                                  const statusLabel = isCancelled
-                                    ? `Cancelled${customer.cancellation_reason ? ` — ${customer.cancellation_reason}` : ''}`
-                                    : isPaused
-                                      ? `Paused${customer.pause_start_date ? ` until ${customer.pause_end_date || 'Indefinite'}` : ''}`
-                                      : isUpcoming
-                                        ? `Upcoming — starts ${formatShortLastDay(customer.start_date!)}`
-                                        : 'Active';
-                                  return (
-                                    <span
-                                      title={statusLabel}
-                                      className={`inline-block w-2 h-2 rounded-full shrink-0 ${isCancelled ? 'bg-red-500' : isPaused ? 'bg-amber-400' : isUpcoming ? 'bg-blue-500' : 'bg-green-500'
-                                        }`}
-                                    />
-                                  );
-                                })()}
-                              </div>
-                              {customer.start_date && customer.start_date > todayKey ? (
-                                <span
-                                  title={`Subscription starts ${formatShortLastDay(customer.start_date)}`}
-                                  className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold mt-0.5 whitespace-nowrap"
-                                >
-                                  <Calendar className="w-4 h-4" /> Starts {formatShortLastDay(customer.start_date)}
-                                </span>
-                              ) : null}
-                              {customer.scheduled_cancel_date &&
-                                (customer.subscription_status || 'active') === 'active' ? (
-                                <span
-                                  title={`Last service day — service will be ${customer.scheduled_status === 'paused' ? 'paused' : 'cancelled'} after this date.`}
-                                  className="inline-flex items-center self-start max-w-full px-2 py-0.5 text-xs font-semibold rounded bg-amber-100 text-amber-800 border border-amber-300 mt-0.5 whitespace-nowrap"
-                                >
-                                  ⏳ Ends {formatShortDate(customer.scheduled_cancel_date)}
-                                </span>
-                              ) : null}
-                              {fulfillment.mode === 'pure_pickup' ? (
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-0.5">
-                                  <ShoppingBag className="w-3 h-3" /> Kitchen Pickup
-                                </span>
-                              ) : (
-                                <>
-                                  {customer.delivery_address ? (
-                                    <div className="flex items-center min-w-0 mt-0.5 max-w-full">
+                            {/* SECTION: TABLE_ROW_CUSTOMER_CELL */}
+                            <td
+                              className={`py-2 pl-4 pr-3 rounded-l-xl align-top ${isLastModified ? 'border-l-4 border-l-blue-500' : ''}`}
+                              data-section="table-row-customer-cell"
+                            >
+                              <div className="flex flex-col min-w-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="font-bold text-[#11142D] text-[13px] truncate capitalize">{customer.full_name}</span>
+                                  {(() => {
+                                    const subStatus = (customer.subscription_status || 'active').toLowerCase();
+                                    const isPaused = subStatus === 'paused';
+                                    const isCancelled = subStatus === 'cancelled';
+                                    const isUpcoming = !isPaused && !isCancelled && !!customer.start_date && customer.start_date > todayKey;
+                                    const statusLabel = isCancelled
+                                      ? `Cancelled${customer.cancellation_reason ? ` — ${customer.cancellation_reason}` : ''}`
+                                      : isPaused
+                                        ? `Paused${customer.pause_start_date ? ` until ${customer.pause_end_date || 'Indefinite'}` : ''}`
+                                        : isUpcoming
+                                          ? `Upcoming — starts ${formatShortLastDay(customer.start_date!)}`
+                                          : 'Active';
+                                    return (
                                       <span
-                                        className="text-[11px] text-[#7A7C87] font-medium truncate"
-                                        title={customer.delivery_address}
-                                      >
-                                        {customer.delivery_address.split(',')[0]}
-                                      </span>
-                                      <a
-                                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customer.delivery_address)}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        title="Open in Google Maps"
-                                        aria-label="Open in Google Maps"
-                                        onClick={(e) => e.stopPropagation()}
-                                        className="ml-1 p-0.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors inline-flex items-center"
-                                      >
-                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                        </svg>
-                                      </a>
-                                    </div>
-                                  ) : (
-                                    <span className="text-[11px] text-gray-300 italic mt-0.5">No destination configured</span>
-                                  )}
-                                  {fulfillment.mode === 'hybrid' && fulfillment.pickupDays.length > 0 && (
-                                    <span
-                                      title={fulfillment.pickupDays.join(', ')}
-                                      className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-1"
-                                    >
-                                      <ShoppingBag className="w-4 h-4" /> Pickup: {fulfillment.pickupDays.map(day => day.substring(0, 3)).join(', ')}
-                                    </span>
-                                  )}
-                                </>
-                              )}
-                              {customer.referred_by ? (
-                                <span
-                                  title={`Referred by ${customer.referred_by}`}
-                                  className="text-[11px] text-[#7A7C87] font-medium truncate mt-1 flex items-center max-w-full"
-                                >
-                                  <span className="text-[9px] mr-1 opacity-70">🤝</span>
-                                  Referred by: {customer.referred_by}
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-
-                          <td className="py-2 pr-3 whitespace-nowrap align-top">
-                            <div className="flex flex-col items-start gap-1">
-                              {customer.meal_type ? (
-                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase leading-none ${customer.meal_type.toLowerCase().includes('non')
-                                  ? 'bg-red-50 text-red-600 border-red-100/60'
-                                  : 'bg-green-50 text-green-600 border-green-100/60'
-                                  }`}>
-                                  {customer.meal_type.toLowerCase().includes('non') ? 'Non-Veg' : 'Veg'}
-                                </span>
-                              ) : (
-                                <span className="text-[10px] text-gray-300 font-bold uppercase">—</span>
-                              )}
-                              <span className={`text-[11px] font-semibold ${displayPlanSize === PORTION_LG || displayPlanSize === PORTION_HALF_LG ? 'text-purple-600' : 'text-gray-500'
-                                }`}>
-                                {displayPlanSize}
-                              </span>
-                            </div>
-                          </td>
-
-                          {/* SECTION: TABLE_ROW_PLAN_CELL */}
-                          <td className="py-2 pr-3 align-top whitespace-nowrap" data-section="table-row-plan-cell">
-                            {(() => {
-                              const planLabel = customer.plan_tier || 'Monthly';
-                              const used = customer.used_credits ?? 0;
-                              const total = customer.total_tiffin_credits ?? 20;
-                              const isOverdue = used > total;
-                              const isDue = !isOverdue && used >= total;
-                              const pillClass = isOverdue
-                                ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                : isDue
-                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                  : 'bg-indigo-50 text-indigo-700 border-indigo-100';
-                              const subText = isOverdue
-                                ? `+${used - total} Grace • Overdue`
-                                : isDue
-                                  ? `${used}/${total} • Due`
-                                  : `${used}/${total} delivered`;
-                              const subClass = isOverdue
-                                ? 'text-rose-600'
-                                : isDue
-                                  ? 'text-amber-700'
-                                  : 'text-gray-500';
-
-                              const startDateFormatted = customer.start_date ? formatShortDate(customer.start_date) : null;
-                              const computedEnd = customer.cycle_end_date?.slice(0, 10) ||
-                                (customer.start_date ? calculateTargetLastDay(customer.start_date, total) : null);
-                              const endDateFormatted = computedEnd ? formatShortDate(computedEnd) : null;
-
-                              return (
-                                <div className="flex flex-col items-start gap-0.5 min-w-0">
+                                        title={statusLabel}
+                                        className={`inline-block w-2 h-2 rounded-full shrink-0 ${isCancelled ? 'bg-red-500' : isPaused ? 'bg-amber-400' : isUpcoming ? 'bg-blue-500' : 'bg-green-500'
+                                          }`}
+                                      />
+                                    );
+                                  })()}
+                                </div>
+                                {customer.start_date && customer.start_date > todayKey ? (
                                   <span
-                                    className={`${pillClass} uppercase text-[11px] font-semibold px-2 py-0.5 rounded border inline-block`}
+                                    title={`Subscription starts ${formatShortLastDay(customer.start_date)}`}
+                                    className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] font-bold mt-0.5 whitespace-nowrap"
                                   >
-                                    {planLabel}
+                                    <Calendar className="w-4 h-4" /> Starts {formatShortLastDay(customer.start_date)}
                                   </span>
-                                  <span className={`text-[11px] font-medium ${subClass}`}>{subText}</span>
+                                ) : null}
+                                {customer.scheduled_cancel_date &&
+                                  (customer.subscription_status || 'active') === 'active' ? (
+                                  <span
+                                    title={`Last service day — service will be ${customer.scheduled_status === 'paused' ? 'paused' : 'cancelled'} after this date.`}
+                                    className="inline-flex items-center self-start max-w-full px-2 py-0.5 text-xs font-semibold rounded bg-amber-100 text-amber-800 border border-amber-300 mt-0.5 whitespace-nowrap"
+                                  >
+                                    ⏳ Ends {formatShortDate(customer.scheduled_cancel_date)}
+                                  </span>
+                                ) : null}
+                                {fulfillment.mode === 'pure_pickup' ? (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-0.5">
+                                    <ShoppingBag className="w-3 h-3" /> Kitchen Pickup
+                                  </span>
+                                ) : (
+                                  <>
+                                    {customer.delivery_address ? (
+                                      <div className="flex items-center min-w-0 mt-0.5 max-w-full">
+                                        <span
+                                          className="text-[11px] text-[#7A7C87] font-medium truncate"
+                                          title={customer.delivery_address}
+                                        >
+                                          {customer.delivery_address.split(',')[0]}
+                                        </span>
+                                        <a
+                                          href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(customer.delivery_address)}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          title="Open in Google Maps"
+                                          aria-label="Open in Google Maps"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="ml-1 p-0.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors inline-flex items-center"
+                                        >
+                                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                          </svg>
+                                        </a>
+                                      </div>
+                                    ) : (
+                                      <span className="text-[11px] text-gray-300 italic mt-0.5">No destination configured</span>
+                                    )}
+                                    {fulfillment.mode === 'hybrid' && fulfillment.pickupDays.length > 0 && (
+                                      <span
+                                        title={fulfillment.pickupDays.join(', ')}
+                                        className="inline-flex items-center self-start max-w-full px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 mt-1"
+                                      >
+                                        <ShoppingBag className="w-4 h-4" /> Pickup: {fulfillment.pickupDays.map(day => day.substring(0, 3)).join(', ')}
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                                {customer.referred_by ? (
+                                  <span
+                                    title={`Referred by ${customer.referred_by}`}
+                                    className="text-[11px] text-[#7A7C87] font-medium truncate mt-1 flex items-center max-w-full"
+                                  >
+                                    <span className="text-[9px] mr-1 opacity-70">🤝</span>
+                                    Referred by: {customer.referred_by}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </td>
 
-                                  {startDateFormatted && (
-                                    <span className="text-[10.5px] font-semibold text-gray-400 mt-0.5 tracking-tight">
-                                      {startDateFormatted} → {endDateFormatted || '—'}
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </td>
-
-                          <td className="py-2 pr-3 align-top">
-                            {(() => {
-                              const hasRoti =
-                                customer.roti_count !== null &&
-                                customer.roti_count !== undefined &&
-                                customer.roti_count > 0;
-                              const hasPronthi =
-                                customer.pronthi_count !== null &&
-                                customer.pronthi_count !== undefined &&
-                                customer.pronthi_count > 0;
-                              if (!hasRoti && !hasPronthi) {
-                                return <span className="text-gray-300 font-mono">—</span>;
-                              }
-                              return (
-                                <div className="flex flex-col items-start gap-1">
-                                  {hasRoti && (
-                                    <span className="px-1.5 py-0.5 bg-white text-gray-600 border border-gray-200 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
-                                      {customer.roti_count} Roti
-                                    </span>
-                                  )}
-                                  {hasPronthi && (
-                                    <span className="px-1.5 py-0.5 bg-amber-300 text-amber-950 border border-amber-400 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
-                                      {customer.pronthi_count} Pronthi
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td className="py-2 pr-3 align-top">
-                            {(() => {
-                              const rawRice = (customer.rice_count || "").trim().toLowerCase();
-                              const hasRice =
-                                rawRice !== "" &&
-                                rawRice !== "none" &&
-                                rawRice !== "—" &&
-                                rawRice !== "0" &&
-                                !rawRice.includes("0 rg");
-                              if (!hasRice) {
-                                return <span className="text-gray-300 font-mono">—</span>;
-                              }
-                              return (
-                                <span className="inline-block px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-100/70 rounded text-[10.5px] font-bold font-mono uppercase whitespace-nowrap">
-                                  {formatRiceCellText(customer.rice_count)}
+                            <td className="py-2 pr-3 whitespace-nowrap align-top">
+                              <div className="flex flex-col items-start gap-1">
+                                {customer.meal_type ? (
+                                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase leading-none ${customer.meal_type.toLowerCase().includes('non')
+                                    ? 'bg-red-50 text-red-600 border-red-100/60'
+                                    : 'bg-green-50 text-green-600 border-green-100/60'
+                                    }`}>
+                                    {customer.meal_type.toLowerCase().includes('non') ? 'Non-Veg' : 'Veg'}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-gray-300 font-bold uppercase">—</span>
+                                )}
+                                <span className={`text-[11px] font-semibold ${displayPlanSize === PORTION_LG || displayPlanSize === PORTION_HALF_LG ? 'text-purple-600' : 'text-gray-500'
+                                  }`}>
+                                  {displayPlanSize}
                                 </span>
-                              );
-                            })()}
-                          </td>
+                              </div>
+                            </td>
 
-                          <td className="py-2 pr-3 align-top whitespace-nowrap">
-                            {(() => {
-                              const badgeText = getScheduleBadgeText(customer);
-                              return badgeText ? (
-                                <span
-                                  className="inline-flex px-2 py-0.5 rounded-md bg-gray-100 border border-gray-200 text-gray-700 text-[10.5px] font-bold tracking-wide whitespace-nowrap"
-                                  title={getScheduleTooltip(customer) || undefined}
-                                >
-                                  {badgeText}
-                                </span>
+                            {/* SECTION: TABLE_ROW_PLAN_CELL */}
+                            <td className="py-2 pr-3 align-top whitespace-nowrap" data-section="table-row-plan-cell">
+                              {(() => {
+                                const planLabel = customer.plan_tier || 'Monthly';
+                                const used = customer.used_credits ?? 0;
+                                const total = customer.total_tiffin_credits ?? 20;
+                                const isOverdue = used > total;
+                                const isDue = !isOverdue && used >= total;
+                                const pillClass = isOverdue
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : isDue
+                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                    : 'bg-indigo-50 text-indigo-700 border-indigo-100';
+                                const subText = isOverdue
+                                  ? `+${used - total} Grace • Overdue`
+                                  : isDue
+                                    ? `${used}/${total} • Due`
+                                    : `${used}/${total} delivered`;
+                                const subClass = isOverdue
+                                  ? 'text-rose-600'
+                                  : isDue
+                                    ? 'text-amber-700'
+                                    : 'text-gray-500';
+
+                                const startDateFormatted = customer.start_date ? formatShortDate(customer.start_date) : null;
+                                const computedEnd = customer.cycle_end_date?.slice(0, 10) ||
+                                  (customer.start_date ? calculateTargetLastDay(customer.start_date, total, closuresSet) : null);
+                                const endDateFormatted = computedEnd ? formatShortDate(computedEnd) : null;
+
+                                return (
+                                  <div className="flex flex-col items-start gap-0.5 min-w-0">
+                                    <span
+                                      className={`${pillClass} uppercase text-[11px] font-semibold px-2 py-0.5 rounded border inline-block`}
+                                    >
+                                      {planLabel}
+                                    </span>
+                                    <span className={`text-[11px] font-medium ${subClass}`}>{subText}</span>
+
+                                    {startDateFormatted && (
+                                      <span className="text-[10.5px] font-semibold text-gray-400 mt-0.5 tracking-tight">
+                                        {startDateFormatted} → {endDateFormatted || '—'}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </td>
+
+                            <td className="py-2 pr-3 align-top">
+                              {(() => {
+                                const hasRoti =
+                                  customer.roti_count !== null &&
+                                  customer.roti_count !== undefined &&
+                                  customer.roti_count > 0;
+                                const hasPronthi =
+                                  customer.pronthi_count !== null &&
+                                  customer.pronthi_count !== undefined &&
+                                  customer.pronthi_count > 0;
+                                if (!hasRoti && !hasPronthi) {
+                                  return <span className="text-gray-300 font-mono">—</span>;
+                                }
+                                return (
+                                  <div className="flex flex-col items-start gap-1">
+                                    {hasRoti && (
+                                      <span className="px-1.5 py-0.5 bg-white text-gray-600 border border-gray-200 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
+                                        {customer.roti_count} Roti
+                                      </span>
+                                    )}
+                                    {hasPronthi && (
+                                      <span className="px-1.5 py-0.5 bg-amber-300 text-amber-950 border border-amber-400 rounded text-[10.5px] font-bold font-mono whitespace-nowrap">
+                                        {customer.pronthi_count} Pronthi
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className="py-2 pr-3 align-top">
+                              {(() => {
+                                const rawRice = (customer.rice_count || "").trim().toLowerCase();
+                                const hasRice =
+                                  rawRice !== "" &&
+                                  rawRice !== "none" &&
+                                  rawRice !== "—" &&
+                                  rawRice !== "0" &&
+                                  !rawRice.includes("0 rg");
+                                if (!hasRice) {
+                                  return <span className="text-gray-300 font-mono">—</span>;
+                                }
+                                return (
+                                  <span className="inline-block px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-100/70 rounded text-[10.5px] font-bold font-mono uppercase whitespace-nowrap">
+                                    {formatRiceCellText(customer.rice_count)}
+                                  </span>
+                                );
+                              })()}
+                            </td>
+
+                            <td className="py-2 pr-3 align-top whitespace-nowrap">
+                              {(() => {
+                                const badgeText = getScheduleBadgeText(customer);
+                                return badgeText ? (
+                                  <span
+                                    className="inline-flex px-2 py-0.5 rounded-md bg-gray-100 border border-gray-200 text-gray-700 text-[10.5px] font-bold tracking-wide whitespace-nowrap"
+                                    title={getScheduleTooltip(customer) || undefined}
+                                  >
+                                    {badgeText}
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-300">—</span>
+                                );
+                              })()}
+                            </td>
+
+                            <td className="py-2 pr-3 align-top break-words">
+                              {renderNotesCell(customer)}
+                            </td>
+
+                            <td className="py-2 px-3 text-center align-middle whitespace-nowrap">
+                              {!customer.discount_type ||
+                                !customer.discount_value ||
+                                Number(customer.discount_value) === 0 ? (
+                                <span className="text-gray-300 font-medium">—</span>
                               ) : (
-                                <span className="text-gray-300">—</span>
-                              );
-                            })()}
-                          </td>
+                                <span
+                                  title={customer.discount_note || 'Discount applied'}
+                                  className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                >
+                                  {customer.discount_type === 'percent'
+                                    ? `-${customer.discount_value}%`
+                                    : `-$${customer.discount_value}`}
+                                </span>
+                              )}
+                            </td>
 
-                          <td className="py-2 pr-3 align-top break-words">
-                            {renderNotesCell(customer)}
-                          </td>
-
-                          <td className="py-2 px-3 text-center align-middle whitespace-nowrap">
-                            {!customer.discount_type ||
-                              !customer.discount_value ||
-                              Number(customer.discount_value) === 0 ? (
-                              <span className="text-gray-300 font-medium">—</span>
-                            ) : (
-                              <span
-                                title={customer.discount_note || 'Discount applied'}
-                                className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200"
-                              >
-                                {customer.discount_type === 'percent'
-                                  ? `-${customer.discount_value}%`
-                                  : `-$${customer.discount_value}`}
-                              </span>
-                            )}
-                          </td>
-
-                          {/* SECTION: TABLE_ROW_ACTIONS_MENU */}
-                          <td className="py-2 pr-4 align-middle text-right" data-section="table-row-actions-menu">
-                            <div className="flex items-center justify-end gap-1.5 relative">
-                              {/* Edit Button */}
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleEditCustomer(customer);
-                                }}
-                                className="px-2.5 py-1 text-xs font-semibold text-gray-700 hover:text-indigo-600 hover:bg-gray-100 rounded-md transition-colors"
-                              >
-                                Edit
-                              </button>
-
-                              {/* 3-Dot Overflow Menu */}
-                              <div
-                                className="relative inline-block text-left"
-                                data-action-menu={customer.id}
-                                onClick={(e) => e.stopPropagation()}
-                              >
+                            {/* SECTION: TABLE_ROW_ACTIONS_MENU */}
+                            <td className="py-2 pr-4 align-middle text-right" data-section="table-row-actions-menu">
+                              <div className="flex items-center justify-end gap-1.5 relative">
+                                {/* Edit Button */}
                                 <button
                                   type="button"
-                                  className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all shrink-0 cursor-pointer shadow-xs"
-                                  title="More options"
-                                  aria-label="More actions"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setActiveMenuId(activeMenuId === customer.id ? null : customer.id);
+                                    handleEditCustomer(customer);
                                   }}
+                                  className="px-2.5 py-1 text-xs font-semibold text-gray-700 hover:text-indigo-600 hover:bg-gray-100 rounded-md transition-colors"
                                 >
-                                  <svg className="w-3.5 h-3.5 fill-current shrink-0" viewBox="0 0 20 20">
-                                    <circle cx="10" cy="4" r="1.3" />
-                                    <circle cx="10" cy="10" r="1.3" />
-                                    <circle cx="10" cy="16" r="1.3" />
-                                  </svg>
+                                  Edit
                                 </button>
 
-                                {activeMenuId === customer.id && (
-                                  <div
-                                    className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-100 rounded-xl shadow-xl py-1.5 z-50 text-left"
-                                    onClick={(e) => e.stopPropagation()}
-                                    onMouseDown={(e) => e.stopPropagation()}
+                                {/* 3-Dot Overflow Menu */}
+                                <div
+                                  className="relative inline-block text-left"
+                                  data-action-menu={customer.id}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <button
+                                    type="button"
+                                    className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all shrink-0 cursor-pointer shadow-xs"
+                                    title="More options"
+                                    aria-label="More actions"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveMenuId(activeMenuId === customer.id ? null : customer.id);
+                                    }}
                                   >
-                                    {/* 📋 Duplicate Customer — create-mode prefill from this row */}
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleDuplicateCustomer(customer);
-                                      }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                    <svg className="w-3.5 h-3.5 fill-current shrink-0" viewBox="0 0 20 20">
+                                      <circle cx="10" cy="4" r="1.3" />
+                                      <circle cx="10" cy="10" r="1.3" />
+                                      <circle cx="10" cy="16" r="1.3" />
+                                    </svg>
+                                  </button>
+
+                                  {activeMenuId === customer.id && (
+                                    <div
+                                      className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-100 rounded-xl shadow-xl py-1.5 z-50 text-left"
+                                      onClick={(e) => e.stopPropagation()}
+                                      onMouseDown={(e) => e.stopPropagation()}
                                     >
-                                      <ClipboardList className="w-4 h-4" />
-                                      <span className="whitespace-nowrap">Duplicate Customer</span>
-                                    </button>
-
-                                    {/* 💳 Log Payment / Renew Cycle (due, overdue, or fully used) */}
-                                    {((customer.payment_status === 'due' ||
-                                      customer.payment_status === 'overdue') ||
-                                      (customer.used_credits ?? 0) >= (customer.total_tiffin_credits ?? 20)) && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            openRenewModal(customer);
-                                          }}
-                                          className="w-full px-3.5 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                        >
-                                          <span className="text-sm shrink-0"><CreditCard className="w-4 h-4" /></span>
-                                          <span className="whitespace-nowrap">Log Payment / Renew Cycle</span>
-                                        </button>
-                                      )}
-
-                                    {/* ⭐ Upgrade Plan (trial or weekly only) */}
-                                    {(customer.plan_tier === 'trial' || customer.plan_tier === 'weekly') && (
+                                      {/* 📋 Duplicate Customer — create-mode prefill from this row */}
                                       <button
                                         type="button"
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          openUpgradeModal(customer);
+                                          handleDuplicateCustomer(customer);
                                         }}
-                                        className="w-full px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                        className="w-full px-3.5 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors cursor-pointer"
                                       >
-                                        <span className="text-sm shrink-0">⭐</span>
-                                        <span className="whitespace-nowrap">Upgrade Plan</span>
+                                        <ClipboardList className="w-4 h-4" />
+                                        <span className="whitespace-nowrap">Duplicate Customer</span>
                                       </button>
-                                    )}
 
-                                    <div className="border-t border-gray-100 my-1" />
+                                      {/* 💳 Log Payment / Renew Cycle (due, overdue, or fully used) */}
+                                      {((customer.payment_status === 'due' ||
+                                        customer.payment_status === 'overdue') ||
+                                        (customer.used_credits ?? 0) >= (customer.total_tiffin_credits ?? 20)) && (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              openRenewModal(customer);
+                                            }}
+                                            className="w-full px-3.5 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                          >
+                                            <span className="text-sm shrink-0"><CreditCard className="w-4 h-4" /></span>
+                                            <span className="whitespace-nowrap">Log Payment / Renew Cycle</span>
+                                          </button>
+                                        )}
 
-                                    {/* Pause / Resume */}
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setActiveMenuId(null);
-                                        if ((customer.subscription_status || 'active') === 'paused') {
-                                          handleUpdateCustomerStatus(customer.id, 'active');
-                                        } else {
-                                          openConfirmModalForCustomer(customer, 'pause');
-                                        }
-                                      }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-amber-800 hover:bg-amber-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                    >
-                                      <span className="text-sm shrink-0">
-                                        {(customer.subscription_status || 'active') === 'paused' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-                                      </span>
-                                      <span className="whitespace-nowrap">
-                                        {(customer.subscription_status || 'active') === 'paused' ? 'Resume Service' : 'Pause Service'}
-                                      </span>
-                                    </button>
+                                      {/* ⭐ Upgrade Plan (trial or weekly only) */}
+                                      {(customer.plan_tier === 'trial' || customer.plan_tier === 'weekly') && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            openUpgradeModal(customer);
+                                          }}
+                                          className="w-full px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                        >
+                                          <span className="text-sm shrink-0">⭐</span>
+                                          <span className="whitespace-nowrap">Upgrade Plan</span>
+                                        </button>
+                                      )}
 
-                                    {/* Cancel */}
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setActiveMenuId(null);
-                                        openConfirmModalForCustomer(customer, 'cancel');
-                                      }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                    >
-                                      <Ban className="w-4 h-4" />
-                                      <span className="whitespace-nowrap">Cancel Service</span>
-                                    </button>
+                                      <div className="border-t border-gray-100 my-1" />
 
-                                    <div className="border-t border-gray-100 my-1" />
+                                      {/* Pause / Resume */}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setActiveMenuId(null);
+                                          if ((customer.subscription_status || 'active') === 'paused') {
+                                            handleUpdateCustomerStatus(customer.id, 'active');
+                                          } else {
+                                            openConfirmModalForCustomer(customer, 'pause');
+                                          }
+                                        }}
+                                        className="w-full px-3.5 py-2 text-xs font-medium text-amber-800 hover:bg-amber-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      >
+                                        <span className="text-sm shrink-0">
+                                          {(customer.subscription_status || 'active') === 'paused' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                                        </span>
+                                        <span className="whitespace-nowrap">
+                                          {(customer.subscription_status || 'active') === 'paused' ? 'Resume Service' : 'Pause Service'}
+                                        </span>
+                                      </button>
 
-                                    {/* Delete */}
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setActiveMenuId(null);
-                                        openConfirmModalForCustomer(customer, 'delete');
-                                      }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-red-600 hover:bg-red-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                      <span className="whitespace-nowrap">Delete Customer</span>
-                                    </button>
-                                  </div>
-                                )}
+                                      {/* Cancel */}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setActiveMenuId(null);
+                                          openConfirmModalForCustomer(customer, 'cancel');
+                                        }}
+                                        className="w-full px-3.5 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      >
+                                        <Ban className="w-4 h-4" />
+                                        <span className="whitespace-nowrap">Cancel Service</span>
+                                      </button>
+
+                                      <div className="border-t border-gray-100 my-1" />
+
+                                      {/* Delete */}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setActiveMenuId(null);
+                                          openConfirmModalForCustomer(customer, 'delete');
+                                        }}
+                                        className="w-full px-3.5 py-2 text-xs font-medium text-red-600 hover:bg-red-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      >
+                                        <Trash2 className="w-4 h-4" />
+                                        <span className="whitespace-nowrap">Delete Customer</span>
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </>
-            )}
-          </table>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </>
+              )}
+            </table>
+          </div>
         </div>
-
         {/* FLUID SLIDING DRAWER SYSTEM */}
         {isPanelRendered && (
           <>
@@ -3461,25 +3727,35 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               className={`fixed inset-0 z-20 bg-black/10 transition-opacity duration-200 ${isSlideInActive ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
             />
 
-            {/* SECTION: CUSTOMER_EDIT_DRAWER */}
+            {/* SECTION: CUSTOMER_EDIT_DRAWER (Responsive Sheet: Bottom Sheet on Mobile, Right Drawer on Desktop) */}
             <div
               data-section="customer-edit-drawer"
-              className={`w-full md:w-[640px] lg:w-[700px] h-full bg-white border-l border-[#EEEEEE] flex flex-col shadow-2xl fixed right-0 top-0 bottom-0 z-30 transform transition-transform duration-200 ease-out ${isSlideInActive ? 'translate-x-0' : 'translate-x-full'
-                }`}
+              className={`fixed z-30 bg-white shadow-2xl flex flex-col transition-transform duration-300 ease-out
+                /* Mobile: Bottom Sheet */
+                inset-x-0 bottom-0 max-h-[92vh] h-[92vh] rounded-t-2xl border-t border-gray-200
+                ${isSlideInActive ? 'translate-y-0' : 'translate-y-full'}
+                
+                /* Desktop: Right Slide-over */
+                md:inset-x-auto md:top-0 md:right-0 md:bottom-0 md:h-full md:max-h-full md:w-[640px] lg:w-[700px] md:rounded-none md:border-t-0 md:border-l md:border-[#EEEEEE]
+                md:${isSlideInActive ? 'translate-x-0' : 'translate-x-full'} md:translate-y-0
+              `}
             >
+              {/* Mobile Drag Indicator Handle */}
+              <div className="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mt-2.5 mb-1 shrink-0 md:hidden" />
+
               <form onSubmit={handleFormSubmit} noValidate className="flex-1 flex flex-col overflow-hidden text-[13px]">
 
-                {/* STICKY HEADER REGION — title, badge, actions + tab nav stay pinned */}
+                {/* STICKY HEADER REGION */}
                 <div className="sticky top-0 z-10 bg-white border-b border-gray-100 shrink-0">
                   {/* HEAD BAR ACTIONS */}
-                  <div className="px-6 py-4 border-b border-[#F5F5F5] flex items-center justify-between bg-[#FCFCFD] shrink-0">
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <h2 className="text-[14px] font-bold text-[#11142D] uppercase tracking-wide shrink-0">
+                  <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-[#F5F5F5] flex items-center justify-between bg-[#FCFCFD] shrink-0">
+                    <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+                      <h2 className="text-xs sm:text-[14px] font-bold text-[#11142D] uppercase tracking-wide shrink-0">
                         {isAddingNew ? 'Add Customer' : 'Edit'}
                       </h2>
                       {!isAddingNew && fullName && (
                         <>
-                          <span className="text-2xl font-bold text-gray-900 capitalize truncate">
+                          <span className="text-base sm:text-2xl font-bold text-gray-900 capitalize truncate">
                             {fullName}
                           </span>
                           {selectedCustomer && (() => {
@@ -3503,64 +3779,41 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   ? '🗓️ UPCOMING'
                                   : '🟢 Active';
                             return (
-                              <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold border tracking-wide uppercase shrink-0 ${drawerBadgeClass}`}>
+                              <span className={`px-2 py-0.5 rounded-md text-[9.5px] sm:text-[10px] font-bold border tracking-wide uppercase shrink-0 ${drawerBadgeClass}`}>
                                 {drawerBadgeLabel}
                               </span>
                             );
                           })()}
-                          {!isAddingNew && referredBy.trim() && (
-                            <span
-                              title="Referred by"
-                              className="shrink-0 px-2.5 py-0.5 rounded-md text-[10px] font-semibold bg-[#EFEEFC] text-[#5D5FEF] border border-[#5D5FEF]/25 tracking-wide"
-                            >
-                              <Handshake className="w-3.5 h-3.5" /> Referred by: {referredBy.trim()}
-                            </span>
-                          )}
                         </>
                       )}
                     </div>
-                    <div className="flex items-center space-x-2">
-                      <button type="button" onClick={closePanelGracefully} className="px-3 py-1.5 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50">
+
+                    <div className="flex items-center gap-1.5 sm:space-x-2 shrink-0">
+                      <button type="button" onClick={closePanelGracefully} className="px-2.5 sm:px-3 py-1.5 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50">
                         Cancel
                       </button>
                       <button
                         type="submit"
                         disabled={isPending || aiLoading}
-                        className={`px-3 py-1.5 font-semibold rounded-lg text-xs shadow-sm transition-all duration-200 flex items-center space-x-1.5 ${aiLoading
-                          ? 'bg-[#EFEEFC] text-[#5D5FEF] border border-[#EFEEFC] cursor-wait'
-                          : 'bg-[#5D5FEF] hover:bg-[#4D4FDF] text-white disabled:opacity-50'
-                          }`}
+                        className="px-3 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FDF] text-white font-semibold rounded-lg text-xs shadow-sm transition-all disabled:opacity-50"
                       >
-                        {(isPending || aiLoading) && (
-                          <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                          </svg>
-                        )}
-                        <span>
-                          {aiLoading
-                            ? 'Waiting for Profile Analysis...'
-                            : isPending
-                              ? 'Committing to Database...'
-                              : 'Save Customer'
-                          }
-                        </span>
+                        {isPending ? 'Saving...' : 'Save Customer'}
                       </button>
                     </div>
                   </div>
 
-                  {/* TAB NAVIGATION BAR — Profile / Plan & Billing / Meal Config */}
-                  <div className="px-6 pt-3 pb-0 bg-white flex items-center gap-1.5">
+                  {/* TAB NAVIGATION BAR */}
+                  <div className="px-4 sm:px-6 pt-2 sm:pt-3 pb-0 bg-white flex items-center gap-1.5 overflow-x-auto scrollbar-none">
                     {([
-                      { key: 'profile', label: 'Profile', icon: <User className="w-4 h-4" /> },
-                      { key: 'plan', label: 'Plan & Billing', icon: <CreditCard className="w-4 h-4" /> },
-                      { key: 'meal', label: 'Meal Config', icon: <UtensilsCrossed className="w-4 h-4" /> },
+                      { key: 'profile', label: 'Profile', icon: <User className="w-3.5 h-3.5" /> },
+                      { key: 'plan', label: 'Plan & Billing', icon: <CreditCard className="w-3.5 h-3.5" /> },
+                      { key: 'meal', label: 'Meal Config', icon: <UtensilsCrossed className="w-3.5 h-3.5" /> },
                     ] as const).map(tab => (
                       <button
                         key={tab.key}
                         type="button"
                         onClick={() => setActiveDrawerTab(tab.key)}
-                        className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border border-b-0 rounded-b-none ${activeDrawerTab === tab.key
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border border-b-0 rounded-b-none shrink-0 ${activeDrawerTab === tab.key
                           ? 'bg-[#EFEEFC] text-[#5D5FEF] border-[#5D5FEF]/30'
                           : 'bg-white text-[#7A7C87] border-transparent hover:bg-gray-50 hover:text-[#11142D]'
                           }`}
@@ -4548,8 +4801,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         );
                       })()}
 
-                      {/* Action Buttons — hidden while a scheduled cancel/pause is pending
-                          (the Undo card above owns the only available action). */}
+                      {/* Action Buttons — hidden while a scheduled cancel/pause is pending */}
                       {!(selectedCustomer.scheduled_status === 'cancelled' || selectedCustomer.scheduled_cancel_date) ? (
                         <div className="grid grid-cols-2 gap-2">
                           {(selectedCustomer.subscription_status || 'active') === 'active' && (
@@ -4562,10 +4814,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   setIsIndefinitePause(false);
                                   setShowPauseModal(true);
                                 }}
-                                className="px-3 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition-colors"
+                                className="h-10 px-3 flex items-center justify-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-xs font-bold hover:bg-amber-100 transition-colors"
                               >
-                                <Pause className="w-3.5 h-3.5" /> Pause Service
+                                <Pause className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
+                                <span>Pause Service</span>
                               </button>
+
                               <button
                                 type="button"
                                 onClick={() => {
@@ -4573,9 +4827,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   setCancelDate(toLocalDateKey(new Date()));
                                   setShowCancelModal(true);
                                 }}
-                                className="px-3 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-[11px] font-bold hover:bg-red-100 transition-colors"
+                                className="h-10 px-3 flex items-center justify-center gap-1.5 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold hover:bg-red-100 transition-colors"
                               >
-                                <Ban className="w-3.5 h-3.5" /> Cancel Service
+                                <Ban className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
+                                <span>Cancel Service</span>
                               </button>
                             </>
                           )}
@@ -4589,9 +4844,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   setSelectedCustomer({ ...selectedCustomer, subscription_status: 'active', pause_start_date: null, pause_end_date: null });
                                   closePanelGracefully();
                                 })}
-                                className="px-3 py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg text-[11px] font-bold hover:bg-green-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                                className="h-10 px-3 bg-green-50 text-green-700 border border-green-200 rounded-xl text-xs font-bold hover:bg-green-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
                               >
-                                {isPending ? 'Resuming...' : <span className="flex items-center gap-1"><Play className="w-3.5 h-3.5" /> Resume Service</span>}
+                                <Play className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
+                                <span>{isPending ? 'Resuming...' : 'Resume Service'}</span>
                               </button>
                               <button
                                 type="button"
@@ -4600,9 +4856,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   setCancelDate(toLocalDateKey(new Date()));
                                   setShowCancelModal(true);
                                 }}
-                                className="px-3 py-2.5 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-xs rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                                className="h-10 px-3 flex items-center justify-center gap-1.5 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs rounded-xl transition-colors"
                               >
-                                🛑 Cancel Service
+                                <Ban className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
+                                <span>Cancel Service</span>
                               </button>
                             </>
                           )}
