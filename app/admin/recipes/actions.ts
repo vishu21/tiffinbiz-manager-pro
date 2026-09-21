@@ -341,3 +341,70 @@ export async function deleteRecipe(recipeId: string): Promise<DeleteRecipeResult
 
   return { success: true, schemaAvailable: true };
 }
+
+export async function duplicateRecipe(recipeId: string): Promise<{ success: boolean; message?: string; newRecipeId?: string }> {
+  try {
+    const { createClient } = await import('@/utils/supabase/server');
+    const supabase = await createClient();
+
+    // 1. Fetch original recipe
+    const { data: recipe, error: recipeError } = await supabase
+      .from('recipes')
+      .select('dish_name, category')
+      .eq('id', recipeId)
+      .single();
+
+    if (recipeError || !recipe) {
+      return { success: false, message: 'Original recipe could not be found.' };
+    }
+
+    // 2. Fetch original ingredients
+    const { data: ingredients, error: ingError } = await supabase
+      .from('recipe_ingredients')
+      .select('ingredient_name, raw_oz_per_8oz, raw_oz_per_12oz, unit, sort_order')
+      .eq('recipe_id', recipeId)
+      .order('sort_order', { ascending: true });
+
+    if (ingError) {
+      return { success: false, message: 'Failed to read ingredients to duplicate.' };
+    }
+
+    // 3. Insert copied recipe record
+    const { data: newRecipe, error: createError } = await supabase
+      .from('recipes')
+      .insert({
+        dish_name: `${recipe.dish_name} - Copy`,
+        category: recipe.category,
+      })
+      .select('id')
+      .single();
+
+    if (createError || !newRecipe) {
+      return { success: false, message: createError?.message || 'Failed to clone recipe.' };
+    }
+
+    // 4. Insert cloned ingredients
+    if (ingredients && ingredients.length > 0) {
+      const clonedIngredients = ingredients.map((ing, idx) => ({
+        recipe_id: newRecipe.id,
+        ingredient_name: ing.ingredient_name,
+        raw_oz_per_8oz: ing.raw_oz_per_8oz,
+        raw_oz_per_12oz: ing.raw_oz_per_12oz,
+        unit: ing.unit ?? null,
+        sort_order: ing.sort_order ?? idx,
+      }));
+
+      const { error: insertIngError } = await supabase
+        .from('recipe_ingredients')
+        .insert(clonedIngredients);
+
+      if (insertIngError) {
+        return { success: false, message: 'Recipe created, but ingredients failed to copy.' };
+      }
+    }
+
+    return { success: true, newRecipeId: newRecipe.id };
+  } catch (err) {
+    return { success: false, message: err instanceof Error ? err.message : 'Unknown duplication error.' };
+  }
+}

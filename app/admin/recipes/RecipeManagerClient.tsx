@@ -1,11 +1,14 @@
 'use client';
 
 import React, { useCallback, useMemo, useState, useTransition } from 'react';
-import { AlertTriangle, Soup, X, Trash2, Pencil } from 'lucide-react';
+import { AlertTriangle, Soup, X, Trash2, Pencil, Copy, MoreVertical } from 'lucide-react';
+import ActionButton from '@/app/components/ui/ActionButton';
+import GlobalProgressBar from '@/app/components/ui/GlobalProgressBar';
 import {
   getRecipesWithIngredients,
   upsertRecipe,
   deleteRecipe,
+  duplicateRecipe,
   type RecipeCategory,
   type RecipeWithIngredients,
 } from './actions';
@@ -36,8 +39,8 @@ const makeDraft = (ingredient?: {
 
 const TABS: { key: 'all' | RecipeCategory; label: string }[] = [
   { key: 'all', label: 'All' },
-  { key: 'dal', label: 'Dal' },
   { key: 'sabji', label: 'Sabji' },
+  { key: 'dal', label: 'Dal' },
   { key: 'chicken', label: 'Chicken' },
 ];
 
@@ -72,7 +75,49 @@ export default function RecipeManagerClient({
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, startSubmit] = useTransition();
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+  const [recentlyDuplicatedId, setRecentlyDuplicatedId] = useState<string | null>(null);
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
+  const [successBanner, setSuccessBanner] = useState<string | null>(null);
+
+  const handleDuplicate = (recipe: RecipeWithIngredients) => {
+    setBanner(null);
+    setSuccessBanner(null);
+    setDuplicatingId(recipe.id);
+    startSubmit(async () => {
+      try {
+        const result = await duplicateRecipe(recipe.id);
+        if (!result.success || !result.newRecipeId) {
+          setBanner(result.message || 'Could not duplicate recipe.');
+          return;
+        }
+        await refresh();
+
+        // Target new recipe for visual feedback
+        const createdId = result.newRecipeId;
+        setRecentlyDuplicatedId(createdId);
+        setSuccessBanner(`Created "${recipe.name} - Copy"`);
+
+        // Smooth scroll to the newly duplicated recipe card
+        setTimeout(() => {
+          const el = document.getElementById(`recipe-card-${createdId}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 150);
+
+        // Remove glow effect after 4.5 seconds
+        setTimeout(() => {
+          setRecentlyDuplicatedId(null);
+        }, 4500);
+      } catch (err) {
+        setBanner(err instanceof Error ? err.message : 'Could not duplicate recipe.');
+      } finally {
+        setDuplicatingId(null);
+      }
+    });
+  };
 
   const refresh = useCallback(async () => {
     const data = await getRecipesWithIngredients();
@@ -104,7 +149,26 @@ export default function RecipeManagerClient({
           )
       );
     }
-    return filtered;
+
+    // Category priority order: Dal -> Sabji -> Chicken
+    const categoryRank: Record<string, number> = {
+      dal: 1,
+      sabji: 2,
+      chicken: 3,
+    };
+
+    return [...filtered].sort((a, b) => {
+      const rankA = categoryRank[a.category] ?? 99;
+      const rankB = categoryRank[b.category] ?? 99;
+
+      // Primary sort: Dal first, then Sabji, etc.
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+
+      // Secondary sort: Alphabetical A-Z within the same category
+      return a.name.localeCompare(b.name);
+    });
   }, [recipes, activeTab, searchQuery]);
 
   const openAdd = () => {
@@ -192,11 +256,12 @@ export default function RecipeManagerClient({
           category: formCategory,
           ingredients: ingredients
             .filter(row => row.name.trim().length > 0)
-            .map(row => ({
+            .map((row, index) => ({
               id: row.id ?? null,
               name: row.name.trim(),
               raw_oz_per_8oz: Number(row.raw8) || 0,
               raw_oz_per_12oz: Number(row.raw12) || 0,
+              sort_order: index,
             })),
         });
         if (!result.success) {
@@ -231,8 +296,40 @@ export default function RecipeManagerClient({
     });
   };
 
+  // Compute live drawer sums
+  const { drawerTotal8, drawerTotalPct } = useMemo(() => {
+    const total8 = ingredients.reduce((sum, row) => sum + (parseFloat(row.raw8) || 0), 0);
+    const totalPct = ingredients.reduce((sum, row) => {
+      const val8 = parseFloat(row.raw8) || 0;
+      return sum + (val8 / 8.0) * 100;
+    }, 0);
+    return { drawerTotal8: total8, drawerTotalPct: totalPct };
+  }, [ingredients]);
+
+  // Handler to update an ingredient by % without modifying any other rows
+  const handlePercentChange = (key: string, newPctStr: string) => {
+    const pct = parseFloat(newPctStr);
+    if (isNaN(pct)) {
+      updateIngredient(key, { raw8: '', raw12: '' });
+      return;
+    }
+    // Calculate row ounces directly against standard container size (8.0 oz RG, 12.0 oz LG)
+    const calculated8 = ((pct / 100) * 8.0);
+    const calculated12 = (calculated8 * 1.5);
+
+    // Round cleanly to 2 decimal places (strip trailing zeros if whole/clean)
+    const r8 = Math.round(calculated8 * 100) / 100;
+    const r12 = Math.round(calculated12 * 100) / 100;
+
+    updateIngredient(key, {
+      raw8: String(r8),
+      raw12: String(r12),
+    });
+  };
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
+      <GlobalProgressBar />
       <div className="max-w-[1400px] mx-auto">
         {/* Header */}
         <div className="flex items-start justify-between gap-4 mb-5">
@@ -257,6 +354,19 @@ export default function RecipeManagerClient({
           </div>
         )}
 
+        {successBanner && (
+          <div className="mb-4 px-4 py-2.5 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-bold flex items-center justify-between shadow-xs">
+            <span>✨ {successBanner} — highlighted below</span>
+            <button
+              type="button"
+              onClick={() => setSuccessBanner(null)}
+              className="text-emerald-700 hover:text-emerald-950 font-bold px-1 text-sm"
+            >
+              &times;
+            </button>
+          </div>
+        )}
+
         {/* Category tabs & Instant Search Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -268,8 +378,8 @@ export default function RecipeManagerClient({
                   type="button"
                   onClick={() => setActiveTab(tab.key)}
                   className={`px-3 py-1.5 text-xs font-semibold rounded-full border transition-all ${active
-                      ? 'text-[#5D5FEF] bg-[#F4F4FE] border-[#5D5FEF]/30 shadow-xs'
-                      : 'text-gray-600 bg-white border-gray-200 hover:bg-gray-50 hover:text-gray-900'
+                    ? 'text-[#5D5FEF] bg-[#F4F4FE] border-[#5D5FEF]/30 shadow-xs'
+                    : 'text-gray-600 bg-white border-gray-200 hover:bg-gray-50 hover:text-gray-900'
                     }`}
                 >
                   {tab.label} ({counts[tab.key]})
@@ -328,24 +438,38 @@ export default function RecipeManagerClient({
               const totalRgOz = recipe.ingredients.reduce((sum, ing) => sum + (ing.raw_oz_per_8oz || 0), 0);
               const totalLgOz = recipe.ingredients.reduce((sum, ing) => sum + (ing.raw_oz_per_12oz || 0), 0);
 
+              const isJustCreated = recentlyDuplicatedId === recipe.id;
+
               return (
                 <div
+                  id={`recipe-card-${recipe.id}`}
                   key={recipe.id}
-                  className="relative flex flex-col justify-between p-3.5 bg-white border border-gray-200 rounded-xl shadow-xs"
+                  className={`relative flex flex-col justify-between p-3.5 rounded-xl transition-all duration-500 ${isJustCreated
+                    ? 'bg-indigo-50/50 border-2 border-indigo-500 shadow-md ring-4 ring-indigo-200 scale-[1.01]'
+                    : 'bg-white border border-gray-200 shadow-xs'
+                    }`}
                 >
                   <div>
                     <div className="flex items-start justify-between gap-2 mb-2.5">
                       <div className="min-w-0">
-                        <h3 className="text-[14px] font-bold text-[#11142D] truncate" title={recipe.name}>
-                          {recipe.name}
-                        </h3>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <h3 className="text-[14px] font-bold text-[#11142D] truncate" title={recipe.name}>
+                            {recipe.name}
+                          </h3>
+                          {isJustCreated && (
+                            <span className="px-1.5 py-0.2 bg-indigo-600 text-white text-[9px] font-black uppercase rounded tracking-wider animate-pulse shrink-0">
+                              New Copy
+                            </span>
+                          )}
+                        </div>
                         <span
                           className={`inline-block mt-1 px-1.5 py-0.5 rounded border text-[9.5px] font-bold uppercase tracking-wider ${CATEGORY_BADGE[recipe.category]}`}
                         >
                           {CATEGORY_LABEL[recipe.category]}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="flex items-center gap-1 shrink-0 relative">
+                        {/* 1-Click Primary Edit Button */}
                         <button
                           type="button"
                           onClick={() => openEdit(recipe)}
@@ -354,15 +478,61 @@ export default function RecipeManagerClient({
                         >
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(recipe)}
-                          disabled={deletingId === recipe.id}
-                          title="Delete dish"
-                          className="w-7 h-7 flex items-center justify-center text-red-500 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+
+                        {/* 3-Dots Action Menu */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setActiveMenuId(activeMenuId === recipe.id ? null : recipe.id);
+                            }}
+                            title="More actions"
+                            className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+                          >
+                            <MoreVertical className="w-3.5 h-3.5" />
+                          </button>
+
+                          {activeMenuId === recipe.id && (
+                            <>
+                              {/* Invisible backdrop to dismiss menu on click-away */}
+                              <div
+                                className="fixed inset-0 z-20 cursor-default"
+                                onClick={() => setActiveMenuId(null)}
+                              />
+
+                              <div className="absolute right-0 top-8 z-30 w-36 bg-white border border-gray-200 rounded-lg shadow-lg py-1 text-xs font-semibold">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveMenuId(null);
+                                    handleDuplicate(recipe);
+                                  }}
+                                  disabled={duplicatingId === recipe.id || isSubmitting}
+                                  className="w-full px-3 py-2 flex items-center gap-2 text-gray-700 hover:bg-indigo-50 hover:text-indigo-600 transition-colors disabled:opacity-50 text-left"
+                                >
+                                  <Copy className="w-3.5 h-3.5 text-indigo-500" />
+                                  Duplicate
+                                </button>
+
+                                <div className="border-t border-gray-100 my-1" />
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveMenuId(null);
+                                    handleDelete(recipe);
+                                  }}
+                                  disabled={deletingId === recipe.id || isSubmitting}
+                                  className="w-full px-3 py-2 flex items-center gap-2 text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 text-left"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                                  Delete
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -484,6 +654,7 @@ export default function RecipeManagerClient({
                   <div className="flex items-center justify-between px-2 pb-1.5 border-b border-gray-100 text-[10.5px] font-bold uppercase tracking-wider text-gray-500">
                     <span>Ingredients (Drag ⠿ to rearrange)</span>
                     <div className="flex items-center gap-2">
+                      <span className="w-[58px] text-center text-gray-500">%</span>
                       <span className="w-[76px] text-center text-amber-700">8 oz (RG)</span>
                       <span className="w-[76px] text-center text-purple-700">12 oz (LG)</span>
                     </div>
@@ -498,8 +669,8 @@ export default function RecipeManagerClient({
                         onDragOver={e => handleDragOver(e, index)}
                         onDragEnd={handleDragEnd}
                         className={`flex items-center gap-2 p-1.5 rounded-lg border transition-all ${draggedIndex === index
-                            ? 'opacity-40 bg-gray-100 border-dashed border-[#5D5FEF]'
-                            : 'bg-white border-transparent hover:border-gray-200'
+                          ? 'opacity-40 bg-gray-100 border-dashed border-[#5D5FEF]'
+                          : 'bg-white border-transparent hover:border-gray-200'
                           }`}
                       >
                         {/* Drag Handle */}
@@ -529,6 +700,28 @@ export default function RecipeManagerClient({
                           <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-500" />
                         </button>
 
+                        {/* Editable Percentage Input */}
+                        <div className="relative w-[58px] shrink-0">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.1"
+                            value={
+                              row.raw8 !== '' && !isNaN(parseFloat(row.raw8))
+                                ? Math.round(((parseFloat(row.raw8) / 8.0) * 100) * 10) / 10
+                                : ''
+                            }
+                            onChange={e => handlePercentChange(row.key, e.target.value)}
+                            placeholder="0.0"
+                            title="Percentage of standard 8 oz portion (adjusts oz for this row only)"
+                            className="w-full text-center font-semibold text-[12px] py-2 pl-1 pr-3.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                          />
+                          <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 font-bold pointer-events-none">
+                            %
+                          </span>
+                        </div>
+
                         {/* 8 oz (RG) numeric input */}
                         <input
                           type="number"
@@ -556,13 +749,37 @@ export default function RecipeManagerClient({
                     ))}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={addIngredientRow}
-                    className="mt-2.5 px-3 py-1.5 text-[11.5px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#EBEBFD] rounded-lg transition-colors"
-                  >
-                    + Add Another Ingredient
-                  </button>
+                  {/* Real-time batch total & 100% check */}
+                  <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center justify-between text-[11px] font-mono">
+                    <button
+                      type="button"
+                      onClick={addIngredientRow}
+                      className="px-3 py-1.5 text-[11.5px] font-sans font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#EBEBFD] rounded-lg transition-colors"
+                    >
+                      + Add Another Ingredient
+                    </button>
+
+                    <div className="flex items-center gap-2 font-bold">
+                      <span className="text-gray-400 uppercase text-[9.5px]">Total:</span>
+                      <span
+                        className={`w-[58px] text-center ${Math.abs(drawerTotalPct - 100.0) < 0.5 ? 'text-emerald-600' : 'text-amber-600 font-extrabold'
+                          }`}
+                        title="Target: 100%"
+                      >
+                        {drawerTotalPct.toFixed(1)}%
+                      </span>
+                      <span
+                        className={`w-[76px] text-center ${Math.abs(drawerTotal8 - 8.0) < 0.05 ? 'text-emerald-600' : 'text-amber-600'
+                          }`}
+                        title="Standard target is 8.0 oz"
+                      >
+                        {drawerTotal8.toFixed(2)} oz
+                      </span>
+                      <span className="w-[76px] text-center text-gray-500">
+                        {(drawerTotal8 * 1.5).toFixed(2)} oz
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
                 {formError && (
@@ -582,14 +799,15 @@ export default function RecipeManagerClient({
                 >
                   Cancel
                 </button>
-                <button
+                <ActionButton
                   type="button"
                   onClick={handleSave}
-                  disabled={isSubmitting}
-                  className="px-4 py-2 bg-[#5D5FEF] hover:bg-[#4D4FDF] text-white text-[12px] font-bold rounded-lg disabled:opacity-50 transition-colors"
+                  loading={isSubmitting}
+                  loadingText="Saving…"
+                  className="px-4 py-2 bg-[#5D5FEF] hover:bg-[#4D4FDF] text-white text-[12px] font-bold rounded-lg shadow-sm"
                 >
-                  {isSubmitting ? 'Saving…' : editingId ? 'Update Dish' : 'Save Dish'}
-                </button>
+                  {editingId ? 'Update Dish' : 'Save Dish'}
+                </ActionButton>
               </div>
             </div>
           </div>
