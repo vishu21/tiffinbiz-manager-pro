@@ -50,11 +50,18 @@ const isWeekdayDelivery = (date: Date): boolean => {
   return day !== 0 && day !== 6;
 };
 
+export type TargetLastDayResult = {
+  dateKey: string;
+  holidayDaysSkipped: number;
+  customerDaysSkipped: number;
+};
+
 const calculateTargetLastDay = (
   startDateStr: string | null | undefined,
   totalMeals: number | null | undefined,
   closureDates?: Set<string> | Map<string, string> | string[],
-): string | null => {
+  customerSkips?: Set<string>,
+): TargetLastDayResult | null => {
   if (!startDateStr || !totalMeals || totalMeals <= 0) return null;
 
   let normalized = startDateStr.trim();
@@ -74,15 +81,35 @@ const calculateTargetLastDay = (
     return closureDates.includes(key);
   };
 
+  const isCustomerSkip = (d: Date): boolean => {
+    if (!customerSkips) return false;
+    return customerSkips.has(toLocalDateKey(d));
+  };
+
   let mealsCounted = 0;
-  if (isWeekdayDelivery(date) && !isClosed(date)) {
-    mealsCounted = 1;
+  let holidayDaysSkipped = 0;
+  let customerDaysSkipped = 0;
+
+  if (isWeekdayDelivery(date)) {
+    if (isClosed(date)) {
+      holidayDaysSkipped++;
+    } else if (isCustomerSkip(date)) {
+      customerDaysSkipped++;
+    } else {
+      mealsCounted = 1;
+    }
   }
 
   while (mealsCounted < totalMeals) {
     date.setDate(date.getDate() + 1);
-    if (isWeekdayDelivery(date) && !isClosed(date)) {
-      mealsCounted++;
+    if (isWeekdayDelivery(date)) {
+      if (isClosed(date)) {
+        holidayDaysSkipped++;
+      } else if (isCustomerSkip(date)) {
+        customerDaysSkipped++;
+      } else {
+        mealsCounted++;
+      }
     }
     if (mealsCounted > 730) return null;
   }
@@ -90,7 +117,58 @@ const calculateTargetLastDay = (
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return {
+    dateKey: `${y}-${m}-${d}`,
+    holidayDaysSkipped,
+    customerDaysSkipped,
+  };
+};
+
+const calculateElapsedDeliveryDays = (
+  startDateStr: string | null | undefined,
+  closureDates?: Set<string> | Map<string, string> | string[],
+  maxCredits?: number,
+  customerSkips?: Set<string>,
+): number => {
+  if (!startDateStr) return 0;
+
+  let normalized = startDateStr.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(normalized)) {
+    const [m, d, y] = normalized.split('/');
+    normalized = `${y}-${m}-${d}`;
+  }
+
+  const startDate = new Date(`${normalized}T00:00:00`);
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+
+  if (isNaN(startDate.getTime()) || startDate > today) return 0;
+
+  const isClosed = (d: Date): boolean => {
+    if (!closureDates) return false;
+    const key = toLocalDateKey(d);
+    if (closureDates instanceof Set) return closureDates.has(key);
+    if (closureDates instanceof Map) return closureDates.has(key);
+    return closureDates.includes(key);
+  };
+
+  const isCustomerSkip = (d: Date): boolean => {
+    if (!customerSkips) return false;
+    return customerSkips.has(toLocalDateKey(d));
+  };
+
+  let count = 0;
+  const cursor = new Date(startDate);
+
+  while (cursor <= today) {
+    if (isWeekdayDelivery(cursor) && !isClosed(cursor) && !isCustomerSkip(cursor)) {
+      count++;
+      if (maxCredits && count >= maxCredits) break;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return count;
 };
 
 // "Fri, Sep 11" style label for the scheduled-end (amber) badges.
@@ -595,21 +673,51 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);// Restore the missing aiLoading state
   const [aiLoading, setAiLoading] = useState(false);
 
-  // Kitchen Closures Set
+  // Kitchen Closures Set & Customer Skips Map
   const [closuresSet, setClosuresSet] = useState<Set<string>>(new Set());
+  const [skipsMap, setSkipsMap] = useState<Map<string, Set<string>>>(new Map());
   const [isSyncing, setIsSyncing] = useState(false);
+
+  const fetchClosuresAndSkips = async () => {
+    try {
+      const { createClient } = await import('@/utils/supabase/client');
+      const supabase = createClient();
+
+      const [closuresRes, skipsRes] = await Promise.all([
+        supabase.from('kitchen_closures').select('closure_date'),
+        supabase
+          .from('customer_daily_overrides')
+          .select('customer_id, override_date')
+          .eq('is_skipped', true),
+      ]);
+
+      if (closuresRes.data) {
+        setClosuresSet(new Set(closuresRes.data.map((c: any) => c.closure_date)));
+      }
+
+      if (skipsRes.data) {
+        const map = new Map<string, Set<string>>();
+        skipsRes.data.forEach((row: any) => {
+          const cId = String(row.customer_id);
+          const sDate = String(row.override_date || '').slice(0, 10);
+          if (cId && sDate) {
+            if (!map.has(cId)) map.set(cId, new Set());
+            map.get(cId)!.add(sDate);
+          }
+        });
+        setSkipsMap(map);
+      }
+    } catch (err) {
+      console.error('[Customers] Failed to fetch closures or skips:', err);
+    }
+  };
 
   const handleSync = async () => {
     setIsSyncing(true);
     try {
-      const { createClient } = await import('@/utils/supabase/client');
-      const supabase = createClient();
-      const { data } = await supabase.from('kitchen_closures').select('closure_date');
-      if (data) {
-        setClosuresSet(new Set(data.map((c: { closure_date: string }) => c.closure_date)));
-      }
+      await fetchClosuresAndSkips();
       router.refresh();
-      showToast('Customer data & closures synced');
+      showToast('Customer data, skips & closures synced');
     } catch (err) {
       showToast('Failed to sync', 'error');
     } finally {
@@ -621,17 +729,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     let isMounted = true;
     (async () => {
       try {
-        const { createClient } = await import('@/utils/supabase/client');
-        const supabase = createClient();
-        const { data } = await supabase
-          .from('kitchen_closures')
-          .select('closure_date');
-
-        if (isMounted && data) {
-          setClosuresSet(new Set(data.map((c: { closure_date: string }) => c.closure_date)));
-        }
+        if (isMounted) await fetchClosuresAndSkips();
       } catch (err) {
-        console.error('[Customers] Failed to fetch closures:', err);
+        console.error('[Customers] Failed to fetch closures or skips:', err);
       }
     })();
 
@@ -726,6 +826,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [startDate, setStartDate] = useState('');
   const [rotiCount, setRotiCount] = useState<number | ''>('');
   const [pronthiCount, setPronthiCount] = useState<number | ''>('');
+  const [usedCredits, setUsedCredits] = useState<number>(0);
   // Bread-count ownership guard: while FALSE on a brand-new customer, toggling the Portion
   // Size keeps Roti synced to the selected tier's standard default. Any manual stepper /
   // input change (or restoring a stored count) flips it TRUE, after which Portion Size and
@@ -1114,10 +1215,16 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     }
   };
 
-  // Live Auto-Calculated Projected End Date (Mon-Fri service + Kitchen Closures)
-  const computedEndDate = useMemo(() => {
-    return calculateTargetLastDay(startDate, totalTiffinCredits, closuresSet);
-  }, [startDate, totalTiffinCredits, closuresSet]);
+  const currentCustomerSkips = useMemo(() => {
+    return selectedCustomer ? skipsMap.get(selectedCustomer.id) : undefined;
+  }, [selectedCustomer, skipsMap]);
+
+  // Live Auto-Calculated Projected End Date with breakdown
+  const computedEndResult = useMemo(() => {
+    return calculateTargetLastDay(startDate, totalTiffinCredits, closuresSet, currentCustomerSkips);
+  }, [startDate, totalTiffinCredits, closuresSet, currentCustomerSkips]);
+
+  const computedEndDate = computedEndResult?.dateKey || null;
   // ═══════════════════════════════════════════════════════════════
   // Custom curry detection — drives the "⚡ Custom" pill and is saved
   // as `is_custom_curry` + `curry_config` (never into dietary notes).
@@ -1668,6 +1775,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setPlanTier('monthly');
     setTotalTiffinCredits(20);
     setStartDate('');
+    setUsedCredits(0);
     // RG baseline = 6 Roti (tier map: LG 8 · RG 6 · Half LG 5 · Half RG 4). MUST be the RG
     // standard, not LG — Portion Size toggles re-sync until the stepper is manually touched.
     setRotiCount(getDefaultRotiCount(PORTION_RG));
@@ -1778,17 +1886,42 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     applyMealDefaults(customer.meal_type || 'Veg', restoredPortion);
 
     // Restore subscription plan + optional start date.
-    const restoredTier =
+    // Enforce 1-to-1 sync: if credits don't match the plan tier, the tier's standard allowance takes precedence
+    const restoredTier: 'trial' | 'weekly' | 'monthly' =
       customer.plan_tier === 'trial' || customer.plan_tier === 'weekly' || customer.plan_tier === 'monthly'
         ? customer.plan_tier
         : 'monthly';
     setPlanTier(restoredTier);
-    setTotalTiffinCredits(
-      customer.total_tiffin_credits && customer.total_tiffin_credits > 0
-        ? customer.total_tiffin_credits
-        : PLAN_OPTIONS.find(o => o.key === restoredTier)?.credits ?? 20
-    );
+
+    const standardCredits = PLAN_OPTIONS.find(o => o.key === restoredTier)?.credits ?? 20;
+
+    // Respect whatever credits are saved on the customer; fall back to the plan standard only if empty or legacy 25
+    if (customer.total_tiffin_credits && customer.total_tiffin_credits > 0) {
+      // Only fix legacy 25-credit monthly records
+      if (restoredTier === 'monthly' && customer.total_tiffin_credits === 25) {
+        setTotalTiffinCredits(20);
+      } else {
+        setTotalTiffinCredits(customer.total_tiffin_credits);
+      }
+    } else {
+      setTotalTiffinCredits(standardCredits);
+    }
     setStartDate(customer.start_date ? customer.start_date.slice(0, 10) : '');
+
+    // Dynamically calculate elapsed deliveries (subtracting skips and closures)
+    const targetSkips = skipsMap.get(customer.id);
+    const resolvedCredits =
+      customer.total_tiffin_credits && customer.total_tiffin_credits > 0
+        ? (restoredTier === 'monthly' && customer.total_tiffin_credits === 25 ? 20 : customer.total_tiffin_credits)
+        : standardCredits;
+
+    const autoElapsed = calculateElapsedDeliveryDays(
+      customer.start_date,
+      closuresSet,
+      resolvedCredits,
+      targetSkips
+    );
+    setUsedCredits(autoElapsed);
 
     // ⚠️ Restore DB values AFTER defaults — prevents defaults from overwriting saved data.
     // When the row has no stored bread count, fall back to the selected tier's standard
@@ -2322,6 +2455,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       portion_size: finalPortion,
       plan_tier: planTier,
       total_tiffin_credits: totalTiffinCredits,
+      used_credits: usedCredits,
       start_date: startDate.trim() || null,
       cycle_end_date: computedEndDate || null,
       roti_count: rotiCount === '' ? null : Number(rotiCount),
@@ -2976,11 +3110,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             aria-pressed={kitchenMode}
             onClick={toggleKitchenMode}
             title="Kitchen Dispatch / Packing Order: Non-Veg first → Large → Regular → Small → A–Z"
-            className={`flex items-center space-x-1.5 px-3 py-2 text-[13px] font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
-              kitchenMode
-                ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
-                : 'bg-white border-[#E0E0E0] text-[#7A7C87] hover:bg-gray-50'
-            }`}
+            className={`flex items-center space-x-1.5 px-3 py-2 text-[13px] font-semibold rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${kitchenMode
+              ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
+              : 'bg-white border-[#E0E0E0] text-[#7A7C87] hover:bg-gray-50'
+              }`}
           >
             <UtensilsCrossed className="w-4 h-4" />
             <span>Kitchen Order</span>
@@ -3125,9 +3258,17 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 const subStatus = (customer.subscription_status || 'active').toLowerCase();
                 const isNonVeg = (customer.meal_type || '').toLowerCase().includes('non');
                 const scheduleBadge = getScheduleBadgeText(customer);
-                const used = customer.used_credits ?? 0;
-                const total = customer.total_tiffin_credits ?? 20;
-
+                const tierKey = (customer.plan_tier || 'monthly').toLowerCase();
+                const standardAllowance = tierKey === 'weekly' ? 5 : tierKey === 'trial' ? 1 : 20;
+                const total =
+                  customer.total_tiffin_credits && customer.total_tiffin_credits > 0
+                    ? (tierKey === 'monthly' && customer.total_tiffin_credits === 25)
+                      ? 20
+                      : customer.total_tiffin_credits
+                    : standardAllowance;
+                const custSkips = skipsMap.get(customer.id);
+                const autoDays = calculateElapsedDeliveryDays(customer.start_date, closuresSet, total, custSkips);
+                const used = autoDays;
                 return (
                   <div
                     key={customer.id}
@@ -3432,8 +3573,20 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             <td className="py-2 pr-3 align-top whitespace-nowrap" data-section="table-row-plan-cell">
                               {(() => {
                                 const planLabel = customer.plan_tier || 'Monthly';
-                                const used = customer.used_credits ?? 0;
-                                const total = customer.total_tiffin_credits ?? 20;
+                                const tierKey = (customer.plan_tier || 'monthly').toLowerCase();
+                                const standardAllowance = tierKey === 'weekly' ? 5 : tierKey === 'trial' ? 1 : 20;
+
+                                const total =
+                                  customer.total_tiffin_credits && customer.total_tiffin_credits > 0
+                                    ? (tierKey === 'monthly' && customer.total_tiffin_credits === 25)
+                                      ? 20
+                                      : customer.total_tiffin_credits
+                                    : standardAllowance;
+
+                                const custSkips = skipsMap.get(customer.id);
+                                const autoDays = calculateElapsedDeliveryDays(customer.start_date, closuresSet, total, custSkips);
+                                // Prefer autoDays so individual customer skips always decrement delivery count
+                                const used = autoDays;
                                 const isOverdue = used > total;
                                 const isDue = !isOverdue && used >= total;
                                 const pillClass = isOverdue
@@ -3453,10 +3606,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                     : 'text-gray-500';
 
                                 const startDateFormatted = customer.start_date ? formatShortDate(customer.start_date) : null;
-                                const computedEnd = customer.cycle_end_date?.slice(0, 10) ||
-                                  (customer.start_date ? calculateTargetLastDay(customer.start_date, total, closuresSet) : null);
+                                const calculated = customer.start_date
+                                  ? calculateTargetLastDay(customer.start_date, total, closuresSet, custSkips)
+                                  : null;
+                                // Calculated date takes precedence over stale database column cycle_end_date
+                                const computedEnd = calculated?.dateKey || customer.cycle_end_date?.slice(0, 10);
                                 const endDateFormatted = computedEnd ? formatShortDate(computedEnd) : null;
-
                                 return (
                                   <div className="flex flex-col items-start gap-0.5 min-w-0">
                                     <span
@@ -4189,13 +4344,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           </div>
                         </div>
 
-                        {/* Auto-calculated End Date */}
+                        {/* Auto-calculated End Date with Clear Explanation */}
                         <div>
                           <div className="flex items-center justify-between mb-1.5">
                             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">
                               End Date
                             </label>
-                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-100">
+                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
                               AUTO (Mon-Fri)
                             </span>
                           </div>
@@ -4207,19 +4362,51 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               {computedEndDate ? `(${computedEndDate})` : 'Set start date'}
                             </span>
                           </div>
+
+                          {/* Dynamic Explanation Pill */}
+                          {computedEndResult && (computedEndResult.holidayDaysSkipped > 0 || computedEndResult.customerDaysSkipped > 0) && (
+                            <p className="mt-1.5 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1 flex items-center gap-1.5">
+                              <span>📅</span>
+                              <span>
+                                Extended by <strong>+{computedEndResult.holidayDaysSkipped + computedEndResult.customerDaysSkipped} days</strong>
+                                {computedEndResult.customerDaysSkipped > 0 && ` (${computedEndResult.customerDaysSkipped} skip${computedEndResult.customerDaysSkipped > 1 ? 's' : ''})`}
+                                {computedEndResult.holidayDaysSkipped > 0 && ` (${computedEndResult.holidayDaysSkipped} holiday${computedEndResult.holidayDaysSkipped > 1 ? 's' : ''})`}.
+                              </span>
+                            </p>
+                          )}
                         </div>
                       </div>
 
-                      {/* Delivery Usage Summary Banner */}
-                      {selectedCustomer && (
-                        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center justify-between text-xs">
-                          <span className="text-gray-600 font-medium">Cycle Delivery Progress:</span>
-                          <span className="font-bold text-gray-900">
-                            {selectedCustomer.used_credits ?? 0} delivered /{' '}
-                            {Math.max(0, (totalTiffinCredits ?? 20) - (selectedCustomer.used_credits ?? 0))} remaining
+                      {/* Hybrid Delivery Usage Tracker */}
+                      <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center justify-between text-xs">
+                        <div>
+                          <span className="text-gray-700 font-bold block">Cycle Delivery Progress</span>
+                          <span className="text-[11px] text-gray-500">
+                            {Math.max(0, (totalTiffinCredits ?? 20) - usedCredits)} meals remaining
                           </span>
                         </div>
-                      )}
+
+                        {/* Interactive Manual Override Stepper */}
+                        <div className="flex items-center gap-1.5 bg-white border border-gray-300 rounded-xl p-1 shadow-2xs">
+                          <button
+                            type="button"
+                            onClick={() => setUsedCredits(prev => Math.max(0, prev - 1))}
+                            className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold flex items-center justify-center border border-gray-200 cursor-pointer"
+                          >
+                            −
+                          </button>
+                          <span className="px-2 font-black text-gray-900 text-xs whitespace-nowrap">
+                            {usedCredits} / {totalTiffinCredits ?? 20} delivered
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setUsedCredits(prev => prev + 1)}
+                            className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold flex items-center justify-center border border-gray-200 cursor-pointer"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
 

@@ -1861,6 +1861,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             <thead>
               <tr>
                 <th className="w-[24px] text-center">[ ]</th>
+                <th className="w-[28px] text-center whitespace-nowrap px-0.5">#</th>
                 <th className="text-left">CUSTOMER</th>
                 <th className="text-left">STREET / BLDG</th>
                 <th className="w-[34px] text-center">SIZE</th>
@@ -1880,7 +1881,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               ) : (
                 manifestCustomers
                   .filter(c => !c.isSkipped && !c.isExpiredRenewalPending)
-                  .map(customer => {
+                  .map((customer, index) => {
                     const override = dailyOverrides[customer.id];
                     const baseRow = baseCustomerById.get(customer.id);
                     const todayDeviation =
@@ -1997,7 +1998,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                         <td className="text-center align-middle">
                           <span className="inline-block w-3.5 h-3.5 border border-black align-middle" />
                         </td>
-                        <td className="text-left font-bold break-words">{customer.full_name}</td>
+                        <td className="text-center font-bold text-xs whitespace-nowrap px-0.5">
+                          {index + 1}
+                        </td>
+                        <td className="text-left font-bold break-words">
+                          {customer.full_name}
+                        </td>
                         <td className="text-left break-words">{street}</td>
                         <td className="text-center font-black">
                           {formatSizeBadge(customer.portion_size)}
@@ -2442,7 +2448,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         </div>
 
         {/* FULL-WIDTH PACKING MANIFEST */}
-        <div className="bg-white border border-[#EEEEEE] rounded-xl shadow-sm overflow-hidden w-full">
+        <div className="bg-white border border-[#EEEEEE] rounded-xl shadow-sm overflow-hidden w-full print:hidden">
           <div className="px-3 sm:px-6 py-2.5 sm:py-3 border-b border-[#F5F5F5] bg-[#FCFCFD] flex items-center justify-between gap-2 print:hidden">
             <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
               <h3 className="text-[12px] sm:text-[13px] font-black text-[#11142D] uppercase tracking-wide whitespace-nowrap">
@@ -2554,10 +2560,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     key={customer.id}
                     onClick={() => openQuickEdit(customer)}
                     className={`p-3.5 flex flex-col gap-2 transition-colors active:bg-gray-100 cursor-pointer ${customer.isExpiredRenewalPending
-                        ? 'bg-amber-50/50 border-l-4 border-l-amber-400'
-                        : customer.isSkipped
-                          ? 'opacity-60 bg-gray-50/70'
-                          : 'bg-white'
+                      ? 'bg-amber-50/50 border-l-4 border-l-amber-400'
+                      : customer.isSkipped
+                        ? 'opacity-60 bg-gray-50/70'
+                        : 'bg-white'
                       }`}
                   >
                     {/* Top Row: Customer Name + Diet & Portion Badges */}
@@ -2604,35 +2610,35 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     </div>
 
                     {/* Middle Row: Packing Specs (Breads, Rice, Sides) */}
-{!customer.isSkipped && (breadParts.length > 0 || hasRiceToPack(customer.rice_count) || (sidesBadge && !sideText)) && (
-  <div className="flex items-center gap-2 flex-wrap text-xs bg-gray-50 border border-gray-200/70 rounded-lg px-2.5 py-1.5 font-medium">
-    {breadParts.length > 0 && (
-      <span className="font-bold text-gray-900">
-        🍞 {breadParts.join(' + ')}
-      </span>
-    )}
+                    {!customer.isSkipped && (breadParts.length > 0 || hasRiceToPack(customer.rice_count) || (sidesBadge && !sideText)) && (
+                      <div className="flex items-center gap-2 flex-wrap text-xs bg-gray-50 border border-gray-200/70 rounded-lg px-2.5 py-1.5 font-medium">
+                        {breadParts.length > 0 && (
+                          <span className="font-bold text-gray-900">
+                            🍞 {breadParts.join(' + ')}
+                          </span>
+                        )}
 
-    {hasRiceToPack(customer.rice_count) && (
-      <>
-        {breadParts.length > 0 && <span className="text-gray-300">·</span>}
-        <span className="font-bold text-blue-700">
-          🍚 {customer.rice_count}
-        </span>
-      </>
-    )}
+                        {hasRiceToPack(customer.rice_count) && (
+                          <>
+                            {breadParts.length > 0 && <span className="text-gray-300">·</span>}
+                            <span className="font-bold text-blue-700">
+                              🍚 {customer.rice_count}
+                            </span>
+                          </>
+                        )}
 
-    {sidesBadge && !sideText && (
-      <>
-        {(breadParts.length > 0 || hasRiceToPack(customer.rice_count)) && (
-          <span className="text-gray-300">·</span>
-        )}
-        <span className="font-bold text-emerald-700">
-          🥗 Sides {sidesBadge}
-        </span>
-      </>
-    )}
-  </div>
-)}
+                        {sidesBadge && !sideText && (
+                          <>
+                            {(breadParts.length > 0 || hasRiceToPack(customer.rice_count)) && (
+                              <span className="text-gray-300">·</span>
+                            )}
+                            <span className="font-bold text-emerald-700">
+                              🥗 Sides {sidesBadge}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    )}
 
                     {/* Bottom Row: Kitchen Overrides & Notes */}
                     {customer.isSkipped ? (
@@ -2686,9 +2692,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           </div>
 
           {/* ========================================================= */}
-          {/* 2. DESKTOP & PRINT VIEW (Full Table with Fluid Columns)   */}
+          {/* 2. DESKTOP VIEW ONLY (Zero Print Bleed)                  */}
           {/* ========================================================= */}
-          <div className="hidden md:block w-full overflow-x-auto print:block">
+          <div className="hidden md:block w-full overflow-x-auto print:hidden">
             <table className="w-full min-w-full text-left text-[13px] border-collapse">
               <thead>
                 <tr className="text-[#A2A4B0] font-bold border-b border-[#F5F5F5] uppercase text-[10.5px] tracking-wider bg-gray-50/60 h-10 break-inside-avoid print:border-slate-300">
