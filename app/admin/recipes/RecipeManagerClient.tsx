@@ -71,6 +71,7 @@ export default function RecipeManagerClient({
   const [formName, setFormName] = useState('');
   const [formCategory, setFormCategory] = useState<RecipeCategory>('dal');
   const [ingredients, setIngredients] = useState<IngredientDraft[]>([makeDraft()]);
+  const [batchPreviewOz, setBatchPreviewOz] = useState<string>('200');
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, startSubmit] = useTransition();
@@ -598,7 +599,7 @@ export default function RecipeManagerClient({
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 pointer-events-none">
             <div
               className={`bg-white shadow-2xl border border-[#EEEEEE] w-full flex flex-col pointer-events-auto
-                rounded-t-2xl h-[92vh] sm:h-auto sm:max-h-[88vh] sm:rounded-xl sm:max-w-[640px]
+                rounded-t-2xl h-[92vh] sm:h-auto sm:max-h-[88vh] sm:rounded-xl sm:max-w-[740px]
                 transform transition-transform duration-300 ease-out
                 ${isDrawerOpen ? 'translate-y-0 sm:translate-x-0' : 'translate-y-full sm:translate-x-full'}`}
               onClick={e => e.stopPropagation()}
@@ -650,13 +651,26 @@ export default function RecipeManagerClient({
 
                 {/* Dynamic Draggable Ingredient Rows */}
                 <div>
-                  {/* Single Table-Like Header */}
+                  {/* Single Table-Like Header with Live Batch Scaler */}
                   <div className="flex items-center justify-between px-2 pb-1.5 border-b border-gray-100 text-[10.5px] font-bold uppercase tracking-wider text-gray-500">
                     <span>Ingredients (Drag ⠿ to rearrange)</span>
                     <div className="flex items-center gap-2">
-                      <span className="w-[58px] text-center text-gray-500">%</span>
-                      <span className="w-[76px] text-center text-amber-700">8 oz (RG)</span>
-                      <span className="w-[76px] text-center text-purple-700">12 oz (LG)</span>
+                      <span className="w-[54px] text-center text-gray-500">%</span>
+                      <span className="w-[70px] text-center text-amber-700">8 oz (RG)</span>
+                      <span className="w-[70px] text-center text-purple-700">12 oz (LG)</span>
+
+                      {/* Interactive Batch Target Input */}
+                      <div className="w-[86px] flex items-center justify-center gap-1 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5" title="Type target batch size in ounces to preview scaling">
+                        <input
+                          type="number"
+                          min="0"
+                          value={batchPreviewOz}
+                          onChange={e => setBatchPreviewOz(e.target.value)}
+                          placeholder="200"
+                          className="w-11 text-center font-black text-[11px] text-indigo-700 bg-transparent outline-none"
+                        />
+                        <span className="text-[9.5px] font-black text-indigo-500">OZ</span>
+                      </div>
                     </div>
                   </div>
 
@@ -701,7 +715,7 @@ export default function RecipeManagerClient({
                         </button>
 
                         {/* Editable Percentage Input */}
-                        <div className="relative w-[58px] shrink-0">
+                        <div className="relative w-[54px] shrink-0">
                           <input
                             type="number"
                             min="0"
@@ -715,9 +729,9 @@ export default function RecipeManagerClient({
                             onChange={e => handlePercentChange(row.key, e.target.value)}
                             placeholder="0.0"
                             title="Percentage of standard 8 oz portion (adjusts oz for this row only)"
-                            className="w-full text-center font-semibold text-[12px] py-2 pl-1 pr-3.5 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                            className="w-full text-center font-semibold text-[12px] py-2 pl-1 pr-3 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
                           />
-                          <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 font-bold pointer-events-none">
+                          <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 font-bold pointer-events-none">
                             %
                           </span>
                         </div>
@@ -731,7 +745,7 @@ export default function RecipeManagerClient({
                           onChange={e => updateIngredient(row.key, { raw8: e.target.value })}
                           placeholder="0.00"
                           title="Raw oz per 8 oz (RG) container"
-                          className="w-[76px] shrink-0 text-center font-semibold text-[12px] px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                          className="w-[70px] shrink-0 text-center font-semibold text-[12px] px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
                         />
 
                         {/* 12 oz (LG) numeric input */}
@@ -743,8 +757,31 @@ export default function RecipeManagerClient({
                           onChange={e => updateIngredient(row.key, { raw12: e.target.value })}
                           placeholder="0.00"
                           title="Raw oz per 12 oz (LG) container"
-                          className="w-[76px] shrink-0 text-center font-semibold text-[12px] px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
+                          className="w-[70px] shrink-0 text-center font-semibold text-[12px] px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF]"
                         />
+
+                        {/* Live Scaled Target Requirement */}
+                        {(() => {
+                          const targetBatch = parseFloat(batchPreviewOz) || 0;
+                          const raw8Val = parseFloat(row.raw8) || 0;
+                          const scaledOz = targetBatch > 0 ? (raw8Val / 8.0) * targetBatch : 0;
+
+                          return (
+                            <div
+                              className="w-[86px] h-9 shrink-0 px-1.5 flex flex-col justify-center items-end bg-indigo-50/60 border border-indigo-100 rounded-lg text-right select-none"
+                              title={`${scaledOz.toFixed(1)} oz needed for ${targetBatch} oz batch`}
+                            >
+                              <span className="text-[11.5px] font-black text-indigo-950 leading-tight">
+                                {scaledOz > 0 ? `${scaledOz.toFixed(1)} oz` : '—'}
+                              </span>
+                              {scaledOz > 0 && (
+                                <span className="text-[9px] font-semibold text-indigo-600/80 leading-none">
+                                  {scaledOz >= 16 ? `${(scaledOz / 16).toFixed(2)} lbs` : `${Math.round(scaledOz * 28.35)} g`}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
@@ -762,21 +799,24 @@ export default function RecipeManagerClient({
                     <div className="flex items-center gap-2 font-bold">
                       <span className="text-gray-400 uppercase text-[9.5px]">Total:</span>
                       <span
-                        className={`w-[58px] text-center ${Math.abs(drawerTotalPct - 100.0) < 0.5 ? 'text-emerald-600' : 'text-amber-600 font-extrabold'
+                        className={`w-[54px] text-center ${Math.abs(drawerTotalPct - 100.0) < 0.5 ? 'text-emerald-600' : 'text-amber-600 font-extrabold'
                           }`}
                         title="Target: 100%"
                       >
                         {drawerTotalPct.toFixed(1)}%
                       </span>
                       <span
-                        className={`w-[76px] text-center ${Math.abs(drawerTotal8 - 8.0) < 0.05 ? 'text-emerald-600' : 'text-amber-600'
+                        className={`w-[70px] text-center ${Math.abs(drawerTotal8 - 8.0) < 0.05 ? 'text-emerald-600' : 'text-amber-600'
                           }`}
                         title="Standard target is 8.0 oz"
                       >
                         {drawerTotal8.toFixed(2)} oz
                       </span>
-                      <span className="w-[76px] text-center text-gray-500">
+                      <span className="w-[70px] text-center text-gray-500">
                         {(drawerTotal8 * 1.5).toFixed(2)} oz
+                      </span>
+                      <span className="w-[86px] text-right pr-1 text-[11px] font-black text-indigo-700">
+                        {parseFloat(batchPreviewOz) > 0 ? `${parseFloat(batchPreviewOz).toFixed(1)} oz` : '—'}
                       </span>
                     </div>
                   </div>

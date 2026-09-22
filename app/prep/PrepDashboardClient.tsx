@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback, useRef, useTransition } from 'react';
-import { Printer, CalendarOff, AlertTriangle, UtensilsCrossed, Settings2, Scale, Soup, Flame, Leaf, MapPin, Truck, Pause, Undo2, Check, Ban, Search, Folder, FileText, Package, Wheat, Zap } from 'lucide-react';
+import { Printer, CalendarOff, AlertTriangle, UtensilsCrossed, Settings2, Scale, Soup, Flame, Leaf, MapPin, Truck, Pause, Undo2, Check, Ban, Search, Folder, FileText, Package, Wheat, Zap, Loader2 } from 'lucide-react';
+import { startGlobalProgress, stopGlobalProgress } from '@/app/components/ui/GlobalProgressBar';
 import {
   fetchDailyMenu,
   saveDailyMenu,
@@ -824,6 +825,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const [veg2, setVeg2] = useState<string>('');
   const [nonVeg, setNonVeg] = useState<string>('Chicken Curry');
   const [isMenuLoading, setIsMenuLoading] = useState(false);
+  const [isDateSwitching, setIsDateSwitching] = useState(true);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [availableRecipes, setAvailableRecipes] = useState<{ dal: Recipe[]; sabji: Recipe[] }>({ dal: [], sabji: [] });
 
@@ -1264,21 +1266,61 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     });
   };
 
+  // Unified loader: overrides, menu text, and recipe IDs load together in 1 network roundtrip
   useEffect(() => {
     let cancelled = false;
+    setIsDateSwitching(true);
+    setIsMenuLoading(true);
+    setSaveStatus('idle');
+    startGlobalProgress();
+
     (async () => {
-      const refreshed = await refreshDailyOverrides(selectedDateKey);
-      if (cancelled) return;
-      if (refreshed.schemaAvailable) {
-        setPersistenceWarning(null);
-      } else {
-        setPersistenceWarning(formatOverrideUnavailableWarning(refreshed.message));
+      try {
+        const [overrideRes, menuData, selectionData] = await Promise.all([
+          getDailyOverrides(selectedDateKey),
+          fetchDailyMenu(selectedDateKey),
+          getDailyMenuSelection(selectedDateKey),
+        ]);
+
+        if (cancelled) return;
+
+        // 1. Overrides: applies skips and deviations before numbers re-render
+        if (overrideRes.schemaAvailable) {
+          applyOverrideRows(selectedDateKey, overrideRes.rows);
+          setPersistenceWarning(null);
+        } else {
+          setPersistenceWarning(formatOverrideUnavailableWarning(overrideRes.message));
+        }
+
+        // 2. Menu text
+        if (menuData) {
+          setVeg1(menuData.veg_option_1);
+          setVeg2(menuData.veg_option_2);
+          setNonVeg(menuData.chicken_option || 'Chicken Curry');
+        } else {
+          setVeg1('');
+          setVeg2('');
+          setNonVeg('Chicken Curry');
+        }
+
+        // 3. Selection IDs
+        setSelectedDalId(selectionData.dalId || '');
+        setSelectedSabjiId(selectionData.sabjiId || '');
+      } catch (err) {
+        console.error('[Prep] Synchronized date fetch failed:', err);
+      } finally {
+        if (!cancelled) {
+          setIsDateSwitching(false);
+          setIsMenuLoading(false);
+          stopGlobalProgress();
+        }
       }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [selectedDateKey, refreshDailyOverrides]);
+  }, [selectedDateKey, applyOverrideRows]);
 
   const handleReloadSchema = useCallback(async () => {
     setSchemaReloading(true);
@@ -1305,34 +1347,6 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       setSchemaReloading(false);
     }
   }, [refreshDailyOverrides, selectedDateKey]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setIsMenuLoading(true);
-    setSaveStatus('idle');
-
-    (async () => {
-      try {
-        const data = await fetchDailyMenu(dateStr);
-        if (cancelled) return;
-        if (data) {
-          setVeg1(data.veg_option_1);
-          setVeg2(data.veg_option_2);
-          setNonVeg(data.chicken_option || 'Chicken Curry');
-        } else {
-          setVeg1('');
-          setVeg2('');
-          setNonVeg('Chicken Curry');
-        }
-      } catch (err) {
-        console.error('Failed to load daily menu:', err);
-      } finally {
-        if (!cancelled) setIsMenuLoading(false);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [dateStr]);
 
   const triggerAutoSave = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -1384,22 +1398,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     })();
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const selection = await getDailyMenuSelection(selectedDateKey);
-        if (cancelled) return;
-        setSelectedDalId(selection.dalId || '');
-        setSelectedSabjiId(selection.sabjiId || '');
-      } catch (err) {
-        console.error('[Prep] Failed to load the daily menu selection:', err);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedDateKey]);
+  
 
   const persistMenuSelection = async (dalId: string, sabjiId: string) => {
     setMenuSelectionError(null);
@@ -1747,7 +1746,17 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       </div>
 
       {/* DASHBOARD GRID WORKSPACE */}
-      <div className="flex-1 overflow-y-auto p-3 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 print:flex-none print:h-auto print:overflow-visible print:p-3">
+      <div className={`relative flex-1 overflow-y-auto p-3 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 print:flex-none print:h-auto print:overflow-visible print:p-3 transition-opacity duration-150 ${
+        isDateSwitching ? 'opacity-30 pointer-events-none select-none' : 'opacity-100'
+      }`}>
+        {isDateSwitching && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-white/40 backdrop-blur-[1px] print:hidden">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-gray-200 shadow-md text-xs font-bold text-gray-700">
+              <Loader2 className="w-4 h-4 animate-spin text-[#5D5FEF]" />
+              Updating prep counts…
+            </div>
+          </div>
+        )}
 
         {/* PRINT-ONLY KITCHEN MANIFEST */}
         <div
@@ -1847,8 +1856,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     </span>
                   )}
                 </div>
-                <div className="text-[12px] font-black text-black leading-tight">
-                  {printSidesLabel}
+                <div className="flex flex-col text-[12px] font-black text-black leading-tight">
+                  {metrics.saladCount > 0 && <span>Salad: {metrics.saladCount}</span>}
+                  {metrics.dessertCount > 0 && <span>Dessert: {metrics.dessertCount}</span>}
+                  {metrics.saladCount === 0 && metrics.dessertCount === 0 && <span>—</span>}
                 </div>
               </div>
             </div>
