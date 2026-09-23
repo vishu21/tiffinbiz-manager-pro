@@ -935,4 +935,69 @@ export async function searchAddress(query: string) {
     console.error("Server-side geocoding failed securely:", error);
     return [];
   }
+}// 11. CUSTOMER AUDIT ACTIVITY LOGS
+export type CustomerActivityLog = {
+  id: string;
+  customer_id: string;
+  action_type: string;
+  summary: string;
+  changed_fields: Record<string, { from: unknown; to: unknown }> | null;
+  performed_by: string;
+  created_at: string;
+};
+
+export async function getCustomerActivityLogs(customerId: string): Promise<CustomerActivityLog[]> {
+  try {
+    const { createClient } = await import('@/utils/supabase/server');
+    const supabase = await createClient();
+
+    const { data, error } = await supabase
+      .from('customer_activity_logs')
+      .select('*')
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[Logs] Failed to fetch customer activity logs:', error);
+      return [];
+    }
+
+    return (data as CustomerActivityLog[]) || [];
+  } catch (err) {
+    console.error('[Logs] Error fetching logs:', err);
+    return [];
+  }
+}
+export async function addManualCustomerLog(params: {
+  customerId: string;
+  summary: string;
+  actionType?: string;
+  date?: string; // YYYY-MM-DD or ISO string
+}) {
+  try {
+    const { createClient } = await import('@/utils/supabase/server');
+    const supabase = await createClient();
+
+    const timestamp = params.date
+      ? new Date(`${params.date}T12:00:00`).toISOString()
+      : new Date().toISOString();
+
+    const { data, error } = await supabase
+      .from('customer_activity_logs')
+      .insert({
+        customer_id: params.customerId,
+        action_type: params.actionType || 'NOTE',
+        summary: params.summary.trim(),
+        created_at: timestamp,
+        performed_by: 'staff',
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return { success: true, log: data };
+  } catch (err) {
+    console.error('[Logs] Failed to add manual log:', err);
+    return { success: false, message: err instanceof Error ? err.message : 'Failed to save log' };
+  }
 }

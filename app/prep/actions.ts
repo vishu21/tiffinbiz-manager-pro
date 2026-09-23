@@ -1447,3 +1447,65 @@ export async function endCustomerSubscription(
     };
   }
 }
+
+export type DailyManifestSnapshotRow = {
+  id?: string;
+  delivery_date: string;
+  customer_id: string;
+  customer_name: string;
+  delivery_address: string;
+  is_pickup: boolean;
+  meal_type: string;
+  portion_size: string;
+  roti_count: number;
+  pronthi_count: number;
+  rice_count: string | null;
+  dal_name: string | null;
+  sabji_name: string | null;
+  chicken_name: string | null;
+  sides_summary: string | null;
+  special_instructions: string | null;
+  is_skipped: boolean;
+  created_at?: string;
+};
+
+export async function getDailyManifestSnapshot(dateKey: string): Promise<DailyManifestSnapshotRow[]> {
+  try {
+    const { createClient } = await import('@/utils/supabase/server');
+    const supabase = await createClient();
+
+    const { data, error } = await supabase
+      .from('daily_delivery_manifests')
+      .select('*')
+      .eq('delivery_date', dateKey)
+      .order('customer_name', { ascending: true });
+
+    if (error) throw error;
+    return (data as DailyManifestSnapshotRow[]) || [];
+  } catch (err) {
+    console.error('[Snapshot] Failed to fetch historical manifest:', err);
+    return [];
+  }
+}
+
+export async function saveDailyManifestSnapshot(
+  dateKey: string,
+  rows: DailyManifestSnapshotRow[]
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const { createClient } = await import('@/utils/supabase/server');
+    const supabase = await createClient();
+
+    if (!rows.length) return { success: true };
+
+    const { error } = await supabase
+      .from('daily_delivery_manifests')
+      .upsert(rows, { onConflict: 'delivery_date,customer_id' });
+
+    if (error) throw error;
+    return { success: true };
+  } catch (err) {
+    console.error('[Snapshot] Failed to save manifest snapshot:', err);
+    return { success: false, message: err instanceof Error ? err.message : 'Failed to save snapshot' };
+  }
+}

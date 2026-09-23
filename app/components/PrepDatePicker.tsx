@@ -26,6 +26,16 @@ export default function PrepDatePicker({
     return selectedDate ? new Date(`${selectedDate}T12:00:00`) : new Date();
   });
 
+  // Keep calendar month view synchronized whenever selectedDate changes
+  useEffect(() => {
+    if (selectedDate) {
+      const parsed = new Date(`${selectedDate}T12:00:00`);
+      if (!isNaN(parsed.getTime())) {
+        setViewDate(parsed);
+      }
+    }
+  }, [selectedDate]);
+
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Derive "today" string
@@ -85,20 +95,28 @@ export default function PrepDatePicker({
   for (let d = 1; d <= daysInMonth; d++) days.push(d);
 
   return (
-    <div className="relative inline-block" ref={containerRef}>
-      {/* TRIGGER BUTTON (Replaces standard date input) */}
+    <div className="relative inline-flex items-center" ref={containerRef}>
+      {/* TRIGGER BUTTON */}
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={(e) => {
+          e.stopPropagation();
+          setIsOpen((prev) => !prev);
+        }}
         title="Open calendar picker"
-        className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/80 text-gray-600 transition-colors cursor-pointer text-sm"
+        className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors cursor-pointer text-sm ${
+          isOpen ? 'bg-[#5D5FEF] text-white' : 'hover:bg-gray-200/80 text-gray-600'
+        }`}
       >
         <Calendar className="w-4 h-4" />
       </button>
 
       {/* POPOVER CALENDAR */}
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl p-4 z-50 w-72 select-none animate-in fade-in slide-in-from-top-2">
+        <div 
+          onClick={(e) => e.stopPropagation()}
+          className="absolute right-0 top-full mt-2 bg-white border border-gray-200 rounded-2xl shadow-2xl p-4 z-[9999] w-72 select-none animate-in fade-in slide-in-from-top-2"
+        >
           {/* Header Navigation */}
           <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
             <span className="text-xs font-extrabold text-gray-800 tracking-tight">

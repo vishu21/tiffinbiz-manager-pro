@@ -10,10 +10,11 @@ export default async function PrepPage() {
   // Flip any due scheduled cancel/pause dates so today's manifest reflects them (no cron).
   await applyScheduledStatusTransitions();
 
-  // Fetch all customers from your database
+  // Fetch active and paused customers (paused customers may resume on future dates)
   const { data: customers, error } = await supabase
     .from('customers')
-    .select('*').or('subscription_status.eq.active,subscription_status.is.null');
+    .select('*')
+    .or('subscription_status.eq.active,subscription_status.eq.paused,subscription_status.is.null');
 
   if (error) {
     const raw = error as {

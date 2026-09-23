@@ -1,14 +1,37 @@
 'use client';
 
-import { useMemo, useState, useSyncExternalStore } from 'react';
+import { useMemo, useState, useEffect, useSyncExternalStore, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Package, BookOpen, PartyPopper, Check, SkipForward, Undo2 } from 'lucide-react';
+import { 
+  Package, 
+  BookOpen, 
+  Check, 
+  Navigation, 
+  Phone, 
+  Search, 
+  X, 
+  CheckCircle2, 
+  AlertCircle,
+  Truck,
+  Wand2,
+  ListOrdered,
+  GripVertical,
+  ExternalLink,
+  MapPin
+} from 'lucide-react';
 import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction } from './actions';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
+import { 
+  sortDeliveriesChained, 
+  DEFAULT_KITCHEN_ORIGIN, 
+  sanitizeAddressForUrl, 
+  DeliveryCustomer 
+} from '@/app/prep/utils/deliveryRouting';
 
 type CustomerRow = {
   id: string;
   full_name: string;
+  phone_number?: string | null;
   plan_tier: string | null;
   total_tiffin_credits: number | null;
   used_credits: number | null;
@@ -16,28 +39,54 @@ type CustomerRow = {
   subscription_status: string | null;
   status: string | null;
   delivery_schedule: string | null;
-  // Pickup-day columns (migration 00011). delivery_address doubles as the legacy
-  // PICKUP-marker source for records created before pickup_days existed.
   delivery_address?: string | null;
+  delivery_instructions?: string | null;
+  dietary_notes?: string | null;
+  meal_type?: string | null;
+  portion_size?: string | null;
+  roti_count?: number | null;
   is_pickup?: boolean | null;
   pickup_days?: string[] | null;
-  // Optional: upcoming-start (migration 00008) + scheduled end (migration 00014) gates
-  // used to decide whether a customer belongs on today's dispatch list.
   start_date?: string | null;
   scheduled_cancel_date?: string | null;
+  pause_start_date?: string | null;
+  pause_end_date?: string | null;
 };
 
 const noopSubscribe = () => () => {};
 
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
-function isScheduledOn(schedule: string | null | undefined, weekdayName: string): boolean {
+function isCustomerScheduledToday(customer: CustomerRow, activeDay: string, todayKey: string): boolean {
+  const subStatus = (customer.subscription_status || 'active').toLowerCase();
+  if (subStatus === 'cancelled') return false;
+
+  const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
+  if (startDate && todayKey < startDate) return false;
+
+  if (subStatus === 'paused') {
+    const pauseEnd = customer.pause_end_date ? customer.pause_end_date.slice(0, 10) : null;
+    if (!pauseEnd) return false;
+    if (todayKey < pauseEnd) return false;
+  }
+
+  if (customer.scheduled_cancel_date && todayKey > customer.scheduled_cancel_date.slice(0, 10)) {
+    return false;
+  }
+
+  const schedule = customer.delivery_schedule || '';
   if (!schedule || schedule === '—') return false;
-  const short = weekdayName.substring(0, 3);
-  const except = schedule.match(/\[EXCEPT:\s*(.*?)\]/i);
-  if (except && except[1].toLowerCase().includes(short.toLowerCase())) return false;
-  if (schedule.includes('Monday to Friday')) return WEEKDAYS.includes(weekdayName);
-  return schedule.includes(weekdayName) || schedule.toLowerCase().includes(short.toLowerCase());
+
+  const shortDay = activeDay.substring(0, 3);
+  const exceptionMatch = schedule.match(/\[EXCEPT:\s*(.*?)\]/i);
+  if (exceptionMatch && exceptionMatch[1].toLowerCase().includes(shortDay.toLowerCase())) return false;
+
+  const isWeekday = WEEKDAYS.includes(activeDay);
+  return (
+    (schedule.includes('Monday to Friday') && isWeekday) ||
+    schedule.includes(activeDay) ||
+    schedule.toLowerCase().includes(shortDay.toLowerCase())
+  );
 }
 
 const tierBadge: Record<string, string> = {
@@ -47,6 +96,78 @@ const tierBadge: Record<string, string> = {
 };
 
 type DailyLog = { customerId: string; event: 'delivered' | 'skipped' };
+
+const isWeekdayDelivery = (date: Date): boolean => {
+  const day = date.getDay();
+  return day !== 0 && day !== 6;
+};
+
+const toLocalDateKey = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const calculateElapsedDeliveryDays = (
+  startDateStr: string | null | undefined,
+  closureDates?: Set<string>,
+  maxCredits?: number,
+  customerSkips?: Set<string>,
+): number => {
+  if (!startDateStr) return 0;
+
+  let normalized = startDateStr.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(normalized)) {
+    const [m, d, y] = normalized.split('/');
+    normalized = `${y}-${m}-${d}`;
+  }
+
+  const startDate = new Date(`${normalized}T00:00:00`);
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+
+  if (isNaN(startDate.getTime()) || startDate > today) return 0;
+
+  const isClosed = (d: Date): boolean => {
+    if (!closureDates) return false;
+    return closureDates.has(toLocalDateKey(d));
+  };
+
+  const isCustomerSkip = (d: Date): boolean => {
+    if (!customerSkips) return false;
+    return customerSkips.has(toLocalDateKey(d));
+  };
+
+  let count = 0;
+  const cursor = new Date(startDate);
+
+  while (cursor <= today) {
+    if (isWeekdayDelivery(cursor) && !isClosed(cursor) && !isCustomerSkip(cursor)) {
+      count++;
+      if (maxCredits && count >= maxCredits) break;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return count;
+};
+
+const formatStreetOnlyAddress = (address: string | null | undefined): string => {
+  if (!address) return '';
+  const parts = address.split(',').map(p => p.trim()).filter(Boolean);
+  if (parts.length <= 1) return address;
+
+  const streetParts = parts.filter(part => {
+    const p = part.toLowerCase();
+    const isCity = p === 'london' || p === 'woodstock' || p === 'st. thomas' || p === 'st thomas';
+    const isProvince = p === 'on' || p === 'ontario' || p === 'qc' || p === 'canada';
+    const isPostal = /^[a-z]\d[a-z]\s?\d[a-z]\d$/i.test(part);
+    return !isCity && !isProvince && !isPostal;
+  });
+
+  return streetParts.length > 0 ? streetParts.join(', ') : parts[0];
+};
 
 export default function DeliveriesClient({
   initialCustomers,
@@ -60,15 +181,66 @@ export default function DeliveriesClient({
   const [tab, setTab] = useState<'dispatch' | 'ledger'>('dispatch');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showOrderSheet, setShowOrderSheet] = useState(false);
+  const [customOrderIds, setCustomOrderIds] = useState<string[]>([]);
   const [renewedAt, setRenewedAt] = useState<{ id: string; at: string } | null>(null);
 
-  const todayName = useMemo(() => {
-    const d = new Date();
-    return d.toLocaleDateString('en-US', { weekday: 'long' });
+  // Drag and Drop State
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const touchStartY = useRef<number>(0);
+  const touchStartIndex = useRef<number | null>(null);
+
+  const [closuresSet, setClosuresSet] = useState<Set<string>>(new Set());
+  const [skipsMap, setSkipsMap] = useState<Map<string, Set<string>>>(new Map());
+
+  useEffect(() => {
+    let isMountedFlag = true;
+    (async () => {
+      try {
+        const { createClient } = await import('@/utils/supabase/client');
+        const supabase = createClient();
+
+        const [closuresRes, skipsRes] = await Promise.all([
+          supabase.from('kitchen_closures').select('closure_date'),
+          supabase
+            .from('customer_daily_overrides')
+            .select('customer_id, override_date')
+            .eq('is_skipped', true),
+        ]);
+
+        if (isMountedFlag) {
+          if (closuresRes.data) {
+            setClosuresSet(new Set(closuresRes.data.map((c: any) => c.closure_date)));
+          }
+          if (skipsRes.data) {
+            const map = new Map<string, Set<string>>();
+            skipsRes.data.forEach((row: any) => {
+              const cId = String(row.customer_id);
+              const sDate = String(row.override_date || '').slice(0, 10);
+              if (cId && sDate) {
+                if (!map.has(cId)) map.set(cId, new Set());
+                map.get(cId)!.add(sDate);
+              }
+            });
+            setSkipsMap(map);
+          }
+        }
+      } catch (err) {
+        console.error('[Deliveries] Failed to fetch closures or skips:', err);
+      }
+    })();
+
+    return () => {
+      isMountedFlag = false;
+    };
   }, []);
 
-  // Local calendar "today" key (YYYY-MM-DD) used for start_date / scheduled_cancel_date
-  // comparisons on the dispatch list (avoids UTC rollover skew).
+  const todayName = useMemo(() => {
+    return new Date().toLocaleDateString('en-US', { weekday: 'long' });
+  }, []);
+
   const todayKey = useMemo(() => {
     const d = new Date();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -76,16 +248,51 @@ export default function DeliveriesClient({
     return `${d.getFullYear()}-${m}-${day}`;
   }, []);
 
+  useEffect(() => {
+    if (!todayKey) return;
+    try {
+      const saved = localStorage.getItem(`delivery_route_${todayKey}`);
+      if (saved) {
+        setCustomOrderIds(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.warn('Failed to load saved route order', e);
+    }
+  }, [todayKey]);
+
+  const saveOrderToStorage = (order: string[]) => {
+    setCustomOrderIds(order);
+    try {
+      localStorage.setItem(`delivery_route_${todayKey}`, JSON.stringify(order));
+    } catch (e) {
+      console.warn('Failed to save route order', e);
+    }
+  };
+
   const customers = useMemo(
     () =>
-      initialCustomers.map(c => ({
-        ...c,
-        plan_tier: c.plan_tier || 'weekly',
-        total_tiffin_credits: c.total_tiffin_credits ?? (c.plan_tier === 'trial' ? 1 : c.plan_tier === 'monthly' ? 20 : 5),
-        used_credits: c.used_credits ?? 0,
-        skipped_days_count: c.skipped_days_count ?? 0,
-      })),
-    [initialCustomers]
+      initialCustomers.map(c => {
+        const tierKey = (c.plan_tier || 'monthly').toLowerCase();
+        const standardAllowance = tierKey === 'weekly' ? 5 : tierKey === 'trial' ? 1 : 20;
+        const total =
+          c.total_tiffin_credits && c.total_tiffin_credits > 0
+            ? tierKey === 'monthly' && c.total_tiffin_credits === 25
+              ? 20
+              : c.total_tiffin_credits
+            : standardAllowance;
+
+        const custSkips = skipsMap.get(c.id);
+        const autoDays = calculateElapsedDeliveryDays(c.start_date, closuresSet, total, custSkips);
+
+        return {
+          ...c,
+          plan_tier: c.plan_tier || 'monthly',
+          total_tiffin_credits: total,
+          used_credits: autoDays,
+          skipped_days_count: c.skipped_days_count ?? 0,
+        };
+      }),
+    [initialCustomers, closuresSet, skipsMap]
   );
 
   const todayLoggedIds = useMemo(() => todayLogs.map(l => l.customerId), [todayLogs]);
@@ -101,37 +308,188 @@ export default function DeliveriesClient({
     [customers, todayLogs]
   );
 
-  const dispatchList = useMemo(
+  const allScheduledToday = useMemo(
     () =>
       customers.filter(
         c =>
-          (c.subscription_status || 'active').toLowerCase() === 'active' &&
-          (c.status || 'active').toLowerCase() !== 'paused' &&
-          // Upcoming subscriptions (start_date still in the future) are not dispatched
-          // until their start date arrives.
-          (!c.start_date || c.start_date <= todayKey) &&
-          // Scheduled end: the customer is served through their scheduled_cancel_date
-          // and dropped once it has passed (even before the scheduled transition runs).
-          (!c.scheduled_cancel_date || c.scheduled_cancel_date >= todayKey) &&
-          (c.used_credits || 0) < (c.total_tiffin_credits || 0) + 3 &&
-          isScheduledOn(c.delivery_schedule, todayName) &&
-          // Customers picking up from the kitchen today don't need a driver.
-          !isPickupOnDay(c, todayName) &&
-          !todayLoggedIds.includes(c.id)
+          isCustomerScheduledToday(c, todayName, todayKey) &&
+          !isPickupOnDay(c, todayName)
       ),
-    [customers, todayName, todayKey, todayLoggedIds]
+    [customers, todayName, todayKey]
   );
+
+  const pendingDispatchList = useMemo(() => {
+    const uncompleted = allScheduledToday.filter(c => !todayLoggedIds.includes(c.id));
+    if (customOrderIds.length === 0) return uncompleted;
+
+    const map = new Map(uncompleted.map(c => [c.id, c]));
+    const sequenced: CustomerRow[] = [];
+
+    for (const id of customOrderIds) {
+      const match = map.get(id);
+      if (match) {
+        sequenced.push(match);
+        map.delete(id);
+      }
+    }
+
+    return [...sequenced, ...Array.from(map.values())];
+  }, [allScheduledToday, todayLoggedIds, customOrderIds]);
+
+  // Build Full Route Google Maps Run Links (Round trip back to Kitchen Base)
+  const routeRuns = useMemo(() => {
+    const validStops = pendingDispatchList.filter(c => c.delivery_address && c.delivery_address.length > 3);
+    if (validStops.length === 0) return [];
+
+    const kitchenBase = encodeURIComponent(sanitizeAddressForUrl(DEFAULT_KITCHEN_ORIGIN));
+    const runs: { label: string; url: string; stopsCount: number }[] = [];
+    const maxStopsPerRun = 9;
+    const totalRuns = Math.ceil(validStops.length / maxStopsPerRun);
+
+    for (let i = 0; i < totalRuns; i++) {
+      const startIdx = i * maxStopsPerRun;
+      const batch = validStops.slice(startIdx, startIdx + maxStopsPerRun);
+      if (batch.length === 0) continue;
+
+      const isFirstRun = i === 0;
+      const isLastRun = i === totalRuns - 1;
+
+      // Start: Kitchen on first run, or the last stop of previous run
+      const origin = isFirstRun
+        ? kitchenBase
+        : encodeURIComponent(sanitizeAddressForUrl(validStops[startIdx - 1].delivery_address!));
+
+      if (isLastRun) {
+        // Final run ends back at Kitchen Base
+        const destination = kitchenBase;
+        const intermediateWaypoints = batch
+          .map(s => encodeURIComponent(sanitizeAddressForUrl(s.delivery_address!)))
+          .join('|');
+
+        const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&waypoints=${intermediateWaypoints}&travelmode=driving`;
+        
+        runs.push({
+          label: totalRuns === 1 ? 'Start Round Trip (To Kitchen)' : `Run ${i + 1}: Return to Kitchen`,
+          url,
+          stopsCount: batch.length,
+        });
+      } else {
+        // Intermediate runs proceed forward to next stop
+        const destination = encodeURIComponent(sanitizeAddressForUrl(batch[batch.length - 1].delivery_address!));
+        const intermediateStops = batch.slice(0, -1);
+        const waypointsParam = intermediateStops.length > 0
+          ? `&waypoints=${intermediateStops.map(s => encodeURIComponent(sanitizeAddressForUrl(s.delivery_address!))).join('|')}`
+          : '';
+
+        const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypointsParam}&travelmode=driving`;
+
+        runs.push({
+          label: `Run ${i + 1} (Stops ${startIdx + 1}–${startIdx + batch.length})`,
+          url,
+          stopsCount: batch.length,
+        });
+      }
+    }
+
+    return runs;
+  }, [pendingDispatchList]);
+
+  const filteredDispatchList = useMemo(() => {
+    if (!searchQuery.trim()) return pendingDispatchList;
+    const q = searchQuery.toLowerCase();
+    return pendingDispatchList.filter(
+      c =>
+        c.full_name.toLowerCase().includes(q) ||
+        (c.delivery_address || '').toLowerCase().includes(q)
+    );
+  }, [pendingDispatchList, searchQuery]);
 
   const ledgerList = useMemo(
     () =>
-      customers.filter(c => ['active', 'expired', 'paused'].includes((c.subscription_status || 'active').toLowerCase())),
+      customers.filter(c =>
+        ['active', 'expired', 'paused'].includes((c.subscription_status || 'active').toLowerCase())
+      ),
     [customers]
   );
+
+  const completedCount = completedList.filter(l => l.event === 'delivered').length;
+  const totalStopsCount = allScheduledToday.length;
+  const progressPercent = totalStopsCount > 0 ? Math.round((completedCount / totalStopsCount) * 100) : 0;
+
+  // Reordering Logic
+  const reorderList = (fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
+    const list = [...pendingDispatchList];
+    const [moved] = list.splice(fromIndex, 1);
+    list.splice(toIndex, 0, moved);
+    saveOrderToStorage(list.map(c => c.id));
+  };
+
+  const handleDragStart = (index: number) => {
+    setDraggedIndex(index);
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (dragOverIndex !== index) {
+      setDragOverIndex(index);
+    }
+  };
+
+  const handleDrop = (index: number) => {
+    if (draggedIndex !== null && draggedIndex !== index) {
+      reorderList(draggedIndex, index);
+    }
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
+  // Touch handlers for mobile drag & drop
+  const handleTouchStart = (index: number, e: React.TouchEvent) => {
+    touchStartY.current = e.touches[0].clientY;
+    touchStartIndex.current = index;
+    setDraggedIndex(index);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const currentY = e.touches[0].clientY;
+    const elements = document.elementsFromPoint(e.touches[0].clientX, currentY);
+    const dropTarget = elements.find(el => el.hasAttribute('data-drag-index'));
+    if (dropTarget) {
+      const targetIdx = Number(dropTarget.getAttribute('data-drag-index'));
+      if (!isNaN(targetIdx) && targetIdx !== dragOverIndex) {
+        setDragOverIndex(targetIdx);
+      }
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (touchStartIndex.current !== null && dragOverIndex !== null && touchStartIndex.current !== dragOverIndex) {
+      reorderList(touchStartIndex.current, dragOverIndex);
+    }
+    touchStartIndex.current = null;
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleAutoOptimize = () => {
+    if (pendingDispatchList.length <= 1) return;
+    const mappedCustomers: DeliveryCustomer[] = pendingDispatchList.map(c => ({
+      id: c.id,
+      name: c.full_name,
+      delivery_address: c.delivery_address || '',
+    }));
+
+    const groups = sortDeliveriesChained(mappedCustomers);
+    const optimizedIds = groups.flatMap(g => g.customers.map(c => c.id));
+    saveOrderToStorage(optimizedIds);
+    setShowOrderSheet(false);
+  };
 
   if (!isMounted) {
     return (
       <div className="h-full flex-1 flex items-center justify-center bg-[#FDFDFD]">
-        <div className="text-gray-400 text-sm">Loading deliveries…</div>
+        <div className="text-gray-400 text-sm font-medium">Loading deliveries…</div>
       </div>
     );
   }
@@ -151,85 +509,226 @@ export default function DeliveriesClient({
   const planTier = (tier: string | null) => (tier === 'trial' ? 'Trial' : tier === 'monthly' ? 'Monthly' : 'Weekly');
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-[#FDFDFD]">
-      <div className="px-8 py-5 shrink-0 flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-[22px] font-bold text-[#11142D] tracking-tight">Deliveries</h1>
-          <p className="text-[12px] text-gray-500 mt-0.5">Credit-ledger dispatch &amp; subscription tracking</p>
+    <div className="flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] pb-12 font-sans select-none">
+      
+      {/* 1. TOP RESPONSIVE HEADER */}
+      <div className="bg-white border-b border-gray-200 px-4 sm:px-8 py-3 sticky top-0 z-30 shadow-2xs">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-[#5D5FEF] text-white flex items-center justify-center shrink-0">
+              <Truck className="w-4 h-4" />
+            </div>
+            <div>
+              <h1 className="text-[17px] sm:text-[20px] font-black text-[#11142D] tracking-tight truncate leading-tight">
+                Deliveries · {todayName}
+              </h1>
+              <p className="text-[11px] text-gray-400 font-semibold">
+                {totalStopsCount - todayLoggedIds.length} stops left of {totalStopsCount}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
+            <button
+              type="button"
+              onClick={() => setTab('dispatch')}
+              className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
+                tab === 'dispatch'
+                  ? 'bg-white text-[#5D5FEF] shadow-xs'
+                  : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              Dispatch ({pendingDispatchList.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('ledger')}
+              className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
+                tab === 'ledger'
+                  ? 'bg-white text-[#5D5FEF] shadow-xs'
+                  : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              Ledger
+            </button>
+          </div>
         </div>
+
+        {tab === 'dispatch' && totalStopsCount > 0 && (
+          <div className="mt-1">
+            <div className="flex items-center justify-between text-[11px] font-bold text-gray-500 mb-1">
+              <span>Route Progress</span>
+              <span className="text-emerald-600">{completedCount} of {totalStopsCount} Delivered ({progressPercent}%)</span>
+            </div>
+            <div className="w-full h-2 rounded-full bg-gray-100 overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Tabs */}
-      <div className="px-8 flex gap-1.5">
-        {(
-          [
-            { key: 'dispatch', label: <span className="flex items-center gap-1.5"><Package className="w-4 h-4" /> Daily Dispatch</span>, hint: dispatchList.length },
-            { key: 'ledger', label: <span className="flex items-center gap-1.5"><BookOpen className="w-4 h-4" /> Subscription Ledger</span>, hint: ledgerList.length },
-          ] as const
-        ).map(t => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => setTab(t.key)}
-            className={`px-4 py-2 rounded-t-lg text-[13px] font-semibold border-b-2 transition-colors ${
-              tab === t.key
-                ? 'text-[#5D5FEF] border-[#5D5FEF] bg-white'
-                : 'text-gray-500 border-transparent hover:text-gray-700'
-            }`}
-          >
-            {t.label}
-            <span className="ml-1.5 text-[11px] text-gray-400">({t.hint})</span>
-          </button>
-        ))}
-      </div>
-
-      <div className="px-8 py-4">
+      <div className="max-w-4xl mx-auto px-3 sm:px-6 py-4">
         {errorMsg && (
-          <div className="mb-4 px-3.5 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-semibold">
-            {errorMsg}
+          <div className="mb-3 px-3.5 py-2.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-bold flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{errorMsg}</span>
           </div>
         )}
 
+        {/* TAB 1: DAILY DISPATCH DRIVER QUEUE */}
         {tab === 'dispatch' && (
-          <div className="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
-            <div className="px-5 py-3 border-b border-[#F0F2F5] flex items-center justify-between">
-              <h2 className="text-[13px] font-bold text-gray-700 uppercase tracking-wide">
-                Scheduled today · {todayName}
-              </h2>
-              <span className="text-[11px] text-gray-400">
-                {dispatchList.length} scheduled today
-              </span>
+          <div className="space-y-4">
+            
+            {/* ACTION BAR WITH REORDER + START ROUTE BUTTONS */}
+            <div className="bg-white p-3 rounded-2xl border border-gray-200 shadow-2xs space-y-2.5">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setShowOrderSheet(true)}
+                    className="px-3.5 py-2 text-xs font-bold rounded-xl border border-[#5D5FEF]/30 bg-[#F4F4FE] text-[#5D5FEF] hover:bg-[#5D5FEF] hover:text-white transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  >
+                    <GripVertical className="w-4 h-4" />
+                    <span>Reorder Stops ({pendingDispatchList.length})</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleAutoOptimize}
+                    title="Automatically sequences stops along the shortest driving path"
+                    className="px-3 py-2 text-xs font-bold rounded-xl border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Wand2 className="w-4 h-4 text-purple-600" />
+                    <span>Auto-Optimize</span>
+                  </button>
+                </div>
+
+                {/* Primary Route Generator Link(s) */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {routeRuns.map((run, idx) => (
+                    <a
+                      key={idx}
+                      href={run.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-4 py-2 bg-[#5D5FEF] hover:bg-[#4D4FD9] active:bg-[#3D3FB9] text-white font-black text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5"
+                    >
+                      <Navigation className="w-3.5 h-3.5" />
+                      <span>{run.label}</span>
+                    </a>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            {dispatchList.length === 0 ? (
-              <div className="py-16 text-center">
-                <PartyPopper className="w-8 h-8 mx-auto text-gray-400 mb-2" />
-                <p className="text-gray-500 text-sm font-medium">No customers scheduled for delivery today</p>
-                <p className="text-gray-400 text-xs mt-1">
-                  Active, non-paused customers with paid credits or grace remaining appear here once per day.
+            {/* Quick Search on Route */}
+            {pendingDispatchList.length > 3 && (
+              <div className="relative">
+                <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Quick search stop (street or customer name)..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-8 py-2 bg-white border border-gray-200 rounded-xl text-xs font-semibold text-gray-800 placeholder-gray-400 outline-none focus:border-[#5D5FEF] shadow-2xs"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* DELIVERY CARDS */}
+            {filteredDispatchList.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center shadow-xs">
+                <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
+                <h3 className="text-base font-black text-gray-900">
+                  {searchQuery ? 'No matching deliveries' : 'All Deliveries Completed!'}
+                </h3>
+                <p className="text-xs text-gray-500 mt-1 max-w-sm mx-auto">
+                  {searchQuery
+                    ? `No scheduled customer matches "${searchQuery}".`
+                    : 'All scheduled tiffins for today have been marked delivered or skipped.'}
                 </p>
               </div>
             ) : (
-              <ul className="divide-y divide-[#F5F5F5]">
-
-                {dispatchList.map(c => {
+              <div className="space-y-3">
+                {filteredDispatchList.map((c, index) => {
                   const used = c.used_credits || 0;
                   const total = c.total_tiffin_credits || 0;
                   const remaining = Math.max(0, total - used);
+                  const googleMapsUrl = c.delivery_address
+                    ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(c.delivery_address)}`
+                    : null;
+
                   return (
-                    <li key={c.id} className="px-5 py-3.5 flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[14px] font-bold text-[#11142D] capitalize truncate">{c.full_name}</span>
-                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase border ${tierBadge[c.plan_tier || 'weekly']}`}>
-                            {planTier(c.plan_tier)}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-gray-400 mt-0.5">
-                          {remaining} credit{remaining === 1 ? '' : 's'} left of {total}
-                        </p>
+                    <div
+                      key={c.id}
+                      className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs overflow-hidden p-3.5 sm:p-4.5 transition-all"
+                    >
+                      {/* Top Card Row: Stop # and Customer Name */}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-6 h-6 rounded-full bg-gray-100 text-gray-700 text-xs font-black flex items-center justify-center shrink-0">
+                          {index + 1}
+                        </span>
+                        <span className="text-[16px] font-black text-[#11142D] capitalize truncate">
+                          {c.full_name}
+                        </span>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
+
+                      {/* Middle Row: Street Address + Google Maps Navigation Button */}
+                      {c.delivery_address ? (
+                        <div className="mt-2.5 bg-gray-50 border border-gray-200/70 rounded-xl p-3 flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <span 
+                              className="text-[15px] sm:text-[16px] font-black text-gray-900 block leading-snug break-words tracking-tight"
+                              title={c.delivery_address}
+                            >
+                              📍 {formatStreetOnlyAddress(c.delivery_address)}
+                            </span>
+                            <span className="text-[11.5px] font-bold text-gray-500 block mt-1">
+                              {used}/{total} delivered · <strong className="text-emerald-700">{remaining} left</strong>
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {c.phone_number && (
+                              <a
+                                href={`tel:${c.phone_number}`}
+                                title="Call customer"
+                                className="h-9 w-9 rounded-lg bg-white border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors"
+                              >
+                                <Phone className="w-4 h-4" />
+                              </a>
+                            )}
+                            <a
+                              href={googleMapsUrl!}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="h-9 px-3 rounded-lg bg-[#5D5FEF] text-white font-bold text-xs flex items-center gap-1.5 shadow-2xs hover:bg-[#4D4FD9] transition-colors"
+                            >
+                              <Navigation className="w-3.5 h-3.5" />
+                              <span>Map</span>
+                            </a>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs font-semibold text-amber-700 bg-amber-50 p-2 rounded-lg border border-amber-200">
+                          ⚠️ No address configured for this stop.
+                        </p>
+                      )}
+
+                      {/* Bottom Row: Big Driver Action Buttons */}
+                      <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center gap-2">
                         <button
                           type="button"
                           disabled={busyId === c.id}
@@ -237,10 +736,12 @@ export default function DeliveriesClient({
                             setBusyId(c.id);
                             run(() => markDelivered(c.id));
                           }}
-                          className="px-3.5 py-1.5 text-xs font-bold text-white bg-emerald-500 hover:bg-emerald-600 rounded-lg shadow-sm disabled:opacity-50 transition-colors"
+                          className="flex-1 h-11 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                         >
-                          {busyId === c.id ? 'Saving…' : <span className="flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Mark Delivered</span>}
+                          <Check className="w-4 h-4 stroke-[3]" />
+                          <span>{busyId === c.id ? 'Saving…' : 'Mark Delivered'}</span>
                         </button>
+
                         <button
                           type="button"
                           disabled={busyId === c.id}
@@ -248,45 +749,42 @@ export default function DeliveriesClient({
                             setBusyId(c.id);
                             run(() => logSkip(c.id));
                           }}
-                          className="px-3 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg disabled:opacity-50 transition-colors"
+                          className="h-11 px-4 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                         >
-                          ⏭ Log Skip
+                          Skip
                         </button>
                       </div>
-                    </li>
+                    </div>
                   );
                 })}
-              </ul>
+              </div>
             )}
 
+            {/* COMPLETED ACCORDION */}
             {completedList.length > 0 && (
-              <div className="border-t border-[#F0F2F5]">
-                <div className="px-5 py-3 border-b border-[#F0F2F5] flex items-center justify-between">
-                  <h3 className="text-[12.5px] font-bold text-gray-700 uppercase tracking-wide">
-                    <span className="flex items-center gap-1.5"><Check className="w-4 h-4 text-emerald-600" /> Completed Today</span>
-                  </h3>
-                  <span className="text-[11px] text-gray-400">
-                    Undo reverses the credit/skip and re-queues today&apos;s delivery
-                  </span>
+              <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-2xs mt-6">
+                <div className="flex items-center justify-between pb-2 border-b border-gray-100 mb-2">
+                  <div className="flex items-center gap-1.5 text-xs font-black uppercase text-gray-700 tracking-wide">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Completed Today ({completedList.length})</span>
+                  </div>
+                  <span className="text-[11px] text-gray-400">Tap undo if logged in error</span>
                 </div>
-                <ul className="divide-y divide-[#F5F5F5]">
+
+                <div className="divide-y divide-gray-100">
                   {completedList.map(({ customerId, event, customer: c }) => (
-                    <li key={customerId} className="px-5 py-3 flex items-center justify-between gap-4">
-                      <div className="min-w-0 flex items-center gap-2">
-                        <span className="text-[13.5px] font-bold text-[#11142D] capitalize truncate">
+                    <div key={customerId} className="py-2.5 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <span className="text-xs font-bold text-gray-900 block truncate capitalize">
                           {c.full_name}
                         </span>
-                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase border ${tierBadge[c.plan_tier || 'weekly']}`}>
-                          {planTier(c.plan_tier)}
-                        </span>
-                        <span
-                          className={`inline-flex items-center gap-1 text-[10.5px] font-bold uppercase ${
-                            event === 'delivered' ? 'text-emerald-600' : 'text-amber-600'
-                          }`}
-                        >
-                          {event === 'delivered' ? <span className="flex items-center gap-1"><Check className="w-3.5 h-3.5 text-emerald-600" /> Delivered</span> : <span className="flex items-center gap-1"><SkipForward className="w-3.5 h-3.5 text-amber-600" /> Skipped</span>}
+                        <span className={`text-[10px] font-black uppercase ${
+                          event === 'delivered' ? 'text-emerald-600' : 'text-amber-600'
+                        }`}>
+                          ✓ {event === 'delivered' ? 'Delivered' : 'Skipped'}
                         </span>
                       </div>
+
                       <button
                         type="button"
                         disabled={busyId === customerId}
@@ -294,107 +792,178 @@ export default function DeliveriesClient({
                           setBusyId(customerId);
                           run(() => undoTodayDispatchAction(customerId));
                         }}
-                        className="text-xs font-semibold text-gray-400 hover:text-red-500 disabled:opacity-50 transition-colors shrink-0"
+                        className="px-2.5 py-1 text-xs font-bold text-gray-500 hover:text-rose-600 bg-gray-50 hover:bg-rose-50 border border-gray-200 rounded-lg transition-colors cursor-pointer"
                       >
-                        {busyId === customerId ? 'Undoing…' : '↩ Undo'}
+                        {busyId === customerId ? 'Undoing…' : 'Undo'}
                       </button>
-                    </li>
+                    </div>
                   ))}
-                </ul>
+                </div>
               </div>
             )}
+
           </div>
         )}
 
+        {/* TAB 2: SUBSCRIPTION LEDGER */}
         {tab === 'ledger' && (
-          <div className="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
-            <div className="px-5 py-3 border-b border-[#F0F2F5] flex items-center justify-between">
-              <h2 className="text-[13px] font-bold text-gray-700 uppercase tracking-wide">Subscription Ledger</h2>
-              <span className="text-[11px] text-gray-400">Click renew to reset the credit cycle</span>
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-2xs overflow-hidden">
+            <div className="px-4 sm:px-6 py-3 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-xs font-black text-gray-700 uppercase tracking-wide">
+                Subscription Ledger ({ledgerList.length})
+              </h2>
+              <span className="text-[11px] text-gray-400">Cycle renewals</span>
             </div>
 
             {renewedAt && (
-              <div className="px-5 py-2 bg-emerald-50 border-b border-emerald-100 text-emerald-700 text-xs font-semibold">
+              <div className="px-4 py-2 bg-emerald-50 border-b border-emerald-100 text-emerald-700 text-xs font-bold">
                 Plan renewed for {customers.find(c => c.id === renewedAt.id)?.full_name ?? 'customer'}.
               </div>
             )}
 
-            <table className="w-full text-left text-[13px]">
-              <thead>
-                <tr className="text-[#A2A4B0] font-bold uppercase text-[10.5px] tracking-wider bg-gray-50/60 h-10 border-b border-[#F0F2F5]">
-                  <th className="pl-5">Customer</th>
-                  <th className="px-3">Plan Tier</th>
-                  <th className="px-3 w-[30%]">Credits Used</th>
-                  <th className="px-3">Skipped</th>
-                  <th className="pr-5 text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#F5F5F5]">
-                {ledgerList.map(c => {
-                  const used = c.used_credits || 0;
-                  const total = c.total_tiffin_credits || 0;
-                  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
-                  const status = (c.subscription_status || 'active').toLowerCase();
-                  return (
-                    <tr key={c.id} className="hover:bg-slate-50/80 transition-colors">
+            <div className="divide-y divide-gray-100">
+              {ledgerList.map(c => {
+                const used = c.used_credits || 0;
+                const total = c.total_tiffin_credits || 0;
+                const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+                const status = (c.subscription_status || 'active').toLowerCase();
 
-                      <td className="pl-5 py-3 font-semibold text-[#11142D] capitalize">{c.full_name}</td>
-                      <td className="px-3 py-3">
-                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase border ${tierBadge[c.plan_tier || 'weekly']}`}>
+                return (
+                  <div key={c.id} className="p-3.5 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-gray-900 capitalize truncate">{c.full_name}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border ${tierBadge[c.plan_tier || 'weekly']}`}>
                           {planTier(c.plan_tier)}
                         </span>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden">
-                            <div
-                              className="h-full rounded-full bg-[#5D5FEF] transition-all"
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                          <span className="text-[11px] font-mono text-gray-600 whitespace-nowrap w-14 text-right">
-                            {used}/{total}
-                          </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-2 mt-1.5 max-w-xs">
+                        <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                          <div className="h-full rounded-full bg-[#5D5FEF]" style={{ width: `${pct}%` }} />
                         </div>
-                      </td>
-                      <td className="px-3 py-3 text-[12px] text-gray-600">{c.skipped_days_count || 0}</td>
-                      <td className="pr-5 py-3 text-right">
-                        {status === 'expired' ? (
-                          <button
-                            type="button"
-                            disabled={busyId === c.id}
-                            onClick={() => {
-                              setBusyId(c.id);
-                              setRenewedAt({ id: c.id, at: new Date().toISOString() });
-                              run(() => renewPlan(c.id));
-                            }}
-                            className="px-3 py-1.5 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FDF] rounded-lg shadow-sm disabled:opacity-50 transition-colors"
-                          >
-                            {busyId === c.id ? 'Renewing…' : 'Renew Plan'}
-                          </button>
-                        ) : (
-                          <span
-                            className={`inline-flex items-center gap-1.5 text-[10.5px] font-bold uppercase ${
-                              status === 'paused' ? 'text-amber-600' : 'text-emerald-600'
-                            }`}
-                          >
-                            <span className={`inline-block w-2 h-2 rounded-full ${status === 'paused' ? 'bg-amber-400' : 'bg-emerald-500'}`} />
-                            {status}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                        <span className="text-xs font-mono font-bold text-gray-600 shrink-0">
+                          {used}/{total} delivered
+                        </span>
+                      </div>
+                    </div>
 
-            {ledgerList.length === 0 && (
-              <div className="py-16 text-center text-gray-400 text-sm">No subscription customers found.</div>
-            )}
+                    <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                      {status === 'expired' ? (
+                        <button
+                          type="button"
+                          disabled={busyId === c.id}
+                          onClick={() => {
+                            setBusyId(c.id);
+                            setRenewedAt({ id: c.id, at: new Date().toISOString() });
+                            run(() => renewPlan(c.id));
+                          }}
+                          className="px-3 py-1.5 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg shadow-2xs"
+                        >
+                          {busyId === c.id ? 'Renewing…' : 'Renew Plan'}
+                        </button>
+                      ) : (
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${
+                          status === 'paused' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        }`}>
+                          {status}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
+
       </div>
+
+      {/* DRAG & DROP QUICK REORDER MODAL SHEET */}
+      {showOrderSheet && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/40 backdrop-blur-2xs">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="text-sm font-black text-gray-900">Drag to Reorder Stops</h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">Hold &amp; slide any stop into position</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowOrderSheet(false)}
+                className="w-8 h-8 rounded-lg bg-gray-100 text-gray-500 hover:text-gray-800 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div 
+              className="flex-1 overflow-y-auto p-3 space-y-1.5 touch-none"
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+            >
+              {pendingDispatchList.map((c, i) => {
+                const isDragging = draggedIndex === i;
+                const isDragOver = dragOverIndex === i;
+
+                return (
+                  <div
+                    key={c.id}
+                    data-drag-index={i}
+                    draggable
+                    onDragStart={() => handleDragStart(i)}
+                    onDragOver={(e) => handleDragOver(e, i)}
+                    onDrop={() => handleDrop(i)}
+                    onTouchStart={(e) => handleTouchStart(i, e)}
+                    className={`px-3 py-2.5 rounded-xl border flex items-center justify-between gap-3 transition-all cursor-grab active:cursor-grabbing ${
+                      isDragging
+                        ? 'opacity-40 bg-gray-50 border-dashed border-indigo-400 scale-[0.98]'
+                        : isDragOver
+                        ? 'border-indigo-600 bg-indigo-50/70 border-2'
+                        : 'bg-white border-gray-200/80 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <GripVertical className="w-4 h-4 text-gray-400 shrink-0" />
+                      <span className="w-5 h-5 rounded-md bg-gray-100 text-gray-800 text-[11px] font-black flex items-center justify-center shrink-0">
+                        {i + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <span className="text-xs font-bold text-gray-900 block truncate capitalize">
+                          {c.full_name}
+                        </span>
+                        <span className="text-[11px] text-gray-400 block truncate">
+                          {formatStreetOnlyAddress(c.delivery_address)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="p-3 border-t border-gray-100 bg-gray-50 shrink-0 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={handleAutoOptimize}
+                className="text-xs font-bold text-purple-700 hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                <Wand2 className="w-3.5 h-3.5" />
+                <span>Auto-Optimize</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowOrderSheet(false)}
+                className="px-4 py-2 bg-[#5D5FEF] text-white text-xs font-bold rounded-xl shadow-xs hover:bg-[#4D4FD9] cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

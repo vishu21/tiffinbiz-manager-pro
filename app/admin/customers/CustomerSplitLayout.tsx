@@ -2,8 +2,8 @@
 
 import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
-import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Check, Undo2 } from 'lucide-react';
-import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation } from '@/app/admin/actions';
+import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Check, Undo2, History, Clock } from 'lucide-react';
+import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation, getCustomerActivityLogs, addManualCustomerLog, type CustomerActivityLog } from '@/app/admin/actions';
 import {
   isLegacyPickupCustomer,
   normalizePickupDays,
@@ -836,10 +836,55 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const ALL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const [selectedDays, setSelectedDays] = useState<string[]>(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
 
-  // Drawer (Add/Edit) 3-tab navigation state + smart-validation errors.
-  // NOTE: named `activeDrawerTab` (not `activeTab`) because `activeTab` is already
-  // the customer-list filter state ('all' | 'veg' | 'non-veg') declared above.
-  const [activeDrawerTab, setActiveDrawerTab] = useState<'profile' | 'plan' | 'meal'>('profile');
+  // Drawer (Add/Edit) 4-tab navigation state + smart-validation errors.
+  const [activeDrawerTab, setActiveDrawerTab] = useState<'profile' | 'plan' | 'meal' | 'history'>('profile');
+  const [activityLogs, setActivityLogs] = useState<CustomerActivityLog[]>([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+
+  // Manual Activity Log Entry State
+  const [isAddingLog, setIsAddingLog] = useState(false);
+  const [newLogSummary, setNewLogSummary] = useState('');
+  const [newLogDate, setNewLogDate] = useState(() => toLocalDateKey(new Date()));
+  const [newLogType, setNewLogType] = useState<'NOTE' | 'BILLING' | 'OVERRIDE'>('NOTE');
+  const [isSavingLog, setIsSavingLog] = useState(false);
+
+  const handleCreateManualLog = async () => {
+    if (!selectedCustomer?.id || !newLogSummary.trim()) return;
+    setIsSavingLog(true);
+    try {
+      const res = await addManualCustomerLog({
+        customerId: selectedCustomer.id,
+        summary: newLogSummary,
+        actionType: newLogType,
+        date: newLogDate,
+      });
+      if (res.success && res.log) {
+        setActivityLogs(prev => [res.log, ...prev]);
+        setNewLogSummary('');
+        setIsAddingLog(false);
+        showToast('Activity log added');
+      } else {
+        showToast(res.message || 'Failed to add log', 'error');
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to add log', 'error');
+    } finally {
+      setIsSavingLog(false);
+    }
+  };
+
+  // Fetch activity logs whenever a persisted customer is opened
+  useEffect(() => {
+    if (!selectedCustomer?.id || isAddingNew) {
+      setActivityLogs([]);
+      return;
+    }
+    setIsLoadingLogs(true);
+    getCustomerActivityLogs(selectedCustomer.id)
+      .then(logs => setActivityLogs(logs))
+      .catch(err => console.error('[Audit] Failed to load activity logs:', err))
+      .finally(() => setIsLoadingLogs(false));
+  }, [selectedCustomer?.id, isAddingNew]);
   // Per-day pickup mode: which active schedule days are marked '🛍️ Pickup' instead of
   // '🚗 Delivery'. Persisted to the customers.pickup_days column (full day names).
   const [pickupDays, setPickupDays] = useState<string[]>([]);
@@ -3963,6 +4008,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       { key: 'profile', label: 'Profile', icon: <User className="w-3.5 h-3.5" /> },
                       { key: 'plan', label: 'Plan & Billing', icon: <CreditCard className="w-3.5 h-3.5" /> },
                       { key: 'meal', label: 'Meal Config', icon: <UtensilsCrossed className="w-3.5 h-3.5" /> },
+                      ...(!isAddingNew && selectedCustomer ? [{ key: 'history', label: 'History', icon: <History className="w-3.5 h-3.5" /> }] : []),
                     ] as const).map(tab => (
                       <button
                         key={tab.key}
@@ -4925,6 +4971,149 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     </div>
                   )}
 
+                  {/* TAB 4 — AUDIT & CHANGE HISTORY */}
+                  {activeDrawerTab === 'history' && (
+                    <div className="bg-white border border-gray-100 rounded-xl overflow-hidden p-5 space-y-4" data-section="edit-history">
+                      <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                        <div>
+                          <h3 className="text-xs font-bold uppercase tracking-wider text-gray-700">
+                            Customer Audit Trail
+                          </h3>
+                          <p className="text-[11px] text-gray-400 mt-0.5">
+                            Automated trigger records and manual staff notes.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
+                            {activityLogs.length} events
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setIsAddingLog(prev => !prev)}
+                            className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] rounded-lg transition-colors cursor-pointer"
+                          >
+                            {isAddingLog ? 'Cancel' : '+ Add Log'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Expandable Manual Note Card */}
+                      {isAddingLog && (
+                        <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            {/* Type Tag Selector */}
+                            <div className="flex items-center gap-1.5">
+                              {(['NOTE', 'BILLING', 'OVERRIDE'] as const).map(tag => (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  onClick={() => setNewLogType(tag)}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
+                                    newLogType === tag
+                                      ? 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
+                                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-100'
+                                  }`}
+                                >
+                                  {tag}
+                                </button>
+                              ))}
+                            </div>
+
+                            {/* Date Picker */}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[11px] font-semibold text-gray-400">Date:</span>
+                              <input
+                                type="date"
+                                value={newLogDate}
+                                onChange={e => setNewLogDate(e.target.value)}
+                                className="text-xs px-2 py-1 bg-white border border-gray-200 rounded-lg outline-none font-semibold text-gray-700"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Text Area */}
+                          <textarea
+                            rows={2}
+                            value={newLogSummary}
+                            onChange={e => setNewLogSummary(e.target.value)}
+                            placeholder="e.g. Customer requested upgrade to LG starting next week; confirmed via WhatsApp."
+                            className="w-full text-xs p-2.5 bg-white border border-gray-200 rounded-lg outline-none focus:border-[#5D5FEF] resize-none text-gray-800 placeholder-gray-400"
+                          />
+
+                          <div className="flex justify-end items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsAddingLog(false);
+                                setNewLogSummary('');
+                              }}
+                              className="px-3 py-1 text-xs text-gray-500 font-semibold hover:bg-gray-200/60 rounded-lg transition-colors cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              disabled={isSavingLog || !newLogSummary.trim()}
+                              onClick={handleCreateManualLog}
+                              className="px-3.5 py-1 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg disabled:opacity-50 transition-colors shadow-2xs cursor-pointer"
+                            >
+                              {isSavingLog ? 'Saving…' : 'Save Entry'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Timeline List */}
+                      {isLoadingLogs ? (
+                        <div className="py-12 text-center text-xs text-gray-400 font-medium">
+                          Loading change history…
+                        </div>
+                      ) : activityLogs.length === 0 ? (
+                        <div className="py-12 text-center text-xs text-gray-400 italic">
+                          No logged changes recorded for this customer yet.
+                        </div>
+                      ) : (
+                        <div className="relative pl-6 space-y-4 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-gray-100">
+                          {activityLogs.map((log) => {
+                            const badgeColor =
+                              log.action_type === 'BILLING'
+                                ? 'text-emerald-700 bg-emerald-50'
+                                : log.action_type === 'OVERRIDE'
+                                ? 'text-amber-800 bg-amber-50'
+                                : 'text-indigo-700 bg-indigo-50';
+
+                            return (
+                              <div key={log.id} className="relative group">
+                                <div className="absolute -left-[20px] top-1.5 w-2 h-2 rounded-full bg-indigo-600 ring-4 ring-white" />
+                                <div className="bg-gray-50/80 border border-gray-100 rounded-xl p-3 hover:bg-white hover:shadow-xs transition-all">
+                                  <div className="flex items-center justify-between gap-2 mb-1">
+                                    <span className={`text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded ${badgeColor}`}>
+                                      {log.action_type}
+                                    </span>
+                                    <div className="flex items-center gap-1 text-[10.5px] font-semibold text-gray-400">
+                                      <Clock className="w-3 h-3" />
+                                      <span>
+                                        {new Date(log.created_at).toLocaleString('en-US', {
+                                          month: 'short',
+                                          day: 'numeric',
+                                          year: 'numeric',
+                                          hour: 'numeric',
+                                          minute: '2-digit',
+                                        })}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <p className="text-[12.5px] font-bold text-gray-800 leading-snug">
+                                    {log.summary}
+                                  </p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {/* SUBSCRIPTION MANAGEMENT SECTION */}
                   {selectedCustomer && !isAddingNew && (
                     <div className="space-y-2 pt-2">

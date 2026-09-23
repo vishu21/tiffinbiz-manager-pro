@@ -16,6 +16,9 @@ import {
   saveCustomerOverride,
   checkDailyOverrideTable,
   reloadSchemaCache,
+  getDailyManifestSnapshot,
+  saveDailyManifestSnapshot,
+  type DailyManifestSnapshotRow,
 } from './actions';
 import type { Recipe, DailyOverrideRow } from './actions';
 import PrepDatePicker from '@/app/components/PrepDatePicker';
@@ -195,11 +198,28 @@ const getDeliveryScheduleStatus = (
   activeDay: string,
   dateKey: string,
 ): 'active' | 'pending_renewal' | 'lapsed' | false => {
+  const subStatus = (customer.subscription_status || 'active').toLowerCase();
+  if (subStatus === 'cancelled') return false;
+
+  // 1. Future Start Date: Exclude if the prep date is before their start date
+  const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
+  if (startDate && dateKey < startDate) return false;
+
+  // 2. Pause Window Evaluation
+  if (subStatus === 'paused') {
+    const pauseStart = customer.pause_start_date ? customer.pause_start_date.slice(0, 10) : null;
+    const pauseEnd = customer.pause_end_date ? customer.pause_end_date.slice(0, 10) : null;
+
+    // Indefinite pause with no end date -> always excluded
+    if (!pauseEnd) return false;
+
+    // If an end date exists and the prep date is before resume day, keep paused
+    if (dateKey < pauseEnd) return false;
+    // On or after pauseEnd, the customer resumes delivery!
+  }
+
   const schedule = customer.delivery_schedule || '';
   if (!schedule || schedule === '—') return false;
-
-  const startDate = customer.start_date;
-  if (startDate && dateKey < startDate) return false;
 
   const shortDay = activeDay.substring(0, 3);
   const exceptionMatch = schedule.match(/\[EXCEPT:(.*?)\]/i);
@@ -818,6 +838,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     resolveNextActiveDeliveryDate(initialCustomers)
   );
   const [isDispatchModalOpen, setIsDispatchModalOpen] = useState(false);
+  const [historicalSnapshot, setHistoricalSnapshot] = useState<DailyManifestSnapshotRow[] | null>(null);
 
   const activeDay = DAYS_OF_WEEK[(selectedDate.getDay() + 6) % 7];
 
@@ -850,8 +871,11 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const [isLapsedTrayOpen, setIsLapsedTrayOpen] = useState(false);
   const router = useRouter();
 
-  const selectedDateKey = toLocalDateKey(selectedDate);
+const selectedDateKey = toLocalDateKey(selectedDate);
   const dateStr = selectedDateKey;
+
+  const todayDateKey = useMemo(() => toLocalDateKey(new Date()), []);
+  const isPastDate = useMemo(() => selectedDateKey < todayDateKey, [selectedDateKey, todayDateKey]);
 
   const [closuresMap, setClosuresMap] = useState<Map<string, string>>(new Map());
 
@@ -1276,15 +1300,23 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
     (async () => {
       try {
-        const [overrideRes, menuData, selectionData] = await Promise.all([
+        const [overrideRes, menuData, selectionData, snapshotData] = await Promise.all([
           getDailyOverrides(selectedDateKey),
           fetchDailyMenu(selectedDateKey),
           getDailyMenuSelection(selectedDateKey),
+          getDailyManifestSnapshot(selectedDateKey),
         ]);
 
         if (cancelled) return;
 
-        // 1. Overrides: applies skips and deviations before numbers re-render
+        // 1. If an existing snapshot exists, use it directly
+        if (snapshotData && snapshotData.length > 0) {
+          setHistoricalSnapshot(snapshotData);
+        } else {
+          setHistoricalSnapshot(null);
+        }
+
+        // 2. Overrides: applies skips and deviations before numbers re-render
         if (overrideRes.schemaAvailable) {
           applyOverrideRows(selectedDateKey, overrideRes.rows);
           setPersistenceWarning(null);
@@ -1473,10 +1505,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     });
   }, [currentWeekMonday]);
 
-  const changeWeek = (direction: 'prev' | 'next') => {
-    const nextDate = new Date(selectedDate);
-    nextDate.setDate(selectedDate.getDate() + (direction === 'next' ? 7 : -7));
-    setSelectedDate(nextDate);
+ const changeWeek = (direction: 'prev' | 'next') => {
+    // Jump directly to Monday of the target week
+    const targetMonday = new Date(currentWeekMonday);
+    targetMonday.setDate(currentWeekMonday.getDate() + (direction === 'next' ? 7 : -7));
+    targetMonday.setHours(12, 0, 0, 0);
+    setSelectedDate(targetMonday);
   };
 
   const isChickenDay = useMemo(() => {
@@ -1545,14 +1579,33 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
   const activeCustomers = activeCookingCustomers;
 
-  const manifestCustomers = useMemo(() =>
-    [...visibleManifestCustomers].sort((a, b) => {
+const manifestCustomers = useMemo(() => {
+    // When visiting a past date that has a locked snapshot, rehydrate the frozen records
+    if (historicalSnapshot && historicalSnapshot.length > 0) {
+      return historicalSnapshot.map(s => ({
+        id: s.customer_id,
+        full_name: s.customer_name,
+        phone_number: null,
+        delivery_address: s.delivery_address,
+        dietary_notes: s.special_instructions,
+        delivery_instructions: s.sides_summary,
+        meal_type: s.meal_type,
+        portion_size: s.portion_size,
+        roti_count: s.roti_count,
+        pronthi_count: s.pronthi_count,
+        rice_count: s.rice_count,
+        is_pickup: s.is_pickup,
+        isSkipped: s.is_skipped,
+        created_at: s.delivery_date,
+      } as Customer));
+    }
+
+    return [...visibleManifestCustomers].sort((a, b) => {
       if (a.isExpiredRenewalPending && !b.isExpiredRenewalPending) return 1;
       if (!a.isExpiredRenewalPending && b.isExpiredRenewalPending) return -1;
       return kitchenOrderSort(a, b);
-    }),
-    [visibleManifestCustomers],
-  );
+    });
+  }, [historicalSnapshot, visibleManifestCustomers]);
 
   const metrics = useMemo(
     () => computePrepMetrics(activeCookingCustomers, isChickenDay),
@@ -1593,6 +1646,65 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const printDalName = selectedDalRecipe?.name || (veg1 || '').trim() || '—';
   const printSabjiName = selectedSabjiRecipe?.name || (veg2 || '').trim() || '—';
   const printChickenName = isChickenDay ? (nonVeg || '').trim() || 'Chicken Curry' : null;
+
+  // Automatic snapshot on load: freezes any past delivery day if not already locked
+  useEffect(() => {
+    if (isDateSwitching || isMenuLoading || !isPastDate) return;
+    if (historicalSnapshot && historicalSnapshot.length > 0) return;
+    if (visibleManifestCustomers.length === 0) return;
+
+    let cancelled = false;
+
+    const autoFreezePastDay = async () => {
+      const rows: DailyManifestSnapshotRow[] = visibleManifestCustomers.map(c => {
+        const sideAddons = resolveSideAddons(c);
+        const sidesList: string[] = [];
+        if (sideAddons.salad > 0) sidesList.push(`${sideAddons.salad}x Salad`);
+        if (sideAddons.dessert > 0) sidesList.push(`${sideAddons.dessert}x Dessert`);
+
+        return {
+          delivery_date: selectedDateKey,
+          customer_id: c.id,
+          customer_name: c.full_name,
+          delivery_address: c.delivery_address || 'Kitchen Pickup',
+          is_pickup: isPickupOnDay(c, activeDay),
+          meal_type: c.meal_type || 'Veg',
+          portion_size: formatPortionLabel(c.portion_size),
+          roti_count: c.roti_count || 0,
+          pronthi_count: c.pronthi_count || 0,
+          rice_count: c.rice_count || null,
+          dal_name: printDalName,
+          sabji_name: printSabjiName,
+          chicken_name: printChickenName,
+          sides_summary: sidesList.join(' + ') || null,
+          special_instructions: c.dietary_notes || c.delivery_instructions || null,
+          is_skipped: c.isSkipped || false,
+        };
+      });
+
+      const res = await saveDailyManifestSnapshot(selectedDateKey, rows);
+      if (!cancelled && res.success) {
+        setHistoricalSnapshot(rows);
+      }
+    };
+
+    void autoFreezePastDay();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isDateSwitching,
+    isMenuLoading,
+    isPastDate,
+    historicalSnapshot,
+    visibleManifestCustomers,
+    selectedDateKey,
+    activeDay,
+    printDalName,
+    printSabjiName,
+    printChickenName,
+  ]);
 
   const printedSideParts: string[] = [];
   if (metrics.saladCount > 0) printedSideParts.push(`Salad: ${metrics.saladCount}`);
@@ -1663,8 +1775,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         </div>
 
         {/* Right: Consolidated Date Navigation Strip + Print */}
-        <div className="flex items-center justify-between md:justify-end gap-2 shrink-0 w-full md:w-auto overflow-x-auto scrollbar-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none]">
-          <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs shrink-0">
+        <div className="flex items-center justify-between md:justify-end gap-2 shrink-0 w-full md:w-auto overflow-visible">
+          <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs shrink-0 overflow-visible relative">
             {/* Prev Week Button */}
             <button
               type="button"
@@ -2468,17 +2580,24 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-bold bg-gray-100 text-gray-700 whitespace-nowrap shrink-0">
                 {manifestCustomers.filter(c => !c.isSkipped).length} active
               </span>
+              {historicalSnapshot && historicalSnapshot.length > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-gray-200 text-gray-700 border border-gray-300">
+                  🔒 Locked Snapshot
+                </span>
+              )}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setIsDispatchModalOpen(true)}
-              className="inline-flex items-center gap-1 text-[11px] sm:text-[11.5px] font-bold text-white bg-[#D97746] hover:bg-[#c46535] px-2.5 sm:px-3 py-1.5 rounded-lg shadow-2xs transition-all cursor-pointer shrink-0 whitespace-nowrap"
-            >
-              <MapPin className="w-3.5 h-3.5 shrink-0" />
-              <span>Dispatch</span>
-              <span className="hidden sm:inline">Driver</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsDispatchModalOpen(true)}
+                className="inline-flex items-center gap-1 text-[11px] sm:text-[11.5px] font-bold text-white bg-[#D97746] hover:bg-[#c46535] px-2.5 sm:px-3 py-1.5 rounded-lg shadow-2xs transition-all cursor-pointer shrink-0 whitespace-nowrap"
+              >
+                <MapPin className="w-3.5 h-3.5 shrink-0" />
+                <span>Dispatch</span>
+                <span className="hidden sm:inline">Driver</span>
+              </button>
+            </div>
           </div>
 
           {/* ========================================================= */}
