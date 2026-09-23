@@ -17,7 +17,9 @@ import {
   ListOrdered,
   GripVertical,
   ExternalLink,
-  MapPin
+  MapPin,
+  Camera,
+  MessageSquare
 } from 'lucide-react';
 import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction } from './actions';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
@@ -169,6 +171,37 @@ const formatStreetOnlyAddress = (address: string | null | undefined): string => 
   return streetParts.length > 0 ? streetParts.join(', ') : parts[0];
 };
 
+type ContactChannel = 'whatsapp' | 'messenger' | 'sms';
+
+function resolveCustomerChannel(phoneOrContact: string | null | undefined): { channel: ContactChannel; destination: string } {
+  const raw = (phoneOrContact || '').trim();
+  if (/^wa:/i.test(raw)) {
+    const cleanDigits = raw.replace(/^wa:\s*/i, '').replace(/\D/g, '');
+    return { channel: 'whatsapp', destination: cleanDigits };
+  }
+  if (/^fb:/i.test(raw)) {
+    const fbVal = raw.replace(/^fb:\s*/i, '').trim();
+    return { channel: 'messenger', destination: fbVal };
+  }
+  const cleanPhone = raw.replace(/\D/g, '');
+  return { channel: 'sms', destination: cleanPhone || raw };
+}
+
+function buildMessagingUrl(channel: ContactChannel, destination: string, text: string): string {
+  const encodedText = encodeURIComponent(text);
+  if (channel === 'whatsapp') {
+    const intlPhone = destination.length === 10 ? `1${destination}` : destination;
+    return `https://wa.me/${intlPhone}?text=${encodedText}`;
+  }
+  if (channel === 'messenger') {
+    if (destination.startsWith('http://') || destination.startsWith('https://')) {
+      return destination;
+    }
+    return `https://m.me/${encodeURIComponent(destination)}`;
+  }
+  return `sms:${destination}?&body=${encodedText}`;
+}
+
 export default function DeliveriesClient({
   initialCustomers,
   todayLogs,
@@ -185,6 +218,12 @@ export default function DeliveriesClient({
   const [showOrderSheet, setShowOrderSheet] = useState(false);
   const [customOrderIds, setCustomOrderIds] = useState<string[]>([]);
   const [renewedAt, setRenewedAt] = useState<{ id: string; at: string } | null>(null);
+
+  // Delivery Confirmation Flow State
+  const [proofCustomer, setProofCustomer] = useState<CustomerRow | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [copiedNote, setCopiedNote] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Drag and Drop State
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
@@ -354,13 +393,11 @@ export default function DeliveriesClient({
       const isFirstRun = i === 0;
       const isLastRun = i === totalRuns - 1;
 
-      // Start: Kitchen on first run, or the last stop of previous run
       const origin = isFirstRun
         ? kitchenBase
         : encodeURIComponent(sanitizeAddressForUrl(validStops[startIdx - 1].delivery_address!));
 
       if (isLastRun) {
-        // Final run ends back at Kitchen Base
         const destination = kitchenBase;
         const intermediateWaypoints = batch
           .map(s => encodeURIComponent(sanitizeAddressForUrl(s.delivery_address!)))
@@ -374,7 +411,6 @@ export default function DeliveriesClient({
           stopsCount: batch.length,
         });
       } else {
-        // Intermediate runs proceed forward to next stop
         const destination = encodeURIComponent(sanitizeAddressForUrl(batch[batch.length - 1].delivery_address!));
         const intermediateStops = batch.slice(0, -1);
         const waypointsParam = intermediateStops.length > 0
@@ -416,7 +452,6 @@ export default function DeliveriesClient({
   const totalStopsCount = allScheduledToday.length;
   const progressPercent = totalStopsCount > 0 ? Math.round((completedCount / totalStopsCount) * 100) : 0;
 
-  // Reordering Logic
   const reorderList = (fromIndex: number, toIndex: number) => {
     if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
     const list = [...pendingDispatchList];
@@ -444,7 +479,6 @@ export default function DeliveriesClient({
     setDragOverIndex(null);
   };
 
-  // Touch handlers for mobile drag & drop
   const handleTouchStart = (index: number, e: React.TouchEvent) => {
     touchStartY.current = e.touches[0].clientY;
     touchStartIndex.current = index;
@@ -733,8 +767,9 @@ export default function DeliveriesClient({
                           type="button"
                           disabled={busyId === c.id}
                           onClick={() => {
-                            setBusyId(c.id);
-                            run(() => markDelivered(c.id));
+                            setProofCustomer(c);
+                            setPhotoPreview(null);
+                            setCopiedNote(false);
                           }}
                           className="flex-1 h-11 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                         >
@@ -959,6 +994,156 @@ export default function DeliveriesClient({
               >
                 Done
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DELIVERY PROOF & MESSAGE SHEET */}
+      {proofCustomer && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-2xs">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200">
+            {/* Header */}
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-gray-50">
+              <div className="min-w-0">
+                <h3 className="text-sm font-black text-gray-900 truncate capitalize">
+                  Confirm Delivery · {proofCustomer.full_name}
+                </h3>
+                <p className="text-[11px] text-gray-500 truncate mt-0.5">
+                  {formatStreetOnlyAddress(proofCustomer.delivery_address)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setProofCustomer(null);
+                  setPhotoPreview(null);
+                }}
+                className="w-8 h-8 rounded-full bg-gray-200/70 text-gray-600 flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-4 overflow-y-auto space-y-4">
+              {/* Step 1: Capture Photo */}
+              <div>
+                <label className="block text-[11px] font-bold uppercase text-gray-500 tracking-wider mb-2">
+                  1. Delivery Photo Proof
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  ref={fileInputRef}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setPhotoPreview(URL.createObjectURL(file));
+                    }
+                  }}
+                  className="hidden"
+                />
+
+                {photoPreview ? (
+                  <div className="relative rounded-xl overflow-hidden border border-gray-200 aspect-video bg-black flex items-center justify-center">
+                    <img src={photoPreview} alt="Delivery proof" className="w-full h-full object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="absolute bottom-2 right-2 px-3 py-1 bg-black/60 hover:bg-black/80 text-white text-xs font-bold rounded-lg backdrop-blur-xs flex items-center gap-1 cursor-pointer"
+                    >
+                      <Camera className="w-3.5 h-3.5" /> Retake
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full py-6 border-2 border-dashed border-gray-300 hover:border-[#5D5FEF] bg-gray-50 hover:bg-[#F4F4FE] rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer transition-all"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-white shadow-xs border border-gray-200 flex items-center justify-center text-[#5D5FEF]">
+                      <Camera className="w-5 h-5" />
+                    </div>
+                    <span className="text-xs font-bold text-gray-700">Take Doorstep Photo</span>
+                    <span className="text-[10.5px] text-gray-400">Opens your phone camera instantly</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Step 2: Message & Recipient Preview */}
+              {(() => {
+                const info = resolveCustomerChannel(proofCustomer.phone_number);
+                const messageText = `Hi ${proofCustomer.full_name}, your tiffin delivery from Tiffin OS has just been delivered! Enjoy your meal!`;
+                const actionUrl = buildMessagingUrl(info.channel, info.destination, messageText);
+
+                const channelLabel = 
+                  info.channel === 'whatsapp' ? 'WhatsApp' : 
+                  info.channel === 'messenger' ? 'Facebook Messenger' : 
+                  'Direct SMS';
+
+                const channelColor =
+                  info.channel === 'whatsapp' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' :
+                  info.channel === 'messenger' ? 'bg-blue-600 hover:bg-blue-700 text-white' :
+                  'bg-indigo-600 hover:bg-indigo-700 text-white';
+
+                return (
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase text-gray-500 tracking-wider mb-2">
+                      2. Notify Customer ({channelLabel})
+                    </label>
+
+                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs text-gray-700 space-y-2">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-semibold text-gray-500">Destination:</span>
+                        <strong className="text-gray-900 font-mono">{info.destination || 'On file'}</strong>
+                      </div>
+                      <p className="text-[11.5px] italic text-gray-600 bg-white p-2 rounded-lg border border-gray-200/60 leading-snug">
+                        &quot;{messageText}&quot;
+                      </p>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <a
+                        href={actionUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => {
+                          if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                            navigator.clipboard.writeText(messageText);
+                            setCopiedNote(true);
+                          }
+                        }}
+                        className={`h-11 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer ${channelColor}`}
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        <span>Send on {channelLabel}</span>
+                      </a>
+
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const customerId = proofCustomer.id;
+                          setBusyId(customerId);
+                          setProofCustomer(null);
+                          await run(() => markDelivered(customerId));
+                        }}
+                        className="h-11 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>Complete &amp; Deduct</span>
+                      </button>
+                    </div>
+
+                    {copiedNote && (
+                      <p className="text-[10.5px] font-bold text-emerald-600 text-center mt-1.5 animate-pulse">
+                        ✓ Text copied to clipboard! Attach photo in chat and send.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
