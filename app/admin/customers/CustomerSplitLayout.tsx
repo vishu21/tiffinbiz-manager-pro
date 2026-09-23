@@ -4004,12 +4004,16 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
                   {/* TAB NAVIGATION BAR */}
                   <div className="px-4 sm:px-6 pt-2 sm:pt-3 pb-0 bg-white flex items-center gap-1.5 overflow-x-auto scrollbar-none">
-                    {([
-                      { key: 'profile', label: 'Profile', icon: <User className="w-3.5 h-3.5" /> },
-                      { key: 'plan', label: 'Plan & Billing', icon: <CreditCard className="w-3.5 h-3.5" /> },
-                      { key: 'meal', label: 'Meal Config', icon: <UtensilsCrossed className="w-3.5 h-3.5" /> },
-                      ...(!isAddingNew && selectedCustomer ? [{ key: 'history', label: 'History', icon: <History className="w-3.5 h-3.5" /> }] : []),
-                    ] as const).map(tab => (
+                    {(
+                      [
+                        { key: 'profile' as const, label: 'Profile', icon: <User className="w-3.5 h-3.5" /> },
+                        { key: 'plan' as const, label: 'Plan & Billing', icon: <CreditCard className="w-3.5 h-3.5" /> },
+                        { key: 'meal' as const, label: 'Meal Config', icon: <UtensilsCrossed className="w-3.5 h-3.5" /> },
+                        ...(!isAddingNew && selectedCustomer
+                          ? [{ key: 'history' as const, label: 'History', icon: <History className="w-3.5 h-3.5" /> }]
+                          : []),
+                      ]
+                    ).map(tab => (
                       <button
                         key={tab.key}
                         type="button"
