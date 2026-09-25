@@ -315,16 +315,27 @@ export default function DeliveriesClient({
   }, [todayKey, initialRouteOrder]);
 
   // Saves both locally and to Supabase so all devices stay in sync
-  const saveOrder = (order: string[]) => {
+ const saveOrder = async (order: string[]) => {
     setCustomOrderIds(order);
     try {
       localStorage.setItem(`delivery_route_${todayKey}`, JSON.stringify(order));
     } catch (e) {
       console.warn('Failed to save route order locally', e);
     }
-    saveDeliveryRouteOrder(todayKey, order).catch(err => {
-      console.warn('[Deliveries] Failed to persist route order to Supabase:', err);
-    });
+
+    // Call Supabase action and display error on screen if it fails
+    try {
+      const res = await saveDeliveryRouteOrder(todayKey, order);
+      if (!res?.success) {
+        console.error('❌ [Deliveries Save Error]:', res?.message);
+        setErrorMsg(`Database Save Error: ${res?.message || 'Could not save route to Supabase'}`);
+      } else {
+        setErrorMsg(''); // Success!
+      }
+    } catch (err: any) {
+      console.error('❌ [Deliveries Exception]:', err);
+      setErrorMsg(`Database Save Exception: ${err?.message || 'Unknown error'}`);
+    }
   };
 
   const customers = useMemo(
@@ -938,8 +949,8 @@ export default function DeliveriesClient({
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0">
               <div>
-                <h3 className="text-sm font-black text-gray-900">Drag to Reorder Stops</h3>
-                <p className="text-[11px] text-gray-500 mt-0.5">Hold &amp; slide any stop into position</p>
+                <h3 className="text-sm font-black text-gray-900">Reorder Stops</h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">Drag handle or use ▲▼ arrows to adjust stop order</p>
               </div>
               <button
                 type="button"
@@ -950,9 +961,14 @@ export default function DeliveriesClient({
               </button>
             </div>
 
+            {/* Scrollable list (natural touch scrolling enabled) */}
             <div 
-              className="flex-1 overflow-y-auto p-3 space-y-1.5 touch-none"
-              onTouchMove={handleTouchMove}
+              className="flex-1 overflow-y-auto p-3 space-y-1.5"
+              onTouchMove={(e) => {
+                if (touchStartIndex.current !== null) {
+                  handleTouchMove(e);
+                }
+              }}
               onTouchEnd={handleTouchEnd}
             >
               {pendingDispatchList.map((c, i) => {
@@ -967,8 +983,7 @@ export default function DeliveriesClient({
                     onDragStart={() => handleDragStart(i)}
                     onDragOver={(e) => handleDragOver(e, i)}
                     onDrop={() => handleDrop(i)}
-                    onTouchStart={(e) => handleTouchStart(i, e)}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center justify-between gap-3 transition-all cursor-grab active:cursor-grabbing ${
+                    className={`px-3 py-2.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${
                       isDragging
                         ? 'opacity-40 bg-gray-50 border-dashed border-indigo-400 scale-[0.98]'
                         : isDragOver
@@ -976,12 +991,20 @@ export default function DeliveriesClient({
                         : 'bg-white border-gray-200/80 hover:border-gray-300'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <GripVertical className="w-4 h-4 text-gray-400 shrink-0" />
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {/* Touch-only drag handle (drag triggers ONLY when touching this handle) */}
+                      <div
+                        onTouchStart={(e) => handleTouchStart(i, e)}
+                        className="p-1.5 -ml-1 text-gray-400 hover:text-gray-700 active:text-indigo-600 touch-none cursor-grab active:cursor-grabbing select-none"
+                        title="Drag stop"
+                      >
+                        <GripVertical className="w-4 h-4 shrink-0" />
+                      </div>
+
                       <span className="w-5 h-5 rounded-md bg-gray-100 text-gray-800 text-[11px] font-black flex items-center justify-center shrink-0">
                         {i + 1}
                       </span>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <span className="text-xs font-bold text-gray-900 block truncate capitalize">
                           {c.full_name}
                         </span>
@@ -989,6 +1012,28 @@ export default function DeliveriesClient({
                           {formatStreetOnlyAddress(c.delivery_address)}
                         </span>
                       </div>
+                    </div>
+
+                    {/* Quick Move Up/Down buttons (tap-friendly on mobile) */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        disabled={i === 0}
+                        onClick={() => reorderList(i, i - 1)}
+                        className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-indigo-50 active:bg-indigo-100 text-gray-600 hover:text-indigo-700 border border-gray-200 disabled:opacity-20 disabled:pointer-events-none flex items-center justify-center text-xs font-bold transition-colors cursor-pointer"
+                        title="Move Up"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        disabled={i === pendingDispatchList.length - 1}
+                        onClick={() => reorderList(i, i + 1)}
+                        className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-indigo-50 active:bg-indigo-100 text-gray-600 hover:text-indigo-700 border border-gray-200 disabled:opacity-20 disabled:pointer-events-none flex items-center justify-center text-xs font-bold transition-colors cursor-pointer"
+                        title="Move Down"
+                      >
+                        ▼
+                      </button>
                     </div>
                   </div>
                 );

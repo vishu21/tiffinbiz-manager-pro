@@ -257,7 +257,7 @@ export async function saveDeliveryRouteOrder(
     );
 
     if (error) {
-      console.warn('[saveDeliveryRouteOrder] Error:', error.message);
+      console.error('[saveDeliveryRouteOrder] Error:', error.message);
       return { success: false, message: error.message };
     }
 
