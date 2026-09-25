@@ -21,7 +21,7 @@ import {
   Camera,
   MessageSquare
 } from 'lucide-react';
-import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction } from './actions';
+import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction, saveDeliveryRouteOrder } from './actions';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
 import { 
   sortDeliveriesChained, 
@@ -205,9 +205,11 @@ function buildMessagingUrl(channel: ContactChannel, destination: string, text: s
 export default function DeliveriesClient({
   initialCustomers,
   todayLogs,
+  initialRouteOrder = [],
 }: {
   initialCustomers: CustomerRow[];
   todayLogs: DailyLog[];
+  initialRouteOrder?: string[];
 }) {
   const router = useRouter();
   const isMounted = useSyncExternalStore(noopSubscribe, () => true, () => false);
@@ -216,7 +218,7 @@ export default function DeliveriesClient({
   const [errorMsg, setErrorMsg] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showOrderSheet, setShowOrderSheet] = useState(false);
-  const [customOrderIds, setCustomOrderIds] = useState<string[]>([]);
+  const [customOrderIds, setCustomOrderIds] = useState<string[]>(initialRouteOrder);
   const [renewedAt, setRenewedAt] = useState<{ id: string; at: string } | null>(null);
 
   // Delivery Confirmation Flow State
@@ -287,25 +289,42 @@ export default function DeliveriesClient({
     return `${d.getFullYear()}-${m}-${day}`;
   }, []);
 
+  // Sync route order from Supabase (fallback to localStorage if offline/new)
   useEffect(() => {
     if (!todayKey) return;
+    if (initialRouteOrder && initialRouteOrder.length > 0) {
+      setCustomOrderIds(initialRouteOrder);
+      try {
+        localStorage.setItem(`delivery_route_${todayKey}`, JSON.stringify(initialRouteOrder));
+      } catch (e) {}
+      return;
+    }
+
     try {
       const saved = localStorage.getItem(`delivery_route_${todayKey}`);
       if (saved) {
-        setCustomOrderIds(JSON.parse(saved));
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setCustomOrderIds(parsed);
+          saveDeliveryRouteOrder(todayKey, parsed).catch(console.warn);
+        }
       }
     } catch (e) {
       console.warn('Failed to load saved route order', e);
     }
-  }, [todayKey]);
+  }, [todayKey, initialRouteOrder]);
 
-  const saveOrderToStorage = (order: string[]) => {
+  // Saves both locally and to Supabase so all devices stay in sync
+  const saveOrder = (order: string[]) => {
     setCustomOrderIds(order);
     try {
       localStorage.setItem(`delivery_route_${todayKey}`, JSON.stringify(order));
     } catch (e) {
-      console.warn('Failed to save route order', e);
+      console.warn('Failed to save route order locally', e);
     }
+    saveDeliveryRouteOrder(todayKey, order).catch(err => {
+      console.warn('[Deliveries] Failed to persist route order to Supabase:', err);
+    });
   };
 
   const customers = useMemo(
@@ -375,7 +394,6 @@ export default function DeliveriesClient({
     return [...sequenced, ...Array.from(map.values())];
   }, [allScheduledToday, todayLoggedIds, customOrderIds]);
 
-  // Build Full Route Google Maps Run Links (Round trip back to Kitchen Base)
   const routeRuns = useMemo(() => {
     const validStops = pendingDispatchList.filter(c => c.delivery_address && c.delivery_address.length > 3);
     if (validStops.length === 0) return [];
@@ -457,7 +475,7 @@ export default function DeliveriesClient({
     const list = [...pendingDispatchList];
     const [moved] = list.splice(fromIndex, 1);
     list.splice(toIndex, 0, moved);
-    saveOrderToStorage(list.map(c => c.id));
+    saveOrder(list.map(c => c.id));
   };
 
   const handleDragStart = (index: number) => {
@@ -516,7 +534,7 @@ export default function DeliveriesClient({
 
     const groups = sortDeliveriesChained(mappedCustomers);
     const optimizedIds = groups.flatMap(g => g.customers.map(c => c.id));
-    saveOrderToStorage(optimizedIds);
+    saveOrder(optimizedIds);
     setShowOrderSheet(false);
   };
 

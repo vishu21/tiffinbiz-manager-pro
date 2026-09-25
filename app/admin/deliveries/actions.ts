@@ -241,3 +241,30 @@ export async function undoTodayDispatchAction(customerId: string) {
   revalidatePath('/admin/deliveries');
   revalidatePath('/admin/customers');
 }
+export async function saveDeliveryRouteOrder(
+  dateKey: string,
+  stopOrder: string[]
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const supabase = await createClient();
+    const { error } = await supabase.from('daily_delivery_routes').upsert(
+      {
+        delivery_date: dateKey,
+        stop_order: stopOrder,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'delivery_date' }
+    );
+
+    if (error) {
+      console.warn('[saveDeliveryRouteOrder] Error:', error.message);
+      return { success: false, message: error.message };
+    }
+
+    revalidatePath('/admin/deliveries');
+    return { success: true };
+  } catch (err) {
+    console.error('[saveDeliveryRouteOrder] Exception:', err);
+    return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
+  }
+}

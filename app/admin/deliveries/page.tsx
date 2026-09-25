@@ -67,5 +67,27 @@ export default async function DeliveriesPage() {
     console.warn('[Deliveries Page] customer_deliveries query bypassed:', err);
   }
 
-  return <DeliveriesClient initialCustomers={customers} todayLogs={todayLogs} />;
+  // Fetch saved stop order for today from daily_delivery_routes
+  let initialRouteOrder: string[] = [];
+  try {
+    const { data: routeData } = await supabase
+      .from('daily_delivery_routes')
+      .select('stop_order')
+      .eq('delivery_date', localToday)
+      .maybeSingle();
+
+    if (routeData?.stop_order && Array.isArray(routeData.stop_order)) {
+      initialRouteOrder = routeData.stop_order;
+    }
+  } catch (err) {
+    console.warn('[Deliveries Page] daily_delivery_routes query bypassed:', err);
+  }
+
+  return (
+    <DeliveriesClient
+      initialCustomers={customers}
+      todayLogs={todayLogs}
+      initialRouteOrder={initialRouteOrder}
+    />
+  );
 }
