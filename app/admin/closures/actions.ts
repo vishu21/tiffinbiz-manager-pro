@@ -3,6 +3,7 @@
 import { createClient } from '@/utils/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { parseActiveScheduleDays } from '@/app/utils/customerPickup';
+import { computeCycleEndDate } from '@/app/utils/subscriptionCycle';
 
 const DAYS_OF_WEEK = [
   'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'
@@ -13,18 +14,11 @@ const isWeekday = (date: Date): boolean => {
   return d !== 0 && d !== 6;
 };
 
-const walkDeliveryDays = (startDateStr: string, totalMeals: number): string => {
-  const date = new Date(`${startDateStr.slice(0, 10)}T00:00:00`);
-  let counted = isWeekday(date) ? 1 : 0;
-  while (counted < totalMeals) {
-    date.setDate(date.getDate() + 1);
-    if (isWeekday(date)) counted++;
-  }
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-};
+// Delegates to the SHARED cycle calculator (app/utils/subscriptionCycle.ts) so closure
+// credit grants/reversals re-walk the cycle with the exact same rules as /prep and
+// /admin/customers. Falls back to the anchor date when the inputs are unusable.
+const walkDeliveryDays = (startDateStr: string, totalMeals: number): string =>
+  computeCycleEndDate({ startDate: startDateStr, totalMeals }) ?? startDateStr.slice(0, 10);
 
 const getWeekdayDatesInRange = (startDateStr: string, endDateStr: string): string[] => {
   const dates: string[] = [];

@@ -20,7 +20,7 @@ import {
   saveDailyManifestSnapshot,
   type DailyManifestSnapshotRow,
 } from './actions';
-import type { Recipe, DailyOverrideRow } from './actions';
+import type { Recipe, DailyOverrideRow, RenewCustomerSubscriptionResult } from './actions';
 import PrepDatePicker from '@/app/components/PrepDatePicker';
 import {
   getRecipesWithIngredients,
@@ -31,6 +31,7 @@ import Link from 'next/link';
 import type { MealConfigPayload } from '@/app/admin/actions';
 import PrepQuickEditSheet, { type QuickEditSaveRequest } from './PrepQuickEditSheet';
 import { isPickupOnDay, parseActiveScheduleDays } from '@/app/utils/customerPickup';
+import { computeCycleEndDate, resolveDeliveryDayNumbers } from '@/app/utils/subscriptionCycle';
 import { computePrepMetrics, resolveSideAddons } from './prepCalculations';
 import DriverDispatchModal from './components/DriverDispatchModal';
 
@@ -116,44 +117,22 @@ const daysBetweenKeys = (from: string, to: string): number => {
   return Math.round((end.getTime() - start.getTime()) / 86_400_000);
 };
 
-const isDeliveryDay = (date: Date): boolean => {
-  const day = date.getDay();
-  return day !== 0 && day !== 6;
-};
-
+// Thin adapter over the SHARED cycle calculator (app/utils/subscriptionCycle.ts) so
+// /prep and /admin/customers can never drift apart. `deliverySchedule` decides which
+// weekdays count as delivery days (empty → Mon–Fri) and `closureDates` compensates
+// kitchen holidays. Signature kept identical for existing call sites.
 const calculateTargetLastDay = (
   startDateStr: string | null | undefined,
   totalMeals: number | null | undefined,
-): string | null => {
-  if (!startDateStr || !totalMeals || totalMeals <= 0) return null;
-
-  let normalized = startDateStr.trim();
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(normalized)) {
-    const [m, d, y] = normalized.split('/');
-    normalized = `${y}-${m}-${d}`;
-  }
-
-  const date = new Date(`${normalized}T00:00:00`);
-  if (isNaN(date.getTime())) return null;
-
-  let mealsCounted = 0;
-  if (isDeliveryDay(date)) {
-    mealsCounted = 1;
-  }
-
-  while (mealsCounted < totalMeals) {
-    date.setDate(date.getDate() + 1);
-    if (isDeliveryDay(date)) {
-      mealsCounted++;
-    }
-    if (mealsCounted > 730) return null;
-  }
-
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-};
+  deliverySchedule?: string | null,
+  closureDates?: Set<string> | Map<string, string> | null,
+): string | null =>
+  computeCycleEndDate({
+    startDate: startDateStr,
+    totalMeals,
+    deliveryDays: resolveDeliveryDayNumbers(deliverySchedule),
+    closureDates,
+  });
 
 const resolveCustomerTotalMeals = (customer: Customer): number => {
   const dbCredits = customer.total_tiffin_credits ?? customer.total_credits;
@@ -234,7 +213,11 @@ const getDeliveryScheduleStatus = (
   if (!dayMatches) return false;
 
   const totalMeals = resolveCustomerTotalMeals(customer);
-  const computedEnd = calculateTargetLastDay(customer.start_date, totalMeals);
+  const computedEnd = calculateTargetLastDay(
+    customer.start_date,
+    totalMeals,
+    customer.delivery_schedule
+  );
   const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
   const effectiveEnd = explicitEnd || computedEnd;
 
@@ -1236,6 +1219,55 @@ const selectedDateKey = toLocalDateKey(selectedDate);
     });
   };
 
+  // Renewal success (from PrepQuickEditSheet): promote the customer to a fresh ACTIVE
+  // cycle locally so the "Renewal Pending" badge, the amber row and the lapsed tray
+  // clear immediately — before the router.refresh() round-trip lands.
+  const handleRenewSuccess = (
+    customerId: string,
+    creditsToAdd: number,
+    details: RenewCustomerSubscriptionResult
+  ) => {
+    const nextStart = details.startDate ?? selectedDateKey;
+    const nextCredits = details.credits ?? creditsToAdd;
+    const nextEnd =
+      details.cycleEndDate ??
+      computeCycleEndDate({
+        startDate: nextStart,
+        totalMeals: nextCredits,
+        deliveryDays: resolveDeliveryDayNumbers(
+          initialCustomers.find(c => c.id === customerId)?.delivery_schedule
+        ),
+        closureDates: closuresMap,
+      });
+
+    setLocalEdits(prev => ({
+      ...prev,
+      [customerId]: {
+        ...(prev[customerId] || {}),
+        start_date: nextStart,
+        total_tiffin_credits: nextCredits,
+        used_credits: details.usedCredits ?? 0,
+        cycle_end_date: nextEnd ?? null,
+        plan_tier: details.planTier,
+        subscription_status: 'active',
+        scheduled_cancel_date: null,
+        scheduled_status: null,
+        isExpiredRenewalPending: false,
+        expiredOnDate: undefined,
+      },
+    }));
+
+    if (details.migrationRecommended) {
+      setPersistenceWarning(
+        'Renewal saved. Lifetime counters (lifetime_deliveries / renewal_count) are not ' +
+          'being recorded yet — apply supabase/migrations/00023_add_lifetime_counters.sql ' +
+          'to enable lifetime history.'
+      );
+    } else {
+      setPersistenceWarning(null);
+    }
+  };
+
   const handleClearOverride = () => {
     if (!quickEditCustomer) return;
     const target = quickEditCustomer;
@@ -1548,7 +1580,12 @@ const selectedDateKey = toLocalDateKey(selectedDate);
       if (!status) return;
 
       const totalMeals = resolveCustomerTotalMeals(customer);
-      const computedEnd = calculateTargetLastDay(customer.start_date, totalMeals);
+      const computedEnd = calculateTargetLastDay(
+        customer.start_date,
+        totalMeals,
+        customer.delivery_schedule,
+        closuresMap
+      );
       const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
       const effectiveEnd = explicitEnd || computedEnd || '';
 
@@ -2087,6 +2124,8 @@ const manifestCustomers = useMemo(() => {
                     const computedEnd = calculateTargetLastDay(
                       customer.start_date,
                       totalMeals,
+                      customer.delivery_schedule,
+                      closuresMap
                     );
                     const isComputedEnd = computedEnd === normalizedSelected;
 
@@ -2633,7 +2672,12 @@ const manifestCustomers = useMemo(() => {
                 }
 
                 const computedEnd = customer.start_date
-                  ? calculateTargetLastDay(customer.start_date, totalMeals)
+                  ? calculateTargetLastDay(
+                    customer.start_date,
+                    totalMeals,
+                    customer.delivery_schedule,
+                    closuresMap
+                  )
                   : null;
                 const isComputedEnd = computedEnd === normalizedSelected;
                 const isLastDay = isExplicitEnd || isComputedEnd;
@@ -2705,10 +2749,10 @@ const manifestCustomers = useMemo(() => {
                           </span>
 
                           {customer.isExpiredRenewalPending && (
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300 whitespace-nowrap">
-                              ⏳ RENEWAL
-                            </span>
-                          )}
+  <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300 whitespace-nowrap">
+    ⏳ RENEWAL {customer.expiredOnDate ? `(${formatShortDate(customer.expiredOnDate)})` : ''}
+  </span>
+)}
 
                           {isLastDay && (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300 whitespace-nowrap animate-pulse">
@@ -2868,7 +2912,12 @@ const manifestCustomers = useMemo(() => {
                     }
 
                     const computedEnd = customer.start_date
-                      ? calculateTargetLastDay(customer.start_date, totalMeals)
+                      ? calculateTargetLastDay(
+                        customer.start_date,
+                        totalMeals,
+                        customer.delivery_schedule,
+                        closuresMap
+                      )
                       : null;
                     const isComputedEnd = computedEnd === normalizedSelected;
                     const isLastDay = isExplicitEnd || isComputedEnd;
@@ -2902,6 +2951,14 @@ const manifestCustomers = useMemo(() => {
                                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 whitespace-nowrap shrink-0"
                               >
                                 <span>⏳ RENEWAL PENDING</span>
+                                {customer.expiredOnDate && (
+      <>
+        <span className="opacity-40">·</span>
+        <span className="font-semibold text-amber-800">
+          Ended {formatShortDate(customer.expiredOnDate)}
+        </span>
+      </>
+    )}
                               </span>
                             ) : isLastDay ? (
                               <span
@@ -3257,6 +3314,7 @@ const manifestCustomers = useMemo(() => {
           onClearOverride={handleClearOverride}
           isExpiredPendingRenewal={quickEditCustomer.isExpiredRenewalPending}
           expiredOnDate={quickEditCustomer.expiredOnDate}
+          onRenewSuccess={handleRenewSuccess}
         />
       )}
 

@@ -10,6 +10,7 @@ import {
   parseActiveScheduleDays,
   pickupDaysForCustomer,
 } from '@/app/utils/customerPickup';
+import { calculateCycleTargetLastDay } from '@/app/utils/subscriptionCycle';
 
 // Stable no-op subscription for the mount flag below.
 const noopSubscribe = () => () => { };
@@ -62,65 +63,22 @@ const calculateTargetLastDay = (
   closureDates?: Set<string> | Map<string, string> | string[],
   customerSkips?: Set<string>,
 ): TargetLastDayResult | null => {
-  if (!startDateStr || !totalMeals || totalMeals <= 0) return null;
+  // Delegates to the SHARED calculator (app/utils/subscriptionCycle.ts) so this page's
+  // projected END DATE ("Auto (Mon-Fri) + Extended by +X days") matches /prep and
+  // /admin/closures exactly. The local wrapper keeps the historical
+  // (startDate, totalMeals, closures, skips) signature and result shape.
+  const result = calculateCycleTargetLastDay({
+    startDate: startDateStr,
+    totalMeals,
+    closureDates,
+    customerSkips,
+  });
+  if (!result) return null;
 
-  let normalized = startDateStr.trim();
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(normalized)) {
-    const [m, d, y] = normalized.split('/');
-    normalized = `${y}-${m}-${d}`;
-  }
-
-  const date = new Date(`${normalized}T00:00:00`);
-  if (isNaN(date.getTime())) return null;
-
-  const isClosed = (d: Date): boolean => {
-    if (!closureDates) return false;
-    const key = toLocalDateKey(d);
-    if (closureDates instanceof Set) return closureDates.has(key);
-    if (closureDates instanceof Map) return closureDates.has(key);
-    return closureDates.includes(key);
-  };
-
-  const isCustomerSkip = (d: Date): boolean => {
-    if (!customerSkips) return false;
-    return customerSkips.has(toLocalDateKey(d));
-  };
-
-  let mealsCounted = 0;
-  let holidayDaysSkipped = 0;
-  let customerDaysSkipped = 0;
-
-  if (isWeekdayDelivery(date)) {
-    if (isClosed(date)) {
-      holidayDaysSkipped++;
-    } else if (isCustomerSkip(date)) {
-      customerDaysSkipped++;
-    } else {
-      mealsCounted = 1;
-    }
-  }
-
-  while (mealsCounted < totalMeals) {
-    date.setDate(date.getDate() + 1);
-    if (isWeekdayDelivery(date)) {
-      if (isClosed(date)) {
-        holidayDaysSkipped++;
-      } else if (isCustomerSkip(date)) {
-        customerDaysSkipped++;
-      } else {
-        mealsCounted++;
-      }
-    }
-    if (mealsCounted > 730) return null;
-  }
-
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
   return {
-    dateKey: `${y}-${m}-${d}`,
-    holidayDaysSkipped,
-    customerDaysSkipped,
+    dateKey: result.dateKey,
+    holidayDaysSkipped: result.holidayDaysSkipped,
+    customerDaysSkipped: result.customerDaysSkipped,
   };
 };
 

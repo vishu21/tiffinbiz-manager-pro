@@ -3,6 +3,14 @@
 import { createClient } from '@/utils/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { parseActiveScheduleDays } from '@/app/utils/customerPickup';
+import {
+  computeCycleEndDate,
+  normalizeDateKey,
+  resolveDeliveryDayNumbers,
+  resolvePlanTierForCredits,
+  shiftCycleEndByDeliveryDays,
+  toLocalDateKey,
+} from '@/app/utils/subscriptionCycle';
 import { updateCustomerMealConfig, type MealConfigPayload } from '@/app/admin/actions';
 
 export async function fetchDailyMenu(dateStr: string) {
@@ -1367,52 +1375,354 @@ export async function saveCustomerOverride(
     schemaAvailable: true,
   };
 }
+// ── Two-tier subscription renewal (Active Cycle vs Lifetime History) ──────────
+//
+// TIER 1 — ACTIVE CYCLE (`start_date`, `total_tiffin_credits`, `used_credits`,
+//   `cycle_end_date`, `subscription_status`) is always kept as ONE small cycle:
+//   • cycle_reset     → the customer finished their plan (Renewal Pending / 0 meals
+//                       remaining): `start_date` restarts at the selected prep date,
+//                       credits become exactly the purchased amount, progress resets
+//                       to 0 and the end date is computed FORWARD from the new start
+//                       (kitchen closures compensated). Cancellation flags are cleared.
+//   • mid_cycle_topup → the customer still has credits (e.g. 18/20 delivered): credits
+//                       are added to the running total and the existing end date is
+//                       pushed forward by the added delivery days only.
+//
+// TIER 2 — LIFETIME HISTORY (`lifetime_deliveries`, `renewal_count`) are audit records
+//   that survive cycle resets. Migration 00023 adds them; when absent the write is
+//   retried without them, so a renewal NEVER fails on an un-migrated schema.
+export type RenewalMode = 'cycle_reset' | 'mid_cycle_topup';
+
+export type RenewCustomerSubscriptionInput = {
+  customerId: string;
+  creditsToAdd: number;
+  planTier?: 'trial' | 'weekly' | 'monthly';
+  // The manifest/prep date the new cycle starts on (defaults to the server's today).
+  startDate?: string | null;
+};
+
+export type RenewCustomerSubscriptionResult = {
+  success: boolean;
+  message?: string;
+  mode?: RenewalMode;
+  startDate?: string;
+  credits?: number;
+  usedCredits?: number;
+  cycleEndDate?: string | null;
+  planTier?: 'trial' | 'weekly' | 'monthly';
+  // false when the lifetime counters could not be persisted (migration 00023 absent).
+  lifetimeTracked?: boolean;
+  migrationRecommended?: boolean;
+};
+
+// Optional `customers` columns this action tolerates before their migrations run.
+// Each group is dropped as a unit when PostgREST reports the column is missing.
+const OPTIONAL_RENEWAL_COLUMNS: string[][] = [
+  ['lifetime_deliveries', 'renewal_count'], // migration 00023
+  ['payment_status'], // migration 00009
+  ['scheduled_cancel_date', 'scheduled_status'], // migration 00014
+  ['cancelled_at', 'cancellation_reason'], // migration 00002
+  ['used_credits', 'skipped_days_count'], // migration 00007
+  ['cycle_end_date'], // migration 00019
+];
+
+// True when a Supabase/Postgres error names any of the given columns
+// (PGRST204 stale schema cache OR Postgres 42703 undefined_column).
+const isCustomerColumnMissing = (error: unknown, names: string[]): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { code?: string; message?: string; details?: string; hint?: string };
+  if (e.code !== 'PGRST204' && e.code !== '42703') return false;
+  const text = [e.message, e.details, e.hint].filter(Boolean).join(' ').toLowerCase();
+  return names.some(name => text.includes(name.toLowerCase()));
+};
+
+type CustomerWriteOutcome = {
+  error: unknown | null;
+  // Optional columns that had to be dropped for the write to succeed.
+  stripped: string[];
+};
+
+// Writes the customers row, progressively dropping OPTIONAL columns the target
+// schema does not have yet. Deliberately never chains `.select()`: with an update
+// RLS policy that returns no rows, an empty array would look like a failed write.
+const writeCustomerPayload = async (
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  customerId: string,
+  payload: Record<string, unknown>
+): Promise<CustomerWriteOutcome> => {
+  const current = { ...payload };
+  const stripped: string[] = [];
+
+  for (let attempt = 0; attempt <= OPTIONAL_RENEWAL_COLUMNS.length; attempt++) {
+    const { error } = await supabase.from('customers').update(current).eq('id', customerId);
+    if (!error) return { error: null, stripped };
+
+    const missingGroup = OPTIONAL_RENEWAL_COLUMNS.find(group =>
+      isCustomerColumnMissing(error, group)
+    );
+    if (!missingGroup) return { error, stripped };
+
+    missingGroup.forEach(column => delete current[column]);
+    stripped.push(...missingGroup);
+  }
+
+  return { error: new Error('Renewal could not be persisted.'), stripped };
+};
+
+// Kitchen closures, best-effort: a missing/un-migrated `kitchen_closures` table
+// yields an empty set so the cycle math still produces a valid end date.
+const fetchClosureDates = async (
+  supabase: Awaited<ReturnType<typeof createClient>>
+): Promise<Set<string>> => {
+  try {
+    const { data, error } = await supabase.from('kitchen_closures').select('closure_date');
+    if (error || !data) return new Set();
+    return new Set(
+      data
+        .map(row => normalizeDateKey((row as { closure_date?: string | null }).closure_date))
+        .filter((key): key is string => Boolean(key))
+    );
+  } catch {
+    return new Set();
+  }
+};
+
+// The customer's own skipped delivery days (compensated by the cycle walk-extension).
+const fetchCustomerSkipDates = async (
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  customerId: string
+): Promise<Set<string>> => {
+  try {
+    const { data, error } = await supabase
+      .from('customer_daily_overrides')
+      .select('override_date')
+      .eq('customer_id', customerId)
+      .eq('is_skipped', true);
+    if (error || !data) return new Set();
+    return new Set(
+      data
+        .map(row => normalizeDateKey((row as { override_date?: string | null }).override_date))
+        .filter((key): key is string => Boolean(key))
+    );
+  } catch {
+    return new Set();
+  }
+};
+
+// Tier 2 (lifetime history). Returns null when migration 00023 has not been applied —
+// the caller then omits the columns entirely so the renewal still succeeds.
+const readLifetimeCounters = async (
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  customerId: string
+): Promise<{ lifetime_deliveries: number; renewal_count: number } | null> => {
+  const { data, error } = await supabase
+    .from('customers')
+    .select('lifetime_deliveries, renewal_count')
+    .eq('id', customerId)
+    .maybeSingle<{ lifetime_deliveries: number | null; renewal_count: number | null }>();
+  if (error || !data) return null;
+  return {
+    lifetime_deliveries: Math.max(0, Math.trunc(Number(data.lifetime_deliveries) || 0)),
+    renewal_count: Math.max(0, Math.trunc(Number(data.renewal_count) || 0)),
+  };
+};
+
 export async function renewCustomerSubscription({
   customerId,
   creditsToAdd,
   planTier,
-}: {
-  customerId: string;
-  creditsToAdd: number;
-  planTier?: 'trial' | 'weekly' | 'monthly';
-}): Promise<{ success: boolean; message?: string }> {
+  startDate,
+}: RenewCustomerSubscriptionInput): Promise<RenewCustomerSubscriptionResult> {
   try {
+    const credits = Math.trunc(Number(creditsToAdd));
+    if (!customerId) return { success: false, message: 'Missing customer id.' };
+    if (!Number.isFinite(credits) || credits < 1) {
+      return { success: false, message: 'Add at least 1 meal credit to renew.' };
+    }
+
     const supabase = await createClient();
 
-    // 1. Fetch current credits
-    const { data: customer, error: fetchErr } = await supabase
+    type CustomerRow = {
+      id: string;
+      total_tiffin_credits?: number | null;
+      used_credits?: number | null;
+      plan_tier?: string | null;
+      start_date?: string | null;
+      cycle_end_date?: string | null;
+      delivery_schedule?: string | null;
+      subscription_status?: string | null;
+    };
+
+    // Full projection first; fall back to the legacy-safe minimal set when an
+    // optional column is absent on an older schema.
+    let usedColumnAvailable = true;
+    let { data: customer, error: fetchErr } = await supabase
       .from('customers')
-      .select('id, total_tiffin_credits, plan_tier')
+      .select(
+        'id, total_tiffin_credits, used_credits, plan_tier, start_date, cycle_end_date, delivery_schedule, subscription_status'
+      )
       .eq('id', customerId)
-      .single();
+      .maybeSingle<CustomerRow>();
 
-    if (fetchErr || !customer) {
-      return { success: false, message: fetchErr?.message || 'Customer not found' };
+    if (fetchErr) {
+      usedColumnAvailable = false;
+      const fallback = await supabase
+        .from('customers')
+        .select('id, total_tiffin_credits, plan_tier')
+        .eq('id', customerId)
+        .maybeSingle<CustomerRow>();
+      customer = fallback.data;
+      fetchErr = fallback.error;
     }
 
-    const currentCredits = Number(customer.total_tiffin_credits) || 0;
-    const newTotal = currentCredits + creditsToAdd;
-    const newTier = planTier || (newTotal >= 20 ? 'monthly' : newTotal > 1 ? 'weekly' : 'trial');
+    if (fetchErr) return { success: false, message: fetchErr.message };
+    if (!customer) return { success: false, message: 'Customer not found.' };
 
-    // 2. Update total_tiffin_credits without modifying start_date
-    const { error: updateErr } = await supabase
-      .from('customers')
-      .update({
-        total_tiffin_credits: newTotal,
-        plan_tier: newTier,
-        subscription_status: 'active',
-        cycle_end_date: null,
-        scheduled_cancel_date: null,
-        scheduled_status: null,
-      })
-      .eq('id', customerId);
+    const requestedStart = normalizeDateKey(startDate) || toLocalDateKey(new Date());
+    const totalCredits = Math.max(0, Math.trunc(Number(customer.total_tiffin_credits) || 0));
+    const used = usedColumnAvailable
+      ? Math.max(0, Math.trunc(Number(customer.used_credits) || 0))
+      : 0;
+    const remaining = usedColumnAvailable ? totalCredits - used : null;
 
-    if (updateErr) {
-      return { success: false, message: updateErr.message };
+    const existingStart = normalizeDateKey(customer.start_date);
+    const existingEnd = normalizeDateKey(customer.cycle_end_date);
+    const subscriptionStatus = (customer.subscription_status || '').toLowerCase();
+
+    const deliveryDays = resolveDeliveryDayNumbers(customer.delivery_schedule);
+    const closureDates = await fetchClosureDates(supabase);
+    const customerSkips = await fetchCustomerSkipDates(supabase, customerId);
+
+    // End of the CURRENT cycle — the explicit column wins, otherwise walk forward.
+    const effectiveEnd =
+      existingEnd ||
+      (existingStart
+        ? computeCycleEndDate({
+            startDate: existingStart,
+            totalMeals: totalCredits,
+            deliveryDays,
+            closureDates,
+            customerSkips,
+          })
+        : null);
+
+    const cycleIsOver = effectiveEnd ? requestedStart > effectiveEnd : false;
+    const isRenewalPending =
+      subscriptionStatus === 'expired' ||
+      subscriptionStatus === 'cancelled' ||
+      !existingStart ||
+      cycleIsOver ||
+      (remaining !== null && remaining <= 0);
+
+    const mode: RenewalMode = isRenewalPending ? 'cycle_reset' : 'mid_cycle_topup';
+
+    let nextStartDate: string;
+    let nextCredits: number;
+    let nextUsed: number;
+    let nextEnd: string | null;
+
+    if (mode === 'cycle_reset') {
+      nextStartDate = requestedStart;
+      nextCredits = credits;
+      nextUsed = 0;
+      nextEnd = computeCycleEndDate({
+        startDate: nextStartDate,
+        totalMeals: nextCredits,
+        deliveryDays,
+        closureDates,
+        customerSkips,
+      });
+    } else {
+      nextStartDate = existingStart as string;
+      nextCredits = totalCredits + credits;
+      nextUsed = used;
+      nextEnd =
+        shiftCycleEndByDeliveryDays(
+          effectiveEnd || nextStartDate,
+          credits,
+          deliveryDays,
+          closureDates
+        ) ||
+        computeCycleEndDate({
+          startDate: nextStartDate,
+          totalMeals: nextCredits,
+          deliveryDays,
+          closureDates,
+          customerSkips,
+        });
     }
 
-    return { success: true };
+    const nextTier = planTier || resolvePlanTierForCredits(nextCredits);
+
+    // Tier 2 — read first so writing is a no-op column-wise when un-migrated.
+    const lifetime = await readLifetimeCounters(supabase, customerId);
+
+    // Tier 1 — ACTIVE CYCLE payload (single small cycle; never inflated).
+    const payload: Record<string, unknown> = {
+      start_date: nextStartDate,
+      total_tiffin_credits: nextCredits,
+      plan_tier: nextTier,
+      subscription_status: 'active',
+      payment_status: 'paid',
+      // Clear any stale cancellation schedule so the renewed cycle starts clean.
+      scheduled_cancel_date: null,
+      scheduled_status: null,
+    };
+
+    if (usedColumnAvailable) {
+      payload.used_credits = nextUsed;
+      payload.skipped_days_count = 0;
+    }
+    if (nextEnd) payload.cycle_end_date = nextEnd;
+    if (mode === 'cycle_reset' && subscriptionStatus === 'cancelled') {
+      payload.cancelled_at = null;
+      payload.cancellation_reason = null;
+    }
+
+    // Tier 2 — LIFETIME HISTORY (only when migration 00023 is applied).
+    if (lifetime) {
+      payload.renewal_count = lifetime.renewal_count + 1;
+      payload.lifetime_deliveries =
+        lifetime.lifetime_deliveries + (mode === 'cycle_reset' ? totalCredits : 0);
+    }
+
+    const write = await writeCustomerPayload(supabase, customerId, payload);
+    if (write.error) {
+      console.error('[renewCustomerSubscription] update failed:', write.error);
+      return {
+        success: false,
+        message:
+          write.error instanceof Error
+            ? write.error.message
+            : 'Failed to renew the subscription.',
+      };
+    }
+
+    const lifetimeTracked = lifetime !== null && !write.stripped.includes('lifetime_deliveries');
+    if (!lifetimeTracked) {
+      console.warn(
+        '[renewCustomerSubscription] lifetime history not persisted — run ' +
+          'supabase/migrations/00023_add_lifetime_counters.sql to enable lifetime counters.'
+      );
+    }
+
+    revalidatePath('/prep');
+    revalidatePath('/admin/customers');
+    revalidatePath('/admin/deliveries');
+
+    return {
+      success: true,
+      mode,
+      startDate: nextStartDate,
+      credits: nextCredits,
+      usedCredits: nextUsed,
+      cycleEndDate: nextEnd,
+      planTier: nextTier,
+      lifetimeTracked,
+      migrationRecommended: !lifetimeTracked,
+    };
   } catch (err) {
+    console.error('[renewCustomerSubscription] unexpected error:', err);
     return {
       success: false,
       message: err instanceof Error ? err.message : 'Failed to extend subscription',
@@ -1422,28 +1732,36 @@ export async function renewCustomerSubscription({
 
 export async function endCustomerSubscription(
   customerId: string,
-  effectiveEndDate: string // Pass the date the cycle actually ended (e.g. "2026-09-16")
+  // The date the cycle actually ended (e.g. "2026-09-16"). Anything that is not a
+  // usable date (the sheet used to pass a description string) falls back to today,
+  // so the DATE columns never receive free text.
+  effectiveEndDate?: string | null
 ): Promise<{ success: boolean; message?: string }> {
   try {
-    const { createClient } = await import('@/utils/supabase/server');
     const supabase = await createClient();
+
+    const endKey = normalizeDateKey(effectiveEndDate) || toLocalDateKey(new Date());
 
     const { error } = await supabase
       .from('customers')
       .update({
-        cycle_end_date: effectiveEndDate,
-        scheduled_cancel_date: effectiveEndDate,
+        cycle_end_date: endKey,
+        scheduled_cancel_date: endKey,
         scheduled_status: 'cancelled',
         cancellation_reason: 'Non-renewal archived',
       })
       .eq('id', customerId);
 
     if (error) throw error;
+
+    revalidatePath('/prep');
+    revalidatePath('/admin/customers');
+    revalidatePath('/admin/deliveries');
     return { success: true };
-  } catch (err: any) {
+  } catch (err) {
     return {
       success: false,
-      message: err?.message || 'Could not end subscription.',
+      message: err instanceof Error ? err.message : 'Could not end subscription.',
     };
   }
 }

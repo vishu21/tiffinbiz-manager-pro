@@ -4,7 +4,11 @@ import React, { useEffect, useState, useTransition } from 'react';
 import { Zap, Calendar, RefreshCw, X, AlertTriangle, Info, CalendarOff, Clock, Undo2, Pause, Trash2, Check } from 'lucide-react';
 import type { MealConfigPayload } from '@/app/admin/actions';
 import { parseActiveScheduleDays } from '@/app/utils/customerPickup';
-import { renewCustomerSubscription, endCustomerSubscription } from './actions';
+import {
+  renewCustomerSubscription,
+  endCustomerSubscription,
+  type RenewCustomerSubscriptionResult,
+} from './actions';
 import { useRouter } from 'next/navigation';
 
 // Minimal view of a manifest row — only the fields the quick sheet edits/reads.
@@ -381,6 +385,13 @@ type Props = {
   vacationPending?: boolean;
   isExpiredPendingRenewal?: boolean;
   expiredOnDate?: string;
+  // Fired right after a successful renewal so the dashboard can optimistically clear
+  // the "Renewal Pending" state without waiting for the round-trip refresh.
+  onRenewSuccess?: (
+    customerId: string,
+    creditsToAdd: number,
+    details: RenewCustomerSubscriptionResult
+  ) => void;
 };
 
 export default function PrepQuickEditSheet({
@@ -399,6 +410,7 @@ export default function PrepQuickEditSheet({
   vacationPending = false,
   isExpiredPendingRenewal = false,
   expiredOnDate,
+  onRenewSuccess,
 }: Props) {
   const router = useRouter();
   const [visible, setVisible] = useState(false);
@@ -496,16 +508,30 @@ export default function PrepQuickEditSheet({
   const handleRenewSubscription = (creditsToAdd: number, planTier?: 'trial' | 'weekly' | 'monthly') => {
     setRenewError(null);
     startRenewTransition(async () => {
-      const res = await renewCustomerSubscription({
-        customerId: customer.id,
-        creditsToAdd,
-        planTier,
-      });
-      if (res.success) {
-        router.refresh();
+      try {
+        const res = await renewCustomerSubscription({
+          customerId: customer.id,
+          creditsToAdd,
+          planTier,
+          // The new cycle starts on the manifest day the kitchen is working on.
+          startDate: overrideDate.slice(0, 10),
+        });
+
+        if (!res.success) {
+          setRenewError(res.message || 'Failed to extend subscription.');
+          return;
+        }
+
+        // Optimistic dashboard sync → close the drawer → server refresh.
+        onRenewSuccess?.(customer.id, creditsToAdd, res);
         onClose();
-      } else {
-        setRenewError(res.message || 'Failed to extend subscription.');
+        router.refresh();
+      } catch (err) {
+        setRenewError(
+          err instanceof Error
+            ? err.message
+            : 'Failed to extend subscription. Please try again.'
+        );
       }
     });
   };
@@ -671,7 +697,8 @@ export default function PrepQuickEditSheet({
 
     startEndSubTransition(async () => {
       try {
-        const res = await endCustomerSubscription(customer.id, 'Subscription ended from Prep Sheet');
+        // Archive on the manifest day the kitchen is looking at (a real DATE value).
+        const res = await endCustomerSubscription(customer.id, overrideDate.slice(0, 10));
         if (res.success) {
           onClose();
           router.refresh();
