@@ -147,10 +147,6 @@ export async function getAvailableRecipes(): Promise<{ dal: Recipe[]; sabji: Rec
 }
 
 // ── Daily Kitchen Menu selection (recipes catalog) ──────────────────────────────
-// The "Today's Kitchen Menu" section of the Prep dashboard picks one dal and one
-// sabji recipe (from public.recipes) for each date. The selection is stored one
-// row per `selection_date` in public.daily_menu_selections and feeds the batch
-// prep calculator (see PrepDashboardClient).
 export type DailyMenuSelection = {
   dalId: string | null;
   sabjiId: string | null;
@@ -158,7 +154,6 @@ export type DailyMenuSelection = {
 
 export type DailyMenuSelectionWriteResult = {
   success: boolean;
-  // false when the table is missing OR the PostgREST schema cache is stale.
   schemaAvailable: boolean;
   message?: string;
 };
@@ -166,8 +161,6 @@ export type DailyMenuSelectionWriteResult = {
 const SELECTION_SCHEMA_UNAVAILABLE =
   'daily_menu_selections is unavailable — apply migration 00020_add_recipes_and_daily_menu_selections.sql and reload the schema.';
 
-// Shared classifier for the recipes-catalog tables (recipes / recipe_ingredients /
-// daily_menu_selections).
 const isMissingSelectionSchemaError = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') return false;
   const e = error as { code?: string; message?: string; details?: string; hint?: string };
@@ -181,8 +174,6 @@ const isMissingSelectionSchemaError = (error: unknown): boolean => {
   );
 };
 
-// Reads the dal/sabji selection for one date. Degrades to an empty selection when
-// the table is unavailable so the Prep dashboard never crashes on an older schema.
 export async function getDailyMenuSelection(dateKey: string): Promise<DailyMenuSelection> {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -200,7 +191,6 @@ export async function getDailyMenuSelection(dateKey: string): Promise<DailyMenuS
   return { dalId: row?.dal_recipe_id ?? null, sabjiId: row?.sabji_recipe_id ?? null };
 }
 
-// Upserts the dal/sabji recipe ids for one date (one row per date_key).
 export async function setDailyMenuSelection(
   dateKey: string,
   dalId?: string | null,
@@ -231,14 +221,9 @@ export async function setDailyMenuSelection(
 }
 
 // ── Daily "Today Only" meal-config overrides ────────────────────────────────────
-// A date-scoped row stores a FULL snapshot of the customer's meal config for one
-// calendar date (the "⚡ Today Only" scope of the Prep Quick Meal Edit drawer).
-// The prep manifest merges the snapshot over the base customers profile ONLY when
-// the selected date matches override_date; every other date keeps using the
-// master subscription defaults untouched.
 export type DailyOverrideRow = {
   customer_id: string;
-  override_date: string; // local YYYY-MM-DD
+  override_date: string;
   meal_type: string | null;
   portion_size: string | null;
   roti_count: number | null;
@@ -248,8 +233,6 @@ export type DailyOverrideRow = {
   delivery_instructions: string | null;
   is_custom_curry: boolean | null;
   curry_config: string | null;
-  // Date-scoped skip flag (migration 00019). A row may carry ONLY this flag — every
-  // meal-config column NULL — when the day is skipped without a meal edit.
   is_skipped: boolean | null;
 };
 
@@ -268,27 +251,13 @@ const DAILY_OVERRIDE_COLUMNS = [
   'is_skipped',
 ] as const;
 
-// Legacy column set for databases that have NOT yet applied migration 00019
-// (is_skipped). Selecting the flag-less set keeps the existing "Today Only"
-// overrides working instead of degrading the whole feature.
 const LEGACY_DAILY_OVERRIDE_COLUMNS = DAILY_OVERRIDE_COLUMNS.filter(
   column => column !== 'is_skipped'
 );
 
-// ── Schema-degradation helpers ──────────────────────────────────────────────
-// customer_daily_overrides is created by supabase/migrations/00015 (and ensured
-// again by 00016_notify_pgrst_reload.sql). Until that migration is applied — or the PostgREST schema
-// cache is refreshed (NOTIFY pgrst, 'reload schema') — every query against the
-// table fails with a "not found" PostgREST/Postgres error. These helpers
-// classify that condition so the Prep dashboard can fall back to an in-session,
-// local-only override store instead of crashing.
-
 export type DailyOverrideLoadResult = {
   rows: DailyOverrideRow[];
-  // false when the table/columns are missing OR the schema cache is stale.
   schemaAvailable: boolean;
-  // When schemaAvailable:false this carries the PostgREST/Postgres error text
-  // so the UI can show exactly why persistence is unavailable.
   message?: string;
 };
 
@@ -298,9 +267,6 @@ export type DailyOverrideWriteResult = {
   message?: string;
 };
 
-// PostgREST emits PGRST205 ("could not find the table in the schema cache") for a
-// stale schema cache, PGRST204 on response/schema mismatches, and Postgres
-// itself reports 42P01/42703 when the relation/column genuinely does not exist.
 const isMissingOverrideSchemaError = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') return false;
   const e = error as { code?: string; message?: string; details?: string; hint?: string };
@@ -333,11 +299,6 @@ const formatSchemaUnavailableMessage = (error: unknown): string => {
   return e?.message ? `${e.message}${hint}` : 'customer_daily_overrides is not available.';
 };
 
-// Loads every "Today Only" override that applies to a single delivery date.
-// When the table (or its PostgREST schema-cache entry) is unavailable the call
-// RESOLVES with schemaAvailable:false + an empty row list instead of throwing,
-// so the dashboard can keep working in local-only mode.
-
 export async function getDailyOverrides(dateKey: string): Promise<DailyOverrideLoadResult> {
   const supabase = await createClient();
   const query = (columns: readonly string[] = DAILY_OVERRIDE_COLUMNS) =>
@@ -348,9 +309,6 @@ export async function getDailyOverrides(dateKey: string): Promise<DailyOverrideL
 
   let result = await query();
 
-  // is_skipped landed in migration 00019. On a database that has not applied it yet the
-  // flag-aware select fails, so retry against the legacy column set (every row then reads
-  // is_skipped:false) rather than degrading the whole override feature.
   let usedLegacyColumns = false;
   if (
     result.error &&
@@ -361,13 +319,9 @@ export async function getDailyOverrides(dateKey: string): Promise<DailyOverrideL
     usedLegacyColumns = true;
   }
 
-  // The table may already exist while PostgREST still holds a STALE schema cache
-  // (e.g. it was created moments ago by a migration). Try ONE automatic schema
-  // reload (NOTIFY pgrst, 'reload schema') and retry before falling back.
   if (result.error && isMissingOverrideSchemaError(result.error)) {
     const { error: reloadError } = await supabase.rpc('notify_pgrst_reload');
     if (!reloadError) {
-      // The schema reload is applied asynchronously by PostgREST.
       await new Promise(resolve => setTimeout(resolve, 400));
       result = await query(
         usedLegacyColumns ? LEGACY_DAILY_OVERRIDE_COLUMNS : DAILY_OVERRIDE_COLUMNS
@@ -391,7 +345,6 @@ export async function getDailyOverrides(dateKey: string): Promise<DailyOverrideL
     return { rows: [], schemaAvailable: true };
   }
 
-  // Normalize the skip flag so a legacy column set (or a NULL value) always reads false.
   const rows = ((result.data || []) as unknown as Partial<DailyOverrideRow>[]).map(row => ({
     ...row,
     is_skipped: row.is_skipped === true,
@@ -400,10 +353,32 @@ export async function getDailyOverrides(dateKey: string): Promise<DailyOverrideL
   return { rows, schemaAvailable: true };
 }
 
-// Upserts the full meal-config snapshot for one customer + date (replaces any
-// existing override so the day always carries exactly what was last saved).
-// schemaAvailable:false means the write was NOT persisted and the caller should
-// keep its optimistic row as a session-local override.
+// ── Shared Audit Trail Summary Formatter ────────────────────────────────────
+function buildMealOverrideSummary(config: {
+  portion_size?: string | null;
+  meal_type?: string | null;
+  delivery_instructions?: string | null;
+  roti_count?: number | null;
+  pronthi_count?: number | null;
+  rice_count?: string | null;
+  dietary_notes?: string | null;
+}): string {
+  const parts: string[] = [];
+  if (config.portion_size) parts.push(`${config.portion_size} portion`);
+  if (config.meal_type) parts.push(config.meal_type);
+  if (config.delivery_instructions) {
+    const cleanCurry = config.delivery_instructions.replace(/\[NOTE:.*?\]/g, '').trim();
+    if (cleanCurry) parts.push(cleanCurry);
+  }
+  if (typeof config.roti_count === 'number') parts.push(`${config.roti_count} Roti`);
+  if (typeof config.pronthi_count === 'number' && config.pronthi_count > 0) parts.push(`${config.pronthi_count} Pronthi`);
+  if (config.rice_count && config.rice_count !== 'None' && config.rice_count !== '—') parts.push(`Rice ${config.rice_count}`);
+  if (config.dietary_notes) parts.push(`Note: "${config.dietary_notes}"`);
+
+  return parts.length > 0 ? parts.join(' · ') : 'Meal preferences updated';
+}
+
+// Upserts the full meal-config snapshot for one customer + date ("Today Only")
 export async function upsertDailyOverride(
   input: DailyOverrideRow
 ): Promise<DailyOverrideWriteResult> {
@@ -444,13 +419,36 @@ export async function upsertDailyOverride(
     return { persisted: false, schemaAvailable: true, message: error.message };
   }
 
+  // Auto-log to Customer Audit Trail (shows on the History tab)
+  try {
+    const summaryDetails = buildMealOverrideSummary(input);
+    await supabase.from('customer_activity_logs').insert({
+      customer_id: input.customer_id,
+      action_type: 'OVERRIDE',
+      summary: `Today (${input.override_date}) override: ${summaryDetails}`,
+      changed_fields: {
+        scope: 'today',
+        date: input.override_date,
+        portion_size: input.portion_size,
+        meal_type: input.meal_type,
+        roti_count: input.roti_count,
+        pronthi_count: input.pronthi_count,
+        rice_count: input.rice_count,
+        delivery_instructions: input.delivery_instructions,
+        dietary_notes: input.dietary_notes,
+      },
+      performed_by: 'Kitchen Prep',
+      created_at: new Date().toISOString(),
+    });
+  } catch (logErr) {
+    console.warn('[DailyOverride] Could not record activity log:', logErr);
+  }
+
   revalidatePath('/prep');
+  revalidatePath('/admin/customers');
   return { persisted: true, schemaAvailable: true };
 }
 
-// Removes a date-scoped override — used when a customer is saved with the
-// "All Future Deliveries (Permanent)" scope so the date reverts to the master
-// profile instead of pinning stale single-day values.
 export async function deleteDailyOverride(
   customerId: string,
   dateKey: string
@@ -474,32 +472,37 @@ export async function deleteDailyOverride(
     return { persisted: false, schemaAvailable: true, message: error.message };
   }
 
+  // Auto-log to Customer Audit Trail
+  try {
+    await supabase.from('customer_activity_logs').insert({
+      customer_id: customerId,
+      action_type: 'OVERRIDE',
+      summary: `Reset meal override to master profile for ${dateKey}`,
+      performed_by: 'Kitchen Prep',
+      created_at: new Date().toISOString(),
+    });
+  } catch (logErr) {
+    console.warn('[DailyOverride] Log error:', logErr);
+  }
+
   revalidatePath('/prep');
+  revalidatePath('/admin/customers');
   return { persisted: true, schemaAvailable: true };
 }
 
 // ── Single-day meal skip ─────────────────────────────────────────────────────
-// A skip is stored on the same date-scoped override row as a lone `is_skipped` flag
-// (every meal-config column stays NULL), so the prep manifest can drop the customer
-// from today's cooking totals / active-delivery count while still rendering the row
-// (muted) for the packer. Toggling a skip also walks the customer's billing-cycle end
-// by ONE delivery day: +1 on skip, −1 when the meal is restored.
-
 export type ToggleDailySkipResult = {
   success: boolean;
   isSkipped: boolean;
-  // false when the table/column is missing OR the PostgREST schema cache is stale.
   schemaAvailable: boolean;
   message?: string;
 };
 
-// Weekday = a delivery day under the app's Mon–Fri default schedule.
 const isDeliveryWeekday = (date: Date): boolean => {
   const day = date.getDay();
   return day !== 0 && day !== 6;
 };
 
-// Shifts a local YYYY-MM-DD date by `delta` DELIVERY days (weekdays only).
 const shiftDeliveryDays = (dateKey: string, delta: number): string => {
   const date = new Date(`${dateKey}T00:00:00`);
   if (Number.isNaN(date.getTime()) || delta === 0) return dateKey;
@@ -515,9 +518,6 @@ const shiftDeliveryDays = (dateKey: string, delta: number): string => {
   return `${y}-${m}-${d}`;
 };
 
-// Extends (delta +1) or rolls back (delta −1) the customer's active billing cycle end
-// by one delivery day. A missing `cycle_end_date` column (migration 00019 not applied)
-// or an untracked cycle end is a silent no-op so the skip itself always succeeds.
 const shiftCustomerCycleEnd = async (customerId: string, delta: number): Promise<void> => {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -550,14 +550,6 @@ const shiftCustomerCycleEnd = async (customerId: string, delta: number): Promise
   }
 };
 
-// Skips (or restores) a single delivery day for one customer and extends/rolls back
-// their active subscription cycle by one delivery day.
-//
-// Restoring (skipState === false) is a HARD RESET: the date-scoped override row is
-// DELETED outright so the customer falls back cleanly to their master `customers`
-// profile. A skip record carries ONLY `is_skipped`, so this can never leave stale
-// meal-config columns behind (a bogus 'VEG' / 'RG', a leftover "Today Only" snapshot)
-// nor a lingering "⚡ Today" badge.
 export async function toggleDailySkip({
   customerId,
   date,
@@ -569,11 +561,7 @@ export async function toggleDailySkip({
 }): Promise<ToggleDailySkipResult> {
   const supabase = await createClient();
 
-  // ── Undo Skip ───────────────────────────────────────────────────────────────
   if (skipState === false) {
-    // Read the row FIRST: it tells us whether the day was actually skipped (so the +1
-    // billing-cycle extension is rolled back) and lets us classify a missing-table /
-    // stale-schema failure. The DELETE below is unconditional.
     const { data, error } = await supabase
       .from('customer_daily_overrides')
       .select(DAILY_OVERRIDE_COLUMNS.join(','))
@@ -606,11 +594,6 @@ export async function toggleDailySkip({
     const existing = (data ?? null) as Partial<DailyOverrideRow> | null;
     const wasSkipped = existing?.is_skipped === true;
 
-    // Undo is a HARD RESET of the day: DELETE the override row outright so the customer
-    // resolves purely from the master `customers` profile again. A skip record carries
-    // ONLY `is_skipped` (every meal-config column NULL), so removing it guarantees zero
-    // stale columns — no bogus 'VEG' / 'RG', no leftover meal snapshot, and no lingering
-    // "⚡ Today" badge after a restore.
     const { error: deleteError } = await supabase
       .from('customer_daily_overrides')
       .delete()
@@ -634,18 +617,28 @@ export async function toggleDailySkip({
       };
     }
 
-    // Only a day that was ACTUALLY skipped carries a +1 cycle extension to roll back.
     if (wasSkipped) {
       await shiftCustomerCycleEnd(customerId, -1);
     }
 
+    // Auto-log un-skip to Customer Audit Trail
+    try {
+      await supabase.from('customer_activity_logs').insert({
+        customer_id: customerId,
+        action_type: 'OVERRIDE',
+        summary: `Restored delivery for ${date}${wasSkipped ? ' · Cycle adjusted -1d' : ''}`,
+        performed_by: 'Kitchen Prep',
+        created_at: new Date().toISOString(),
+      });
+    } catch (logErr) {
+      console.warn('[DailySkip] Could not record activity log:', logErr);
+    }
+
     revalidatePath('/prep');
+    revalidatePath('/admin/customers');
     return { success: true, isSkipped: false, schemaAvailable: true };
   }
 
-  // ── Skip ────────────────────────────────────────────────────────────────────
-  // Upsert ONLY the skip flag + timestamp, so any meal-config snapshot already saved
-  // for the day survives the conflict update untouched.
   const { error } = await supabase
     .from('customer_daily_overrides')
     .upsert(
@@ -680,25 +673,32 @@ export async function toggleDailySkip({
     };
   }
 
-  // Skip extends the paid cycle by one delivery day.
   await shiftCustomerCycleEnd(customerId, 1);
 
+  // Auto-log skip to Customer Audit Trail
+  try {
+    await supabase.from('customer_activity_logs').insert({
+      customer_id: customerId,
+      action_type: 'OVERRIDE',
+      summary: `Delivery skipped for ${date} · Cycle extended +1d`,
+      performed_by: 'Kitchen Prep',
+      created_at: new Date().toISOString(),
+    });
+  } catch (logErr) {
+    console.warn('[DailySkip] Could not record activity log:', logErr);
+  }
+
   revalidatePath('/prep');
+  revalidatePath('/admin/customers');
   return { success: true, isSkipped: true, schemaAvailable: true };
 }
 
-// Result shape for the one-click "Reset to Master Profile" control.
 export type ClearDailyOverrideResult = {
   success: boolean;
-  // false when the table/column is missing OR the PostgREST schema cache is stale.
   schemaAvailable: boolean;
   message?: string;
 };
 
-// Deletes a date-scoped override outright, discarding ALL daily changes so the day
-// resolves purely from the master `customers` profile again. When the row was
-// SKIPPED the +1 billing-cycle extension applied on skip is rolled back so the paid
-// cycle stays balanced.
 export async function clearDailyOverride({
   customerId,
   date,
@@ -708,7 +708,6 @@ export async function clearDailyOverride({
 }): Promise<ClearDailyOverrideResult> {
   const supabase = await createClient();
 
-  // Read the row first so a skipped day's cycle extension can be rolled back.
   const { data, error: readError } = await supabase
     .from('customer_daily_overrides')
     .select(DAILY_OVERRIDE_COLUMNS.join(','))
@@ -757,16 +756,28 @@ export async function clearDailyOverride({
     return { success: false, schemaAvailable: true, message: error.message };
   }
 
-  // A reset of a SKIPPED day rolls the +1 cycle extension back.
   if (wasSkipped) {
     await shiftCustomerCycleEnd(customerId, -1);
   }
 
+  // Auto-log to Customer Audit Trail
+  try {
+    await supabase.from('customer_activity_logs').insert({
+      customer_id: customerId,
+      action_type: 'OVERRIDE',
+      summary: `Reset meal override to master profile for ${date}${wasSkipped ? ' (skip cancelled, cycle adjusted -1d)' : ''}`,
+      performed_by: 'Kitchen Prep',
+      created_at: new Date().toISOString(),
+    });
+  } catch (logErr) {
+    console.warn('[clearDailyOverride] Could not record activity log:', logErr);
+  }
+
   revalidatePath('/prep');
+  revalidatePath('/admin/customers');
   return { success: true, schemaAvailable: true };
 }
 
-// Cheap existence probe used by the "Reload schema & retry" fallback control.
 export async function checkDailyOverrideTable(): Promise<{
   exists: boolean;
   message?: string;
@@ -787,9 +798,6 @@ export async function checkDailyOverrideTable(): Promise<{
   };
 }
 
-// Refreshes the PostgREST schema cache (NOTIFY pgrst, 'reload schema') after the
-// migration has been applied — surfaced as RPC notify_pgrst_reload by migration
-// 00016_notify_pgrst_reload.sql so the app never needs raw SQL access.
 export async function reloadSchemaCache(): Promise<{ ok: boolean; message?: string }> {
   const supabase = await createClient();
   const { error } = await supabase.rpc('notify_pgrst_reload');
@@ -802,27 +810,15 @@ export async function reloadSchemaCache(): Promise<{ ok: boolean; message?: stri
 }
 
 // ── Multi-day vacation pause ─────────────────────────────────────────────────
-// A vacation pause skips EVERY delivery day in the half-open window
-// [startDate, resumeDate) and extends the customer's paid billing cycle by the exact
-// number of skipped delivery days. It reuses the single-day skip primitive: one
-// `is_skipped` row in customer_daily_overrides per missed date (so the prep manifest
-// mutes the row + drops it from the cooking totals) plus `pause_start_date` /
-// `pause_end_date` on the customer so the window can be shown and cancelled as a unit.
-
 export type VacationPauseResult = {
   success: boolean;
-  // Number of delivery days the window skipped (== the cycle extension applied).
   skippedDays: number;
-  // false when customer_daily_overrides (or its PostgREST schema cache) is unavailable.
   schemaAvailable: boolean;
   message?: string;
 };
 
-// Mon–Fri fallback used when a customer has no explicit schedule on file — mirrors the
-// app's default delivery week (`DEFAULT_DELIVERY_SCHEDULE`).
 const DEFAULT_DELIVERY_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
-// getDay() index → full day name.
 const DAY_NAMES_BY_INDEX = [
   'Sunday',
   'Monday',
@@ -833,7 +829,6 @@ const DAY_NAMES_BY_INDEX = [
   'Saturday',
 ];
 
-// Local YYYY-MM-DD key (never UTC-split) for a Date.
 const formatLocalDateKey = (date: Date): string => {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -841,30 +836,18 @@ const formatLocalDateKey = (date: Date): string => {
   return `${y}-${m}-${d}`;
 };
 
-// Parses a local YYYY-MM-DD key into a local-midnight Date (null when invalid).
 const parseLocalDateKey = (dateKey: string): Date | null => {
   const date = new Date(`${dateKey}T00:00:00`);
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-// Normalizes either a raw delivery_schedule string (e.g. 'Mon - Fri' or
-// 'Monday to Friday, Saturday', with optional [EXCEPT: ...] notes) or an already-parsed
-// day-name array into full day names. Falls back to the Mon–Fri default when nothing
-// meaningful parses so a plan-less customer never silently skips zero days.
 const deliveryDaysFromSchedule = (schedule: string[] | string): string[] => {
   const raw = Array.isArray(schedule) ? schedule.join(', ') : String(schedule ?? '');
-  // 'Mon - Fri' / 'Mon–Fri' hyphen ranges are normalized to the 'X to Y' form the shared
-  // parser expands (so a Mon–Fri plan skips Sat/Sun), then parsed into full day names.
   const expanded = raw.replace(/\b([A-Za-z]{3,9})\s*[-–—]\s*([A-Za-z]{3,9})\b/g, '$1 to $2');
   const days = parseActiveScheduleDays(expanded);
   return days.length > 0 ? days : DEFAULT_DELIVERY_DAYS;
 };
 
-// Every DELIVERY date strictly inside the half-open window [startDate, resumeDate):
-// the pause START day is skipped and the RESUME day is the first served day again.
-// Dates whose weekday falls outside the customer's delivery schedule are never
-// generated (a Mon–Fri customer accumulates no Sat/Sun skips). Returns ascending
-// local YYYY-MM-DD keys. Mirrored client-side for the drawer's live preview.
 const calculateDeliveryDates = (
   startDate: string,
   resumeDate: string,
@@ -888,9 +871,6 @@ const calculateDeliveryDates = (
   return dates;
 };
 
-// Schedules a multi-day vacation pause: marks every delivery day in the window SKIPPED,
-// records the pause window on the customer, and extends the billing cycle by the exact
-// count of missed delivery days.
 export async function setCustomerVacationPause({
   customerId,
   startDate,
@@ -911,8 +891,6 @@ export async function setCustomerVacationPause({
     };
   }
 
-  // The customer's delivery schedule decides which calendar days are actually skipped
-  // (a Mon–Fri plan ignores the weekend inside the window).
   const { data: customerRow, error: readError } = await supabase
     .from('customers')
     .select('id, delivery_schedule')
@@ -930,8 +908,6 @@ export async function setCustomerVacationPause({
     (customerRow as { delivery_schedule?: string | null } | null)?.delivery_schedule || ''
   );
 
-  // 1) Mark every missed delivery date skipped. Upsert writes ONLY the skip flag, so a
-  //    "Today Only" meal snapshot already saved for one of these dates is preserved.
   if (missedDates.length > 0) {
     const { error: upsertError } = await supabase
       .from('customer_daily_overrides')
@@ -963,7 +939,6 @@ export async function setCustomerVacationPause({
     }
   }
 
-  // 2) Record the pause window on the customer so it can be displayed + cancelled.
   const { error: updateError } = await supabase
     .from('customers')
     .update({ pause_start_date: startDate, pause_end_date: resumeDate })
@@ -979,17 +954,28 @@ export async function setCustomerVacationPause({
     };
   }
 
-  // 3) Extend the paid billing cycle by the exact count of skipped delivery days.
   if (missedDates.length > 0) {
     await shiftCustomerCycleEnd(customerId, missedDates.length);
   }
 
+  // Auto-log to Customer Audit Trail
+  try {
+    await supabase.from('customer_activity_logs').insert({
+      customer_id: customerId,
+      action_type: 'OVERRIDE',
+      summary: `Vacation pause scheduled: ${startDate} to ${resumeDate} (${missedDates.length} delivery days skipped) · Cycle extended +${missedDates.length}d`,
+      performed_by: 'Kitchen Prep',
+      created_at: new Date().toISOString(),
+    });
+  } catch (logErr) {
+    console.warn('[VacationPause] Could not record activity log:', logErr);
+  }
+
   revalidatePath('/prep');
+  revalidatePath('/admin/customers');
   return { success: true, skippedDays: missedDates.length, schemaAvailable: true };
 }
 
-// Cancels an active vacation pause: removes the skip rows it created, rolls the billing
-// cycle back by that same count, and clears the pause window so meals resume.
 export async function cancelVacationPause({
   customerId,
 }: {
@@ -1017,7 +1003,6 @@ export async function cancelVacationPause({
   const pauseStart = row?.pause_start_date ?? null;
   const pauseEnd = row?.pause_end_date ?? null;
 
-  // Re-derive the SAME delivery days the pause skipped so exactly those rows are removed.
   const missedDates =
     pauseStart && pauseEnd
       ? calculateDeliveryDates(pauseStart, pauseEnd, row?.delivery_schedule || '')
@@ -1049,12 +1034,10 @@ export async function cancelVacationPause({
     }
   }
 
-  // Roll back the cycle extension applied when the pause was scheduled.
   if (missedDates.length > 0) {
     await shiftCustomerCycleEnd(customerId, -missedDates.length);
   }
 
-  // Clear the pause window so the customer resumes meals from the resume date on.
   const { error: updateError } = await supabase
     .from('customers')
     .update({ pause_start_date: null, pause_end_date: null })
@@ -1070,56 +1053,45 @@ export async function cancelVacationPause({
     };
   }
 
+  // Auto-log to Customer Audit Trail
+  try {
+    await supabase.from('customer_activity_logs').insert({
+      customer_id: customerId,
+      action_type: 'OVERRIDE',
+      summary: `Vacation pause cancelled · Cycle adjusted -${missedDates.length}d`,
+      performed_by: 'Kitchen Prep',
+      created_at: new Date().toISOString(),
+    });
+  } catch (logErr) {
+    console.warn('[VacationPause] Could not record activity log:', logErr);
+  }
+
   revalidatePath('/prep');
+  revalidatePath('/admin/customers');
   return { success: true, skippedDays: missedDates.length, schemaAvailable: true };
 }
 
-
 // ── Unified date-range override save ─────────────────────────────────────────
-// One entry point for BOTH a meal customisation and a delivery skip, scoped to
-// "Today Only", an explicit inclusive "Date Range", or the "Permanent Profile".
-//
-//   - today / range + isSkipped === true  → batch-writes `is_skipped: true` rows for
-//     every active delivery day in the window and extends `cycle_end_date` by the number
-//     of NEWLY skipped days (already-skipped days are never double-counted).
-//   - today / range + isSkipped === false → batch-writes the custom meal snapshot onto
-//     every delivery day in the window; days that were previously skipped are restored
-//     (their cycle extension is rolled back).
-//   - permanent → two-way syncs the master `customers` row and drops the selected day's
-//     override so the date resolves from the (just updated) master profile.
-//
-// Because a range override lives in `customer_daily_overrides` keyed by date, every query
-// automatically falls back to the master `customers` profile once the window passes — no
-// cleanup job is needed.
 export type SaveCustomerOverrideScope = 'today' | 'range' | 'permanent';
 
 export type SaveCustomerOverrideInput = {
   customerId: string;
   scope: SaveCustomerOverrideScope;
-  // Inclusive local YYYY-MM-DD window. "Today Only" sends the same key for both.
   startDate: string;
   endDate: string;
-  // true → skip the window; false → write the custom meal profile / notes.
   isSkipped: boolean;
-  // Full meal-config snapshot for the today/range meal path (ignored when isSkipped).
   mealConfig?: MealConfigPayload | null;
 };
 
 export type SaveCustomerOverrideResult = {
   success: boolean;
   scope: SaveCustomerOverrideScope;
-  // Number of active delivery days the window resolved to.
   affectedDays: number;
-  // Signed billing-cycle change applied (e.g. +3 for a 3-day skip).
   cycleDaysChanged: number;
-  // false when customer_daily_overrides (or its PostgREST schema cache) is unavailable.
   schemaAvailable: boolean;
   message?: string;
 };
 
-// Every DELIVERY date inside the INCLUSIVE window [startDate, endDate] for the customer's
-// schedule (ascending local YYYY-MM-DD keys). Weekend / off-schedule days are never
-// generated, so a Mon–Fri customer accumulates no Sat/Sun overrides.
 const resolveDeliveryDatesInRange = (
   startDate: string,
   endDate: string,
@@ -1143,12 +1115,10 @@ const resolveDeliveryDatesInRange = (
   return dates;
 };
 
-
 export async function saveCustomerOverride(
   input: SaveCustomerOverrideInput
 ): Promise<SaveCustomerOverrideResult> {
   const { customerId, scope, isSkipped } = input;
-  // "Today Only" collapses the window to a single day.
   const startDate = input.startDate || input.endDate;
   const endDate = input.endDate || input.startDate;
   const supabase = await createClient();
@@ -1160,8 +1130,21 @@ export async function saveCustomerOverride(
       if (Object.keys(config).length > 0) {
         await updateCustomerMealConfig(customerId, config);
       }
-      // Drop the selected day's override so it resolves from the updated master row.
       await deleteDailyOverride(customerId, startDate);
+
+      // Auto-log to Customer Audit Trail
+      try {
+        await supabase.from('customer_activity_logs').insert({
+          customer_id: customerId,
+          action_type: 'OVERRIDE',
+          summary: `Master profile updated: ${buildMealOverrideSummary(config)}`,
+          changed_fields: config,
+          performed_by: 'Kitchen Prep',
+          created_at: new Date().toISOString(),
+        });
+      } catch (logErr) {
+        console.warn('[SaveOverride] Log error:', logErr);
+      }
     } catch (err) {
       console.error('[SaveOverride] Permanent profile sync failed:', err);
       return {
@@ -1177,12 +1160,11 @@ export async function saveCustomerOverride(
       };
     }
     revalidatePath('/prep');
+    revalidatePath('/admin/customers');
     return { success: true, scope, affectedDays: 0, cycleDaysChanged: 0, schemaAvailable: true };
   }
 
   // ── Today Only / Date Range ─────────────────────────────────────────────────
-  // The customer's delivery_schedule decides which calendar days are actually affected
-  // (a Mon–Fri plan ignores the weekend inside the window).
   const { data: customerRow, error: readError } = await supabase
     .from('customers')
     .select('id, delivery_schedule')
@@ -1205,14 +1187,10 @@ export async function saveCustomerOverride(
     (customerRow as { delivery_schedule?: string | null } | null)?.delivery_schedule || '';
   const dates = resolveDeliveryDatesInRange(startDate, endDate, schedule);
 
-  // Nothing scheduled inside the window — nothing to write.
   if (dates.length === 0) {
     return { success: true, scope, affectedDays: 0, cycleDaysChanged: 0, schemaAvailable: true };
   }
 
-
-  // Read the existing rows FIRST so a skip only extends the billing cycle for days that
-  // were not already skipped, and an un-skip rolls exactly those extensions back.
   const { data: existingData, error: existingError } = await supabase
     .from('customer_daily_overrides')
     .select('override_date, is_skipped')
@@ -1291,13 +1269,28 @@ export async function saveCustomerOverride(
       };
     }
 
-    // Extend the paid cycle by the number of days that were not already skipped.
     const newlySkipped = dates.filter(date => !previouslySkipped.has(date));
     if (newlySkipped.length > 0) {
       await shiftCustomerCycleEnd(customerId, newlySkipped.length);
     }
 
+    // Auto-log to Customer Audit Trail
+    try {
+      const scopeLabel = scope === 'today' ? `for ${startDate}` : `(${startDate} to ${endDate}, ${dates.length} days)`;
+      await supabase.from('customer_activity_logs').insert({
+        customer_id: customerId,
+        action_type: 'OVERRIDE',
+        summary: `Delivery skipped ${scopeLabel}${newlySkipped.length > 0 ? ` · Cycle extended +${newlySkipped.length}d` : ''}`,
+        changed_fields: { scope, dates, newly_skipped: newlySkipped.length },
+        performed_by: 'Kitchen Prep',
+        created_at: now,
+      });
+    } catch (logErr) {
+      console.warn('[SaveOverride] Log error:', logErr);
+    }
+
     revalidatePath('/prep');
+    revalidatePath('/admin/customers');
     return {
       success: true,
       scope,
@@ -1307,8 +1300,7 @@ export async function saveCustomerOverride(
     };
   }
 
-
-  // ── Custom meal / notes (also the Undo-Skip path) ────────────────────────────
+  // ── Custom meal / notes ─────────────────────────────────────────────────────
   const config = input.mealConfig ?? {};
   const snapshot = {
     meal_type: config.meal_type ?? null,
@@ -1320,7 +1312,6 @@ export async function saveCustomerOverride(
     delivery_instructions: config.delivery_instructions ?? null,
     is_custom_curry: config.is_custom_curry ?? null,
     curry_config: config.curry_config ?? null,
-    // Writing the snapshot un-skips the day (this is how "Undo Skip" clears the flag).
     is_skipped: false,
   };
 
@@ -1360,13 +1351,38 @@ export async function saveCustomerOverride(
     };
   }
 
-  // Restoring days that were previously skipped rolls their cycle extension back.
   const restored = dates.filter(date => previouslySkipped.has(date));
   if (restored.length > 0) {
     await shiftCustomerCycleEnd(customerId, -restored.length);
   }
 
+  // Auto-log to Customer Audit Trail
+  try {
+    const summaryDetails = buildMealOverrideSummary(config);
+    const summaryText =
+      scope === 'today'
+        ? `Today (${startDate}) override: ${summaryDetails}`
+        : `Date range override (${startDate} to ${endDate}): ${summaryDetails}`;
+
+    await supabase.from('customer_activity_logs').insert({
+      customer_id: customerId,
+      action_type: 'OVERRIDE',
+      summary: summaryText,
+      changed_fields: {
+        scope,
+        start_date: startDate,
+        end_date: endDate,
+        ...config,
+      },
+      performed_by: 'Kitchen Prep',
+      created_at: now,
+    });
+  } catch (logErr) {
+    console.warn('[SaveOverride] Could not record activity log:', logErr);
+  }
+
   revalidatePath('/prep');
+  revalidatePath('/admin/customers');
   return {
     success: true,
     scope,
@@ -1375,29 +1391,14 @@ export async function saveCustomerOverride(
     schemaAvailable: true,
   };
 }
+
 // ── Two-tier subscription renewal (Active Cycle vs Lifetime History) ──────────
-//
-// TIER 1 — ACTIVE CYCLE (`start_date`, `total_tiffin_credits`, `used_credits`,
-//   `cycle_end_date`, `subscription_status`) is always kept as ONE small cycle:
-//   • cycle_reset     → the customer finished their plan (Renewal Pending / 0 meals
-//                       remaining): `start_date` restarts at the selected prep date,
-//                       credits become exactly the purchased amount, progress resets
-//                       to 0 and the end date is computed FORWARD from the new start
-//                       (kitchen closures compensated). Cancellation flags are cleared.
-//   • mid_cycle_topup → the customer still has credits (e.g. 18/20 delivered): credits
-//                       are added to the running total and the existing end date is
-//                       pushed forward by the added delivery days only.
-//
-// TIER 2 — LIFETIME HISTORY (`lifetime_deliveries`, `renewal_count`) are audit records
-//   that survive cycle resets. Migration 00023 adds them; when absent the write is
-//   retried without them, so a renewal NEVER fails on an un-migrated schema.
 export type RenewalMode = 'cycle_reset' | 'mid_cycle_topup';
 
 export type RenewCustomerSubscriptionInput = {
   customerId: string;
   creditsToAdd: number;
   planTier?: 'trial' | 'weekly' | 'monthly';
-  // The manifest/prep date the new cycle starts on (defaults to the server's today).
   startDate?: string | null;
 };
 
@@ -1410,24 +1411,19 @@ export type RenewCustomerSubscriptionResult = {
   usedCredits?: number;
   cycleEndDate?: string | null;
   planTier?: 'trial' | 'weekly' | 'monthly';
-  // false when the lifetime counters could not be persisted (migration 00023 absent).
   lifetimeTracked?: boolean;
   migrationRecommended?: boolean;
 };
 
-// Optional `customers` columns this action tolerates before their migrations run.
-// Each group is dropped as a unit when PostgREST reports the column is missing.
 const OPTIONAL_RENEWAL_COLUMNS: string[][] = [
-  ['lifetime_deliveries', 'renewal_count'], // migration 00023
-  ['payment_status'], // migration 00009
-  ['scheduled_cancel_date', 'scheduled_status'], // migration 00014
-  ['cancelled_at', 'cancellation_reason'], // migration 00002
-  ['used_credits', 'skipped_days_count'], // migration 00007
-  ['cycle_end_date'], // migration 00019
+  ['lifetime_deliveries', 'renewal_count'],
+  ['payment_status'],
+  ['scheduled_cancel_date', 'scheduled_status'],
+  ['cancelled_at', 'cancellation_reason'],
+  ['used_credits', 'skipped_days_count'],
+  ['cycle_end_date'],
 ];
 
-// True when a Supabase/Postgres error names any of the given columns
-// (PGRST204 stale schema cache OR Postgres 42703 undefined_column).
 const isCustomerColumnMissing = (error: unknown, names: string[]): boolean => {
   if (!error || typeof error !== 'object') return false;
   const e = error as { code?: string; message?: string; details?: string; hint?: string };
@@ -1438,13 +1434,9 @@ const isCustomerColumnMissing = (error: unknown, names: string[]): boolean => {
 
 type CustomerWriteOutcome = {
   error: unknown | null;
-  // Optional columns that had to be dropped for the write to succeed.
   stripped: string[];
 };
 
-// Writes the customers row, progressively dropping OPTIONAL columns the target
-// schema does not have yet. Deliberately never chains `.select()`: with an update
-// RLS policy that returns no rows, an empty array would look like a failed write.
 const writeCustomerPayload = async (
   supabase: Awaited<ReturnType<typeof createClient>>,
   customerId: string,
@@ -1469,8 +1461,6 @@ const writeCustomerPayload = async (
   return { error: new Error('Renewal could not be persisted.'), stripped };
 };
 
-// Kitchen closures, best-effort: a missing/un-migrated `kitchen_closures` table
-// yields an empty set so the cycle math still produces a valid end date.
 const fetchClosureDates = async (
   supabase: Awaited<ReturnType<typeof createClient>>
 ): Promise<Set<string>> => {
@@ -1487,7 +1477,6 @@ const fetchClosureDates = async (
   }
 };
 
-// The customer's own skipped delivery days (compensated by the cycle walk-extension).
 const fetchCustomerSkipDates = async (
   supabase: Awaited<ReturnType<typeof createClient>>,
   customerId: string
@@ -1509,8 +1498,6 @@ const fetchCustomerSkipDates = async (
   }
 };
 
-// Tier 2 (lifetime history). Returns null when migration 00023 has not been applied —
-// the caller then omits the columns entirely so the renewal still succeeds.
 const readLifetimeCounters = async (
   supabase: Awaited<ReturnType<typeof createClient>>,
   customerId: string
@@ -1553,8 +1540,6 @@ export async function renewCustomerSubscription({
       subscription_status?: string | null;
     };
 
-    // Full projection first; fall back to the legacy-safe minimal set when an
-    // optional column is absent on an older schema.
     let usedColumnAvailable = true;
     let { data: customer, error: fetchErr } = await supabase
       .from('customers')
@@ -1593,7 +1578,6 @@ export async function renewCustomerSubscription({
     const closureDates = await fetchClosureDates(supabase);
     const customerSkips = await fetchCustomerSkipDates(supabase, customerId);
 
-    // End of the CURRENT cycle — the explicit column wins, otherwise walk forward.
     const effectiveEnd =
       existingEnd ||
       (existingStart
@@ -1653,18 +1637,14 @@ export async function renewCustomerSubscription({
     }
 
     const nextTier = planTier || resolvePlanTierForCredits(nextCredits);
-
-    // Tier 2 — read first so writing is a no-op column-wise when un-migrated.
     const lifetime = await readLifetimeCounters(supabase, customerId);
 
-    // Tier 1 — ACTIVE CYCLE payload (single small cycle; never inflated).
     const payload: Record<string, unknown> = {
       start_date: nextStartDate,
       total_tiffin_credits: nextCredits,
       plan_tier: nextTier,
       subscription_status: 'active',
       payment_status: 'paid',
-      // Clear any stale cancellation schedule so the renewed cycle starts clean.
       scheduled_cancel_date: null,
       scheduled_status: null,
     };
@@ -1679,7 +1659,6 @@ export async function renewCustomerSubscription({
       payload.cancellation_reason = null;
     }
 
-    // Tier 2 — LIFETIME HISTORY (only when migration 00023 is applied).
     if (lifetime) {
       payload.renewal_count = lifetime.renewal_count + 1;
       payload.lifetime_deliveries =
@@ -1696,6 +1675,32 @@ export async function renewCustomerSubscription({
             ? write.error.message
             : 'Failed to renew the subscription.',
       };
+    }
+
+    // Auto-record to Customer Audit Trail (shows on the History tab)
+    try {
+      const summaryText =
+        mode === 'cycle_reset'
+          ? `Subscription renewed (+${credits} meals, ${(nextTier || 'plan').toUpperCase()}) — New cycle starts ${nextStartDate}`
+          : `Mid-cycle top-up (+${credits} meals) — New balance: ${nextCredits} credits`;
+
+      await supabase.from('customer_activity_logs').insert({
+        customer_id: customerId,
+        action_type: 'BILLING',
+        summary: summaryText,
+        changed_fields: {
+          mode,
+          credits_added: credits,
+          total_credits: nextCredits,
+          plan_tier: nextTier,
+          start_date: nextStartDate,
+          cycle_end_date: nextEnd,
+        },
+        performed_by: 'Kitchen Prep',
+        created_at: new Date().toISOString(),
+      });
+    } catch (logErr) {
+      console.warn('[renewCustomerSubscription] Could not record activity log:', logErr);
     }
 
     const lifetimeTracked = lifetime !== null && !write.stripped.includes('lifetime_deliveries');
@@ -1732,9 +1737,6 @@ export async function renewCustomerSubscription({
 
 export async function endCustomerSubscription(
   customerId: string,
-  // The date the cycle actually ended (e.g. "2026-09-16"). Anything that is not a
-  // usable date (the sheet used to pass a description string) falls back to today,
-  // so the DATE columns never receive free text.
   effectiveEndDate?: string | null
 ): Promise<{ success: boolean; message?: string }> {
   try {
@@ -1753,6 +1755,19 @@ export async function endCustomerSubscription(
       .eq('id', customerId);
 
     if (error) throw error;
+
+    // Log the archiving event
+    try {
+      await supabase.from('customer_activity_logs').insert({
+        customer_id: customerId,
+        action_type: 'OVERRIDE',
+        summary: `Subscription ended and archived (effective ${endKey})`,
+        performed_by: 'Kitchen Prep',
+        created_at: new Date().toISOString(),
+      });
+    } catch (logErr) {
+      console.warn('[endCustomerSubscription] Could not record activity log:', logErr);
+    }
 
     revalidatePath('/prep');
     revalidatePath('/admin/customers');
