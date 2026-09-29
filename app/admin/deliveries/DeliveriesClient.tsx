@@ -28,6 +28,7 @@ import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction, saveDeliver
 import { backfillExistingCustomerCoordinates } from '@/app/admin/actions';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
 import { optimizeRouteNearestNeighbor } from '@/app/utils/geocoding';
+import { computeCycleEndDate, resolveDeliveryDayNumbers } from '@/app/utils/subscriptionCycle';
 import { 
   DEFAULT_KITCHEN_ORIGIN, 
   sanitizeAddressForUrl, 
@@ -56,32 +57,51 @@ type CustomerRow = {
   delivery_lat?: number | null;
   delivery_lng?: number | null;
   start_date?: string | null;
+  cycle_end_date?: string | null;
   scheduled_cancel_date?: string | null;
   pause_start_date?: string | null;
   pause_end_date?: string | null;
+  created_at?: string | null;
 };
 
 const noopSubscribe = () => () => {};
 
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
-function isCustomerScheduledToday(customer: CustomerRow, activeDay: string, todayKey: string): boolean {
+function isCustomerScheduledToday(
+  customer: CustomerRow, 
+  activeDay: string, 
+  todayKey: string,
+  hasDeliveryLog: boolean = false,
+  closureDates?: Set<string>
+): boolean {
   const subStatus = (customer.subscription_status || 'active').toLowerCase();
   if (subStatus === 'cancelled') return false;
 
+  // 1. Future Start Date check:
+  // Do NOT exclude existing customers who renewed for tomorrow/future dates
   const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
-  if (startDate && todayKey < startDate) return false;
+  if (!hasDeliveryLog && startDate && todayKey < startDate) {
+    const createdDate = customer.created_at ? customer.created_at.slice(0, 10) : null;
+    // Only exclude genuine brand-new future subscribers who have not started service yet
+    if (!createdDate || createdDate > todayKey) {
+      return false;
+    }
+  }
 
+  // 2. Pause Window check
   if (subStatus === 'paused') {
     const pauseEnd = customer.pause_end_date ? customer.pause_end_date.slice(0, 10) : null;
     if (!pauseEnd) return false;
     if (todayKey < pauseEnd) return false;
   }
 
+  // 3. Scheduled Cancel Date check
   if (customer.scheduled_cancel_date && todayKey > customer.scheduled_cancel_date.slice(0, 10)) {
     return false;
   }
 
+  // 4. Delivery Schedule / Day of Week check
   const schedule = customer.delivery_schedule || '';
   if (!schedule || schedule === '—') return false;
 
@@ -90,11 +110,33 @@ function isCustomerScheduledToday(customer: CustomerRow, activeDay: string, toda
   if (exceptionMatch && exceptionMatch[1].toLowerCase().includes(shortDay.toLowerCase())) return false;
 
   const isWeekday = WEEKDAYS.includes(activeDay);
-  return (
+  const dayMatches =
     (schedule.includes('Monday to Friday') && isWeekday) ||
     schedule.includes(activeDay) ||
-    schedule.toLowerCase().includes(shortDay.toLowerCase())
-  );
+    schedule.toLowerCase().includes(shortDay.toLowerCase());
+
+  if (!dayMatches) return false;
+
+  // 5. Expiration / Cycle End check (matches Prep page calculation)
+  const totalMeals =
+    customer.total_tiffin_credits ||
+    (customer.plan_tier === 'trial' ? 1 : customer.plan_tier === 'monthly' ? 20 : 5);
+
+  const computedEnd = computeCycleEndDate({
+    startDate: customer.start_date,
+    totalMeals,
+    deliveryDays: resolveDeliveryDayNumbers(customer.delivery_schedule),
+    closureDates,
+  });
+
+  const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
+  const effectiveEnd = explicitEnd || computedEnd;
+
+  if (effectiveEnd && todayKey > effectiveEnd) {
+    if (!hasDeliveryLog) return false;
+  }
+
+  return true;
 }
 
 const tierBadge: Record<string, string> = {
@@ -378,17 +420,42 @@ export default function DeliveriesClient({
     });
   }, [selectedDate]);
 
-  // Sync route and logs dynamically whenever selectedDate changes
+  // Sync route, logs, and prep skips dynamically whenever selectedDate changes
   useEffect(() => {
     let cancelled = false;
     setIsDateSwitching(true);
+    console.log(`[DeliveriesClient] 🔄 Switching to date: ${selectedDateKey}`);
 
     (async () => {
       try {
-        const data = await getDeliveryDateData(selectedDateKey);
+        const { createClient } = await import('@/utils/supabase/client');
+        const supabase = createClient();
+
+        const [data, skipsRes] = await Promise.all([
+          getDeliveryDateData(selectedDateKey),
+          supabase
+            .from('customer_daily_overrides')
+            .select('customer_id, override_date')
+            .eq('is_skipped', true),
+        ]);
+
         if (!cancelled) {
+          console.log(`[DeliveriesClient] 📦 Received ${data.routeOrder.length} routeOrder IDs for ${selectedDateKey}:`, data.routeOrder);
           setActiveLogs(data.todayLogs);
           setCustomOrderIds(data.routeOrder);
+
+          if (skipsRes.data) {
+            const map = new Map<string, Set<string>>();
+            skipsRes.data.forEach((row: any) => {
+              const cId = String(row.customer_id);
+              const sDate = String(row.override_date || '').slice(0, 10);
+              if (cId && sDate) {
+                if (!map.has(cId)) map.set(cId, new Set());
+                map.get(cId)!.add(sDate);
+              }
+            });
+            setSkipsMap(map);
+          }
         }
       } catch (err) {
         console.error('[Deliveries] Date fetch failed:', err);
@@ -404,6 +471,8 @@ export default function DeliveriesClient({
 
   const saveOrder = async (order: string[]) => {
     setCustomOrderIds(order);
+    console.log(`[DeliveriesClient] Triggered saveOrder for ${selectedDateKey} with ${order.length} stops`, order);
+
     try {
       localStorage.setItem(`delivery_route_${selectedDateKey}`, JSON.stringify(order));
     } catch (e) {
@@ -416,6 +485,7 @@ export default function DeliveriesClient({
         console.error('❌ [Deliveries Save Error]:', res?.message);
         setErrorMsg(`Database Save Error: ${res?.message || 'Could not save route to Supabase'}`);
       } else {
+        console.log(`✅ [DeliveriesClient] Server confirmed route saved for ${selectedDateKey}`);
         setErrorMsg('');
       }
     } catch (err: any) {
@@ -463,19 +533,30 @@ export default function DeliveriesClient({
     [customers, activeLogs]
   );
 
-  const allScheduledToday = useMemo(
-    () =>
-      customers.filter(
-        c =>
-          isCustomerScheduledToday(c, activeDay, selectedDateKey) &&
-          !isPickupOnDay(c, activeDay)
-      ),
-    [customers, activeDay, selectedDateKey]
-  );
+  const allScheduledToday = useMemo(() => {
+    // 1. If kitchen is closed on selected date, 0 deliveries
+    if (closuresSet.has(selectedDateKey)) return [];
+
+    return customers.filter(c => {
+      // 2. Schedule & pickup checks (passing closuresSet for cycle end verification)
+      const hasLog = todayLoggedIds.includes(c.id);
+      if (!isCustomerScheduledToday(c, activeDay, selectedDateKey, hasLog, closuresSet)) return false;
+      if (isPickupOnDay(c, activeDay)) return false;
+
+      // 3. Daily skip check from Prep page (customer_daily_overrides)
+      const custSkips = skipsMap.get(c.id);
+      if (custSkips && custSkips.has(selectedDateKey)) return false;
+
+      return true;
+    });
+  }, [customers, activeDay, selectedDateKey, skipsMap, closuresSet, todayLoggedIds]);
 
   const pendingDispatchList = useMemo(() => {
     const uncompleted = allScheduledToday.filter(c => !todayLoggedIds.includes(c.id));
-    if (customOrderIds.length === 0) return uncompleted;
+    if (customOrderIds.length === 0) {
+      console.log(`[DeliveriesClient] customOrderIds is EMPTY, falling back to uncompleted (${uncompleted.length} stops)`);
+      return uncompleted;
+    }
 
     const map = new Map(uncompleted.map(c => [c.id, c]));
     const sequenced: CustomerRow[] = [];
@@ -488,7 +569,10 @@ export default function DeliveriesClient({
       }
     }
 
-    return [...sequenced, ...Array.from(map.values())];
+    // Prepend new/unsequenced addresses to the FRONT of the route so they are never missed
+    const unsequenced = Array.from(map.values());
+    console.log(`[DeliveriesClient] Sequenced ${sequenced.length} stops, Prepending ${unsequenced.length} new stops`);
+    return [...unsequenced, ...sequenced];
   }, [allScheduledToday, todayLoggedIds, customOrderIds]);
 
   const routeRuns = useMemo(() => {
@@ -1025,13 +1109,27 @@ export default function DeliveriesClient({
                     >
                       {/* Top Row: Stop # + Customer Name on left, Phone + Map on the right */}
                       <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
                           <span className="w-6 h-6 rounded-full bg-gray-100 text-gray-700 text-xs font-black flex items-center justify-center shrink-0">
                             {index + 1}
                           </span>
                           <span className="text-[16px] font-black text-[#11142D] capitalize truncate">
                             {c.full_name}
                           </span>
+
+                          {/* Highlights unsequenced or new stops positioned at the front */}
+                          {customOrderIds.length > 0 && !customOrderIds.includes(c.id) && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-blue-100 text-blue-800 border border-blue-300 tracking-wide uppercase whitespace-nowrap shrink-0 animate-pulse">
+                              NEW STOP
+                            </span>
+                          )}
+
+                          {/* Customer renewed for future, taking final delivery of current cycle */}
+                          {c.start_date && selectedDateKey < c.start_date.slice(0, 10) && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 tracking-wide uppercase whitespace-nowrap shrink-0">
+                              RENEWED
+                            </span>
+                          )}
                         </div>
 
                         {/* Top-Right Navigation & Call Controls */}
@@ -1255,13 +1353,33 @@ export default function DeliveriesClient({
                 <h3 className="text-sm font-black text-gray-900">Reorder Stops</h3>
                 <p className="text-[11px] text-gray-500 mt-0.5">Drag handle or use ▲▼ arrows to adjust stop order</p>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowOrderSheet(false)}
-                className="w-8 h-8 rounded-lg bg-gray-100 text-gray-500 hover:text-gray-800 flex items-center justify-center cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  title="Copy driving sequence from previous delivery day"
+                  onClick={async () => {
+                    const yesterday = new Date(selectedDate);
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    const prevKey = toLocalDateKey(yesterday);
+                    const prevData = await getDeliveryDateData(prevKey);
+                    if (prevData?.routeOrder && prevData.routeOrder.length > 0) {
+                      await saveOrder(prevData.routeOrder);
+                    }
+                  }}
+                  className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#5D5FEF]/30 rounded-lg transition-colors cursor-pointer"
+                >
+                  ↻ Copy Prev Route
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowOrderSheet(false)}
+                  className="w-8 h-8 rounded-lg bg-gray-100 text-gray-500 hover:text-gray-800 flex items-center justify-center cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             <div 
@@ -1307,9 +1425,16 @@ export default function DeliveriesClient({
                         {i + 1}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <span className="text-xs font-bold text-gray-900 block truncate capitalize">
-                          {c.full_name}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold text-gray-900 truncate capitalize">
+                            {c.full_name}
+                          </span>
+                          {customOrderIds.length > 0 && !customOrderIds.includes(c.id) && (
+                            <span className="px-1 py-0.2 rounded text-[9px] font-black bg-blue-100 text-blue-800 border border-blue-200 uppercase tracking-wide">
+                              NEW
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[11px] text-gray-400 block truncate">
                           {formatStreetOnlyAddress(c.delivery_address)}
                         </span>

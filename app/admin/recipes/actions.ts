@@ -408,3 +408,31 @@ export async function duplicateRecipe(recipeId: string): Promise<{ success: bool
     return { success: false, message: err instanceof Error ? err.message : 'Unknown duplication error.' };
   }
 }
+export async function toggleRecipeActive(
+  recipeId: string,
+  currentStatus: boolean
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const supabase = await createClient();
+    const nextStatus = !currentStatus;
+
+    const { error } = await supabase
+      .from('recipes')
+      .update({ is_active: nextStatus })
+      .eq('id', recipeId);
+
+    if (error) {
+      console.error('Toggle active error:', error);
+      return { success: false, message: error.message };
+    }
+
+    revalidatePath('/admin/recipes');
+    revalidatePath('/prep');
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : 'Unknown toggle error',
+    };
+  }
+}

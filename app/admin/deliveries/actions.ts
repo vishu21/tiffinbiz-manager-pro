@@ -241,26 +241,46 @@ export async function saveDeliveryRouteOrder(
 ): Promise<{ success: boolean; message?: string }> {
   try {
     const supabase = await createClient();
-    const { error } = await supabase.from('daily_delivery_routes').upsert(
-      {
-        delivery_date: dateKey,
-        stop_order: stopOrder,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'delivery_date' }
-    );
+    console.log(`[saveDeliveryRouteOrder] Attempting to save ${stopOrder.length} stops for date: ${dateKey}`);
+
+    const { data, error } = await supabase
+      .from('daily_delivery_routes')
+      .upsert(
+        {
+          delivery_date: dateKey,
+          stop_order: stopOrder,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'delivery_date' }
+      )
+      .select();
 
     if (error) {
-      console.error('[saveDeliveryRouteOrder] Error:', error.message);
-      return { success: false, message: error.message };
+      console.error('[saveDeliveryRouteOrder] Database Error:', error.message, error.details, error.hint);
+      return { success: false, message: `${error.message} (${error.hint || error.details || 'no details'})` };
     }
 
+    console.log(`✅ [saveDeliveryRouteOrder] Successfully saved route for ${dateKey}:`, data);
     revalidatePath('/admin/deliveries');
     return { success: true };
   } catch (err) {
     console.error('[saveDeliveryRouteOrder] Exception:', err);
-    return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
+    return { success: false, message: err instanceof Error ? err.message : 'Unknown server error' };
   }
+}
+
+function parseStopOrder(raw: any): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 export async function getDeliveryDateData(dateKey: string) {
@@ -278,11 +298,35 @@ export async function getDeliveryDateData(dateKey: string) {
       .maybeSingle(),
   ]);
 
+  let finalRoute = parseStopOrder(routeRes.data?.stop_order);
+
+  // Fallback: If no explicit route exists for this date, inherit the most recent saved route
+  if (finalRoute.length === 0) {
+    const { data: latestRoute, error: fallbackError } = await supabase
+      .from('daily_delivery_routes')
+      .select('delivery_date, stop_order')
+      .lt('delivery_date', dateKey)
+      .order('delivery_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (fallbackError) {
+      console.warn('[Deliveries] Fallback route query warning:', fallbackError.message);
+    }
+
+    if (latestRoute?.stop_order) {
+      finalRoute = parseStopOrder(latestRoute.stop_order);
+      console.log(`[Deliveries] Inherited route sequence from ${latestRoute.delivery_date} (${finalRoute.length} stops) for ${dateKey}`);
+    } else {
+      console.log(`[Deliveries] No previous route found prior to ${dateKey}`);
+    }
+  }
+
   return {
     todayLogs: (logsRes.data || []).map((r: any) => ({
       customerId: r.customer_id,
       event: r.event as 'delivered' | 'skipped',
     })),
-    routeOrder: (routeRes.data?.stop_order as string[]) || [],
+    routeOrder: finalRoute,
   };
 }

@@ -44,6 +44,7 @@ export default async function DeliveriesPage() {
     scheduled_cancel_date: c.scheduled_cancel_date || null,
     pause_start_date: c.pause_start_date || null,
     pause_end_date: c.pause_end_date || null,
+    created_at: c.created_at || null,
   }));
 
   const now = new Date();
@@ -69,7 +70,7 @@ export default async function DeliveriesPage() {
     console.warn('[Deliveries Page] customer_deliveries query bypassed:', err);
   }
 
-  // Fetch saved stop order for today from daily_delivery_routes
+  // Fetch saved stop order for today from daily_delivery_routes (with fallback to latest)
   let initialRouteOrder: string[] = [];
   try {
     const { data: routeData } = await supabase
@@ -78,8 +79,21 @@ export default async function DeliveriesPage() {
       .eq('delivery_date', localToday)
       .maybeSingle();
 
-    if (routeData?.stop_order && Array.isArray(routeData.stop_order)) {
+    if (routeData?.stop_order && Array.isArray(routeData.stop_order) && routeData.stop_order.length > 0) {
       initialRouteOrder = routeData.stop_order;
+    } else {
+      // Inherit the most recent saved route if today has no saved order
+      const { data: latestRoute } = await supabase
+        .from('daily_delivery_routes')
+        .select('stop_order')
+        .lt('delivery_date', localToday)
+        .order('delivery_date', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestRoute?.stop_order && Array.isArray(latestRoute.stop_order)) {
+        initialRouteOrder = latestRoute.stop_order;
+      }
     }
   } catch (err) {
     console.warn('[Deliveries Page] daily_delivery_routes query bypassed:', err);

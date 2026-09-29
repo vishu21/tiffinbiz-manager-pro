@@ -176,13 +176,23 @@ const getDeliveryScheduleStatus = (
   customer: Customer,
   activeDay: string,
   dateKey: string,
+  hasDeliveryLog: boolean = false,
 ): 'active' | 'pending_renewal' | 'lapsed' | false => {
   const subStatus = (customer.subscription_status || 'active').toLowerCase();
   if (subStatus === 'cancelled') return false;
 
-  // 1. Future Start Date: Exclude if the prep date is before their start date
+  // 1. Future Start Date check:
+  // If the customer has an existing delivery log today, OR if they are an existing customer
+  // whose account was created on or before today, do NOT exclude them just because their renewed
+  // cycle starts tomorrow!
   const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
-  if (startDate && dateKey < startDate) return false;
+  if (!hasDeliveryLog && startDate && dateKey < startDate) {
+    const createdDate = customer.created_at ? customer.created_at.slice(0, 10) : null;
+    // Only exclude genuine brand-new future subscribers who have not started service yet
+    if (!createdDate || createdDate > dateKey) {
+      return false;
+    }
+  }
 
   // 2. Pause Window Evaluation
   if (subStatus === 'paused') {
@@ -1227,6 +1237,7 @@ const selectedDateKey = toLocalDateKey(selectedDate);
     creditsToAdd: number,
     details: RenewCustomerSubscriptionResult
   ) => {
+    const existingCust = initialCustomers.find(c => c.id === customerId);
     const nextStart = details.startDate ?? selectedDateKey;
     const nextCredits = details.credits ?? creditsToAdd;
     const nextEnd =
@@ -1235,7 +1246,7 @@ const selectedDateKey = toLocalDateKey(selectedDate);
         startDate: nextStart,
         totalMeals: nextCredits,
         deliveryDays: resolveDeliveryDayNumbers(
-          initialCustomers.find(c => c.id === customerId)?.delivery_schedule
+          existingCust?.delivery_schedule
         ),
         closureDates: closuresMap,
       });
@@ -1244,7 +1255,8 @@ const selectedDateKey = toLocalDateKey(selectedDate);
       ...prev,
       [customerId]: {
         ...(prev[customerId] || {}),
-        start_date: nextStart,
+        // Keep their current active start date so they don't vanish from today's manifest!
+        start_date: existingCust?.start_date && existingCust.start_date <= selectedDateKey ? existingCust.start_date : nextStart,
         total_tiffin_credits: nextCredits,
         used_credits: details.usedCredits ?? 0,
         cycle_end_date: nextEnd ?? null,
@@ -1321,8 +1333,8 @@ const selectedDateKey = toLocalDateKey(selectedDate);
       }
     });
   };
-
-  // Unified loader: overrides, menu text, and recipe IDs load together in 1 network roundtrip
+const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set());
+  // Unified loader: overrides, menu text, recipe IDs, and delivery logs load together in 1 network roundtrip
   useEffect(() => {
     let cancelled = false;
     setIsDateSwitching(true);
@@ -1332,14 +1344,24 @@ const selectedDateKey = toLocalDateKey(selectedDate);
 
     (async () => {
       try {
-        const [overrideRes, menuData, selectionData, snapshotData] = await Promise.all([
+        const { createClient } = await import('@/utils/supabase/client');
+        const supabase = createClient();
+
+        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes] = await Promise.all([
           getDailyOverrides(selectedDateKey),
           fetchDailyMenu(selectedDateKey),
           getDailyMenuSelection(selectedDateKey),
           getDailyManifestSnapshot(selectedDateKey),
+          supabase.from('customer_deliveries').select('customer_id').eq('delivery_date', selectedDateKey),
         ]);
 
         if (cancelled) return;
+
+        if (deliveryLogsRes.data) {
+          setDeliveryLoggedIds(new Set(deliveryLogsRes.data.map((d: any) => String(d.customer_id))));
+        } else {
+          setDeliveryLoggedIds(new Set());
+        }
 
         // 1. If an existing snapshot exists, use it directly
         if (snapshotData && snapshotData.length > 0) {
@@ -1576,7 +1598,8 @@ const selectedDateKey = toLocalDateKey(selectedDate);
     const lapsedList: Customer[] = [];
 
     resolvedCustomers.forEach(customer => {
-      const status = getDeliveryScheduleStatus(customer, activeDay, selectedDateKey);
+      const hasLog = deliveryLoggedIds.has(customer.id);
+      const status = getDeliveryScheduleStatus(customer, activeDay, selectedDateKey, hasLog);
       if (!status) return;
 
       const totalMeals = resolveCustomerTotalMeals(customer);
@@ -1589,13 +1612,18 @@ const selectedDateKey = toLocalDateKey(selectedDate);
       const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
       const effectiveEnd = explicitEnd || computedEnd || '';
 
-      if (status === 'lapsed') {
+      // If customer has a log on this date but their renewed start_date is in the future,
+      // treat them as an active fulfilled delivery for this past day, not lapsed/pending.
+      const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
+      const isPastCycleRecord = hasLog && startDate && selectedDateKey < startDate;
+
+      if (status === 'lapsed' && !isPastCycleRecord) {
         lapsedList.push({
           ...customer,
           isExpiredRenewalPending: true,
           expiredOnDate: effectiveEnd,
         });
-      } else if (status === 'pending_renewal') {
+      } else if (status === 'pending_renewal' && !isPastCycleRecord) {
         manifestList.push({
           ...customer,
           isExpiredRenewalPending: true,
@@ -1607,12 +1635,29 @@ const selectedDateKey = toLocalDateKey(selectedDate);
     });
 
     return { visibleManifestCustomers: manifestList, lapsedCustomers: lapsedList };
-  }, [resolvedCustomers, activeDay, selectedDateKey]);
+  }, [resolvedCustomers, activeDay, selectedDateKey, deliveryLoggedIds, closuresMap]);
 
   const activeCookingCustomers = useMemo(() => {
     if (activeClosure) return [];
     return visibleManifestCustomers.filter(c => !c.isExpiredRenewalPending && !c.isSkipped);
   }, [visibleManifestCustomers, activeClosure]);
+
+  const portionCounts = useMemo(() => {
+    let lg = 0;
+    let rg = 0;
+    let halfLg = 0;
+    let halfRg = 0;
+
+    activeCookingCustomers.forEach(c => {
+      const p = normalizePortionToken(c.portion_size);
+      if (p === PORTION_LG) lg++;
+      else if (p === PORTION_HALF_LG) halfLg++;
+      else if (p === PORTION_HALF_RG) halfRg++;
+      else rg++;
+    });
+
+    return { lg, rg, halfLg, halfRg };
+  }, [activeCookingCustomers]);
 
   const activeCustomers = activeCookingCustomers;
 
@@ -1643,6 +1688,31 @@ const manifestCustomers = useMemo(() => {
       return kitchenOrderSort(a, b);
     });
   }, [historicalSnapshot, visibleManifestCustomers]);
+
+  // Tracks multiple tiffins assigned to the same customer on the same delivery day
+  const customerMultiBoxIndex = useMemo(() => {
+    const totalCounts = new Map<string, number>();
+    const indices = new Map<string, { current: number; total: number }>();
+    const activeRows = manifestCustomers.filter(c => !c.isSkipped && !c.isExpiredRenewalPending);
+
+    activeRows.forEach(c => {
+      const name = (c.full_name || '').trim().toLowerCase();
+      totalCounts.set(name, (totalCounts.get(name) || 0) + 1);
+    });
+
+    const seenSoFar = new Map<string, number>();
+    activeRows.forEach(c => {
+      const name = (c.full_name || '').trim().toLowerCase();
+      const total = totalCounts.get(name) || 1;
+      if (total > 1) {
+        const nextIdx = (seenSoFar.get(name) || 0) + 1;
+        seenSoFar.set(name, nextIdx);
+        indices.set(c.id, { current: nextIdx, total });
+      }
+    });
+
+    return indices;
+  }, [manifestCustomers]);
 
   const metrics = useMemo(
     () => computePrepMetrics(activeCookingCustomers, isChickenDay),
@@ -1766,7 +1836,7 @@ const manifestCustomers = useMemo(() => {
           </div>
 
           <div className="flex items-center gap-2 flex-1 md:flex-initial justify-between md:justify-start">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs">
                 <span className="font-bold text-gray-900">{metrics.totalMeals} Orders</span>
                 <span className="text-gray-300">|</span>
@@ -1781,18 +1851,28 @@ const manifestCustomers = useMemo(() => {
                 </div>
               </div>
 
-              {activeClosure ? (
+              {/* Aggregated Portion Breakdown Pill */}
+              <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700">
+                <span><strong className="text-gray-900">{portionCounts.lg}</strong> LG</span>
+                <span className="text-gray-300">·</span>
+                <span><strong className="text-gray-900">{portionCounts.rg}</strong> RG</span>
+                {portionCounts.halfLg > 0 && (
+                  <>
+                    <span className="text-gray-300">·</span>
+                    <span><strong className="text-gray-900">{portionCounts.halfLg}</strong> Half LG</span>
+                  </>
+                )}
+                {portionCounts.halfRg > 0 && (
+                  <>
+                    <span className="text-gray-300">·</span>
+                    <span><strong className="text-gray-900">{portionCounts.halfRg}</strong> Half RG</span>
+                  </>
+                )}
+              </div>
+
+              {activeClosure && (
                 <span className="px-2 py-1 rounded-lg text-[11px] font-bold uppercase bg-amber-50 text-amber-800 border border-amber-200">
                   Closed
-                </span>
-              ) : (
-                <span
-                  className={`px-2 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wide border ${isChickenDay
-                    ? 'bg-rose-50 text-rose-700 border-rose-200'
-                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                    }`}
-                >
-                  {isChickenDay ? 'NV Day' : 'Veg Day'}
                 </span>
               )}
             </div>
@@ -2328,7 +2408,7 @@ const manifestCustomers = useMemo(() => {
               <div className="flex items-center justify-between pb-2 mb-3 border-b border-gray-100">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-black uppercase tracking-wide text-gray-700 flex items-center gap-1.5">
-                    <Soup className="w-4 h-4 text-emerald-600" /> Dal &amp; Sabji Station
+                    <Soup className="w-4 h-4 text-emerald-600" /> Dal &amp; Sabji
                   </span>
                   <span className="text-[10.5px] font-semibold text-gray-400 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded">
                     {metrics.dalPackRG + metrics.dalPackLG + metrics.sabjiPackRG + metrics.sabjiPackLG} containers
@@ -2464,7 +2544,7 @@ const manifestCustomers = useMemo(() => {
             <div>
               <div className="flex items-center justify-between pb-2 mb-3 border-b border-gray-100">
                 <span className="text-xs font-black uppercase tracking-wide text-gray-700 flex items-center gap-1.5">
-                  <Flame className="w-4 h-4 text-rose-600" /> Non-Veg Station
+                  <Flame className="w-4 h-4 text-rose-600" /> Non-Veg
                 </span>
                 <select
                   value={nonVeg}
@@ -2478,37 +2558,38 @@ const manifestCustomers = useMemo(() => {
               </div>
 
               {isVegDay || metrics.chickenOz === 0 ? (
-                <div className="flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl py-8 px-3">
+                <div className="flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl py-12 px-3">
                   <Leaf className="w-5 h-5 text-gray-300 mb-1" />
                   <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
                     Veg Day — Chicken Idle
                   </span>
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="bg-rose-50/25 border border-rose-200/60 rounded-xl p-3 flex flex-col justify-between space-y-3">
                   <div>
-                    <span className="text-[11px] font-bold text-red-600 uppercase tracking-wider block truncate">
-                      {nonVeg || 'CHICKEN CURRY'}
+                    <span className="text-[10.5px] font-black uppercase text-rose-800 tracking-wide block mb-1">
+                      Today&apos;s Non-Veg
                     </span>
-                    <div className="flex items-baseline gap-1.5 mt-0.5">
-                      <span className="text-2xl font-black text-red-600">{metrics.chickenOz} oz</span>
-                      {metrics.chickenLegs > 0 && (
-                        <span className="text-xs font-bold text-red-500 font-sans">
-                          ({metrics.chickenLegs} legs)
-                        </span>
-                      )}
-                    </div>
+                    <span className="text-xs font-bold text-gray-900 block bg-white border border-rose-200 rounded-lg px-2.5 py-1.5 truncate shadow-2xs">
+                      🍗 {nonVeg || 'Chicken Curry'}
+                    </span>
                   </div>
 
-                  <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs space-y-1">
-                    <div className="flex justify-between">
-                      <span className="font-semibold text-gray-600">LG (12 oz)</span>
-                      <span className="font-bold text-gray-900">{metrics.chickenPackLG}</span>
+                  <div className="flex items-baseline justify-between pt-2 border-t border-rose-200/50">
+                    <div>
+                      <span className="text-[10px] font-bold text-gray-400 uppercase">Pot Target</span>
+                      <div className="flex items-baseline gap-1 mt-0.5">
+                        <span className="text-xl font-black text-rose-900">{metrics.chickenOz} oz</span>
+                        {metrics.chickenLegs > 0 && (
+                          <span className="text-[11px] font-bold text-rose-600 font-sans">
+                            ({metrics.chickenLegs} legs)
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="font-semibold text-gray-600">RG (8 oz)</span>
-                      <span className="font-bold text-gray-900">{metrics.chickenPackRG}</span>
-                    </div>
+                    <span className="text-[10px] font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded border border-rose-300 shrink-0">
+                      {metrics.chickenPackRG} RG · {metrics.chickenPackLG} LG
+                    </span>
                   </div>
                 </div>
               )}
@@ -2531,7 +2612,12 @@ const manifestCustomers = useMemo(() => {
                 Packing Manifest
               </h3>
               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-bold bg-gray-100 text-gray-700 whitespace-nowrap shrink-0">
-                {manifestCustomers.filter(c => !c.isSkipped).length} active
+                {activeCookingCustomers.length} active
+                {manifestCustomers.some(c => c.isExpiredRenewalPending) && (
+                  <span className="ml-1 text-amber-700">
+                    · {manifestCustomers.filter(c => c.isExpiredRenewalPending).length} pending
+                  </span>
+                )}
               </span>
               {historicalSnapshot && historicalSnapshot.length > 0 && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-gray-200 text-gray-700 border border-gray-300">
@@ -2662,17 +2748,27 @@ const manifestCustomers = useMemo(() => {
                             {customer.full_name}
                           </span>
 
-                          {customer.isExpiredRenewalPending && (
-  <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300 whitespace-nowrap">
-    ⏳ RENEWAL {customer.expiredOnDate ? `(${formatShortDate(customer.expiredOnDate)})` : ''}
-  </span>
-)}
+                          {/* Multiple Tiffin Index */}
+                          {customerMultiBoxIndex.has(customer.id) && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap">
+                              Box {customerMultiBoxIndex.get(customer.id)!.current} of {customerMultiBoxIndex.get(customer.id)!.total}
+                            </span>
+                          )}
 
-                          {isLastDay && (
+                          {/* 1. If customer was on their last day today but already renewed starting tomorrow */}
+                          {customer.start_date && selectedDateKey < customer.start_date.slice(0, 10) ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 whitespace-nowrap">
+                              ✓ RENEWED (Starts {formatShortDate(customer.start_date)})
+                            </span>
+                          ) : customer.isExpiredRenewalPending ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300 whitespace-nowrap">
+                              ⏳ RENEWAL {customer.expiredOnDate ? `(${formatShortDate(customer.expiredOnDate)})` : ''}
+                            </span>
+                          ) : isLastDay ? (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300 whitespace-nowrap animate-pulse">
                               LAST DAY
                             </span>
-                          )}
+                          ) : null}
                         </div>
 
                         <div className="text-xs text-gray-500 mt-0.5 truncate">
@@ -2859,20 +2955,32 @@ const manifestCustomers = useMemo(() => {
                               {customer.full_name}
                             </span>
 
-                            {customer.isExpiredRenewalPending ? (
+                            {/* Multiple Tiffin Index */}
+                            {customerMultiBoxIndex.has(customer.id) && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap shrink-0">
+                                Box {customerMultiBoxIndex.get(customer.id)!.current} of {customerMultiBoxIndex.get(customer.id)!.total}
+                              </span>
+                            )}
+
+                            {/* 1. If customer was on their last day today but already renewed starting tomorrow */}
+                            {customer.start_date && selectedDateKey < customer.start_date.slice(0, 10) ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 whitespace-nowrap shrink-0">
+                                ✓ RENEWED (Starts {formatShortDate(customer.start_date)})
+                              </span>
+                            ) : customer.isExpiredRenewalPending ? (
                               <span
                                 title={`Subscription ended on ${customer.expiredOnDate}. Click row to extend.`}
                                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 whitespace-nowrap shrink-0"
                               >
                                 <span>⏳ RENEWAL PENDING</span>
                                 {customer.expiredOnDate && (
-      <>
-        <span className="opacity-40">·</span>
-        <span className="font-semibold text-amber-800">
-          Ended {formatShortDate(customer.expiredOnDate)}
-        </span>
-      </>
-    )}
+                                  <>
+                                    <span className="opacity-40">·</span>
+                                    <span className="font-semibold text-amber-800">
+                                      Ended {formatShortDate(customer.expiredOnDate)}
+                                    </span>
+                                  </>
+                                )}
                               </span>
                             ) : isLastDay ? (
                               <span
