@@ -52,30 +52,31 @@ export async function renewPlan(customerId: string) {
 
 const todayIso = () => new Date().toISOString().split('T')[0];
 
-// Ensures a customer is only fulfilled once per calendar day.
-// Returns true when the log was newly inserted; false if already logged.
+// Ensures a customer is only fulfilled once per target calendar day.
 async function ensureDailyLog(
   customerId: string,
-  event: 'delivered' | 'skipped'
+  event: 'delivered' | 'skipped',
+  targetDate?: string
 ): Promise<boolean> {
   const supabase = await createClient();
+  const dateKey = targetDate || todayIso();
+
   const { data: existing } = await supabase
     .from('customer_deliveries')
     .select('id')
     .eq('customer_id', customerId)
-    .eq('delivery_date', todayIso())
+    .eq('delivery_date', dateKey)
     .maybeSingle<{ id: string }>();
 
   if (existing) return false;
 
   const { error } = await supabase.from('customer_deliveries').insert({
     customer_id: customerId,
-    delivery_date: todayIso(),
+    delivery_date: dateKey,
     event,
   });
 
   if (error) {
-    // Unique (customer_id, delivery_date) collision = already logged.
     if (error.code === '23505') return false;
     console.error('Delivery log error:', error);
     throw new Error(error.message);
@@ -83,18 +84,15 @@ async function ensureDailyLog(
   return true;
 }
 
-// Marks today's delivery as consumed (+1 used_credits) with ledger transitions:
-//   next === total              → payment_status 'due'
-//   next > total                → payment_status 'overdue'
-//   next > total + 3 (grace)    → subscription_status 'expired'
-export async function markDelivered(customerId: string) {
+export async function markDelivered(customerId: string, targetDate?: string) {
   const supabase = await createClient();
+  const dateKey = targetDate || todayIso();
 
-  const inserted = await ensureDailyLog(customerId, 'delivered');
+  const inserted = await ensureDailyLog(customerId, 'delivered', dateKey);
   if (!inserted) {
     revalidatePath('/admin/deliveries');
     revalidatePath('/admin/customers');
-    return; // Already marked today — do not double-charge a credit.
+    return;
   }
 
   const { data: cust } = await supabase
@@ -124,11 +122,11 @@ export async function markDelivered(customerId: string) {
   revalidatePath('/admin/customers');
 }
 
-// Logs a skipped (non-delivered) day — no credit consumed.
-export async function logSkip(customerId: string) {
+export async function logSkip(customerId: string, targetDate?: string) {
   const supabase = await createClient();
+  const dateKey = targetDate || todayIso();
 
-  const inserted = await ensureDailyLog(customerId, 'skipped');
+  const inserted = await ensureDailyLog(customerId, 'skipped', dateKey);
   if (!inserted) {
     revalidatePath('/admin/deliveries');
     revalidatePath('/admin/customers');
@@ -158,20 +156,18 @@ export async function logSkip(customerId: string) {
   revalidatePath('/admin/customers');
 }
 
-// Reverses today's dispatch log. Delivered → refund one credit + restore statuses;
-// Skipped → refund one skipped day. Always removes today's log row.
-export async function undoTodayDispatchAction(customerId: string) {
+export async function undoTodayDispatchAction(customerId: string, targetDate?: string) {
   const supabase = await createClient();
+  const dateKey = targetDate || todayIso();
 
   const { data: log } = await supabase
     .from('customer_deliveries')
     .select('event')
     .eq('customer_id', customerId)
-    .eq('delivery_date', todayIso())
+    .eq('delivery_date', dateKey)
     .maybeSingle<{ event: 'delivered' | 'skipped' }>();
 
   if (!log) {
-    // Nothing logged for today — idempotent no-op.
     revalidatePath('/admin/deliveries');
     revalidatePath('/admin/customers');
     return;
@@ -191,11 +187,9 @@ export async function undoTodayDispatchAction(customerId: string) {
 
     const update: { used_credits: number; payment_status: string; subscription_status?: string } = {
       used_credits: next,
-      // Paid once back below the plan total; 'due' at exactly total; 'overdue' still in grace.
       payment_status: next === total ? 'due' : next > total ? 'overdue' : 'paid',
     };
     if ((cust.subscription_status || '').toLowerCase() === 'expired') {
-      // Came back inside the 3-tiffin grace window → reactivate.
       update.subscription_status = next > total + 3 ? 'expired' : 'active';
     }
 
@@ -231,7 +225,7 @@ export async function undoTodayDispatchAction(customerId: string) {
     .from('customer_deliveries')
     .delete()
     .eq('customer_id', customerId)
-    .eq('delivery_date', todayIso());
+    .eq('delivery_date', dateKey);
 
   if (deleteError) {
     console.error('Undo delete log error:', deleteError);

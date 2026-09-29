@@ -662,46 +662,115 @@ export default function DeliveriesClient({
     );
   }
 
-  async function run(action: () => Promise<void>) {
+  const handleMarkDelivered = async (customerId: string) => {
+    setBusyId(customerId);
     setErrorMsg('');
+
+    // Instant optimistic update: card drops out of pending immediately
+    setActiveLogs(prev => [...prev.filter(l => l.customerId !== customerId), { customerId, event: 'delivered' }]);
+
     try {
-      await action();
+      await markDelivered(customerId, selectedDateKey);
       router.refresh();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Action failed');
+      // Revert if error
+      setActiveLogs(prev => prev.filter(l => l.customerId !== customerId));
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to mark delivered');
     } finally {
       setBusyId(null);
     }
-  }
+  };
+
+  const handleLogSkip = async (customerId: string) => {
+    setBusyId(customerId);
+    setErrorMsg('');
+
+    // Instant optimistic update: card drops out of pending immediately
+    setActiveLogs(prev => [...prev.filter(l => l.customerId !== customerId), { customerId, event: 'skipped' }]);
+
+    try {
+      await logSkip(customerId, selectedDateKey);
+      router.refresh();
+    } catch (err) {
+      setActiveLogs(prev => prev.filter(l => l.customerId !== customerId));
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to skip');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleUndo = async (customerId: string) => {
+    setBusyId(customerId);
+    setErrorMsg('');
+
+    // Instant optimistic update: card returns to pending list immediately
+    setActiveLogs(prev => prev.filter(l => l.customerId !== customerId));
+
+    try {
+      await undoTodayDispatchAction(customerId, selectedDateKey);
+      router.refresh();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to undo action');
+      const data = await getDeliveryDateData(selectedDateKey);
+      setActiveLogs(data.todayLogs);
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const planTier = (tier: string | null) => (tier === 'trial' ? 'Trial' : tier === 'monthly' ? 'Monthly' : 'Weekly');
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] pb-12 font-sans select-none">
+    <div className="flex-1 min-h-0 w-full max-w-full overflow-x-hidden overflow-y-auto bg-[#F8FAFC] pb-12 font-sans select-none">
       
-      {/* 1. TOP RESPONSIVE HEADER (EXACT 1-TO-1 MATCH WITH PREP PAGE) */}
-      <div className="bg-white border-b border-gray-200 px-3 sm:px-6 py-2.5 sticky top-0 z-30 shadow-2xs print:hidden">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
+      {/* 1. TOP RESPONSIVE HEADER (ZERO HORIZONTAL SCROLL ON MOBILE) */}
+      <div className="w-full max-w-full bg-white border-b border-gray-200 px-2.5 sm:px-6 py-2.5 sticky top-0 z-30 shadow-2xs print:hidden overflow-hidden">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 md:gap-3 w-full max-w-full min-w-0">
           
-          {/* Left: Title + Operational Stops Counter */}
-          <div className="flex flex-wrap items-center justify-between md:justify-start gap-2.5 shrink-0">
-            <div className="flex items-center gap-2.5">
+          {/* Top Row on Mobile: Title + Stop Count + (Dispatch/Ledger Toggle) */}
+          <div className="flex items-center justify-between gap-2 w-full md:w-auto min-w-0 shrink-0">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
               <div className="w-8 h-8 rounded-lg bg-[#5D5FEF] text-white flex items-center justify-center shrink-0">
                 <Truck className="w-4 h-4" />
               </div>
-              <h1 className="text-[16px] sm:text-[18px] font-black text-[#11142D] tracking-tight leading-tight">
-                Deliveries · {activeDay}
-              </h1>
+              <div className="min-w-0 truncate">
+                <h1 className="text-[14px] sm:text-[18px] font-black text-[#11142D] tracking-tight leading-tight truncate">
+                  Deliveries · {activeDay}
+                </h1>
+                <p className="text-[10.5px] sm:text-[11px] text-gray-400 font-semibold truncate">
+                  {totalStopsCount - activeLogs.length} left of {totalStopsCount} stops
+                </p>
+              </div>
             </div>
 
-            <div className="h-5 w-px bg-gray-200 hidden sm:block" />
-
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs font-bold text-gray-700">
-              <span>{totalStopsCount - activeLogs.length} left of {totalStopsCount} stops</span>
+            {/* Tab Pill on Mobile: Anchored right beside title, perfectly fits within screen */}
+            <div className="flex md:hidden bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
+              <button
+                type="button"
+                onClick={() => setTab('dispatch')}
+                className={`px-2 py-1 text-[11px] font-bold rounded-md transition-all ${
+                  tab === 'dispatch'
+                    ? 'bg-white text-[#5D5FEF] shadow-xs'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                Dispatch ({pendingDispatchList.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab('ledger')}
+                className={`px-2 py-1 text-[11px] font-bold rounded-md transition-all ${
+                  tab === 'ledger'
+                    ? 'bg-white text-[#5D5FEF] shadow-xs'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                Ledger
+              </button>
             </div>
           </div>
 
-          {/* Center: Target Date Context (Identical to Prep Target) */}
+          {/* Center: Target Date Context (Desktop Only) */}
           <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-gray-50/70 border border-gray-200/80 rounded-lg text-xs font-semibold text-gray-500 shrink-0">
             <span>Route target:</span>
             <strong className="text-gray-900">{formattedTargetDate}</strong>
@@ -716,20 +785,20 @@ export default function DeliveriesClient({
             ) : null}
           </div>
 
-          {/* Right: Consolidated Date Navigation Strip + Dispatch/Ledger */}
-          <div className="flex items-center justify-between md:justify-end gap-2 shrink-0 w-full md:w-auto overflow-visible">
-            {/* Weekday Selector Strip */}
-            <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs shrink-0 overflow-visible relative">
+          {/* Bottom Row on Mobile / Right Group on Desktop */}
+          <div className="flex items-center justify-between md:justify-end gap-1.5 sm:gap-2 w-full md:w-auto min-w-0">
+            {/* Weekday Selector Strip: Strictly contained without stretching or overflowing */}
+            <div className="inline-flex items-center justify-between sm:justify-start bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs w-full md:w-auto min-w-0">
               <button
                 type="button"
                 onClick={() => changeWeek('prev')}
                 title="Previous Week"
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+                className="w-6 sm:w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
               >
                 ‹
               </button>
 
-              <div className="flex items-center gap-0.5 px-0.5 sm:px-1">
+              <div className="flex items-center justify-around sm:justify-start gap-0.5 px-0.5 flex-1 min-w-0">
                 {weekDays.map((item) => {
                   const isSelected = selectedDateKey === item.dateKey;
                   const isClosed = closuresSet.has(item.dateKey);
@@ -741,7 +810,7 @@ export default function DeliveriesClient({
                       type="button"
                       onClick={() => setSelectedDate(item.dateObj)}
                       title={isClosed ? 'Kitchen Closed' : undefined}
-                      className={`px-2 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5
+                      className={`px-1.5 sm:px-2 py-1 text-[11px] sm:text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5 shrink-0
                         ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
                         ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
                         ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs' : ''}
@@ -753,7 +822,7 @@ export default function DeliveriesClient({
                       <span className={isClosed && !isSelected ? 'line-through decoration-amber-600' : ''}>
                         {item.short}
                       </span>
-                      <span className="opacity-80 font-normal text-[10.5px]">{item.dayNum}</span>
+                      <span className="opacity-80 font-normal text-[10px] sm:text-[10.5px]">{item.dayNum}</span>
                       {isClosed && (
                         <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : 'bg-amber-600'}`} />
                       )}
@@ -766,25 +835,27 @@ export default function DeliveriesClient({
                 type="button"
                 onClick={() => changeWeek('next')}
                 title="Next Week"
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+                className="w-6 sm:w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
               >
                 ›
               </button>
 
-              <div className="h-4 w-px bg-gray-200 mx-1" />
+              <div className="h-4 w-px bg-gray-200 mx-0.5 sm:mx-1 shrink-0" />
 
-              <PrepDatePicker
-                selectedDate={selectedDateKey}
-                onChange={(newDateStr) => {
-                  const picked = new Date(`${newDateStr}T12:00:00`);
-                  if (!isNaN(picked.getTime())) setSelectedDate(picked);
-                }}
-                closures={Array.from(closuresSet)}
-              />
+              <div className="shrink-0">
+                <PrepDatePicker
+                  selectedDate={selectedDateKey}
+                  onChange={(newDateStr) => {
+                    const picked = new Date(`${newDateStr}T12:00:00`);
+                    if (!isNaN(picked.getTime())) setSelectedDate(picked);
+                  }}
+                  closures={Array.from(closuresSet)}
+                />
+              </div>
             </div>
 
-            {/* Tab Pill: Dispatch / Ledger (Aligned on the far right just like Print) */}
-            <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
+            {/* Tab Pill on Desktop: Visible only on md+ screens */}
+            <div className="hidden md:flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
               <button
                 type="button"
                 onClick={() => setTab('dispatch')}
@@ -813,7 +884,7 @@ export default function DeliveriesClient({
 
         {/* Route Progress Bar */}
         {tab === 'dispatch' && totalStopsCount > 0 && (
-          <div className="mt-2 pt-2 border-t border-gray-100">
+          <div className="mt-2 pt-2 border-t border-gray-100 w-full">
             <div className="flex items-center justify-between text-[11px] font-bold text-gray-500 mb-1">
               <span>Route Progress</span>
               <span className="text-emerald-600">{completedCount} of {totalStopsCount} Delivered ({progressPercent}%)</span>
@@ -827,7 +898,6 @@ export default function DeliveriesClient({
           </div>
         )}
       </div>
-
       <div className="max-w-4xl mx-auto px-3 sm:px-6 py-4">
         {errorMsg && (
           <div className="mb-3 px-3.5 py-2.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-bold flex items-center gap-2">
@@ -938,78 +1008,54 @@ export default function DeliveriesClient({
                       key={c.id}
                       className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs overflow-hidden p-3.5 sm:p-4.5 transition-all"
                     >
-                      {/* Top Card Row: Stop # and Customer Name */}
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="w-6 h-6 rounded-full bg-gray-100 text-gray-700 text-xs font-black flex items-center justify-center shrink-0">
-                          {index + 1}
-                        </span>
-                        <span className="text-[16px] font-black text-[#11142D] capitalize truncate">
-                          {c.full_name}
-                        </span>
-                      </div>
+                      {/* Top Row: Stop # + Customer Name on left, Phone + Map on the right */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-6 h-6 rounded-full bg-gray-100 text-gray-700 text-xs font-black flex items-center justify-center shrink-0">
+                            {index + 1}
+                          </span>
+                          <span className="text-[16px] font-black text-[#11142D] capitalize truncate">
+                            {c.full_name}
+                          </span>
+                        </div>
 
-                      {/* Middle Row: Street Address + Google Maps Navigation Button */}
-                      {c.delivery_address ? (
-                        <div className="mt-2.5 bg-gray-50 border border-gray-200/70 rounded-xl p-3 flex items-center justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <span 
-                              className="text-[15px] sm:text-[16px] font-black text-gray-900 block leading-snug break-words tracking-tight"
-                              title={c.delivery_address}
-                            >
-                              📍 {formatStreetOnlyAddress(c.delivery_address)}
-                            </span>
-                            <span className="text-[11.5px] font-bold text-gray-500 block mt-1">
-                              {used}/{total} delivered · <strong className="text-emerald-700">{remaining} left</strong>
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {c.phone_number && (
-                              <>
-                                {/* 1-Tap WhatsApp Button */}
-                                <a
-                                  href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(c.phone_number)}&text=${encodeURIComponent(
-                                    `Hi ${c.full_name}, your tiffin has been delivered! Enjoy your meal!`
-                                  )}`}
-                                  title="Send WhatsApp Delivery Notice"
-                                  className="h-9 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
-                                >
-                                  <MessageSquare className="w-3.5 h-3.5" />
-                                  <span>WA</span>
-                                </a>
-
-                                {/* 1-Tap Native SMS Fallback Button (Zero-cost native texting) */}
-                                <a
-                                  href={`sms:${cleanPhoneNumberForWhatsApp(c.phone_number)}?&body=${encodeURIComponent(
-                                    `Hi ${c.full_name}, your tiffin has been delivered! Enjoy your meal!`
-                                  )}`}
-                                  title="Send Direct SMS"
-                                  className="h-9 px-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
-                                >
-                                  <span>SMS</span>
-                                </a>
-
-                                {/* Direct Call */}
-                                <a
-                                  href={`tel:${c.phone_number}`}
-                                  title="Call customer"
-                                  className="h-9 w-9 rounded-lg bg-white border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors"
-                                >
-                                  <Phone className="w-4 h-4" />
-                                </a>
-                              </>
-                            )}
-
+                        {/* Top-Right Navigation & Call Controls */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {c.phone_number && (
                             <a
-                              href={googleMapsUrl!}
+                              href={`tel:${c.phone_number}`}
+                              title="Call customer"
+                              className="h-8 w-8 rounded-lg bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors"
+                            >
+                              <Phone className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                          {googleMapsUrl && (
+                            <a
+                              href={googleMapsUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="h-9 px-3 rounded-lg bg-[#5D5FEF] text-white font-bold text-xs flex items-center gap-1.5 shadow-2xs hover:bg-[#4D4FD9] transition-colors"
+                              className="h-8 px-2.5 rounded-lg bg-[#5D5FEF] text-white font-bold text-xs flex items-center gap-1 shadow-2xs hover:bg-[#4D4FD9] transition-colors"
                             >
-                              <Navigation className="w-3.5 h-3.5" />
+                              <Navigation className="w-3 h-3" />
                               <span>Map</span>
                             </a>
-                          </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Middle Row: Full-width Street Address & Remaining Days */}
+                      {c.delivery_address ? (
+                        <div className="mt-2.5 bg-gray-50 border border-gray-200/70 rounded-xl p-2.5 sm:p-3">
+                          <span 
+                            className="text-[14px] sm:text-[15px] font-black text-gray-900 block leading-snug break-words tracking-tight"
+                            title={c.delivery_address}
+                          >
+                            📍 {formatStreetOnlyAddress(c.delivery_address)}
+                          </span>
+                          <span className="text-[11.5px] font-bold text-gray-500 block mt-0.5">
+                            {used}/{total} delivered · <strong className="text-emerald-700">{remaining} left</strong>
+                          </span>
                         </div>
                       ) : (
                         <p className="mt-2 text-xs font-semibold text-amber-700 bg-amber-50 p-2 rounded-lg border border-amber-200">
@@ -1017,30 +1063,52 @@ export default function DeliveriesClient({
                         </p>
                       )}
 
-                      {/* Bottom Row: Big Driver Action Buttons */}
-                      <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center gap-2">
+                      {/* Bottom Row: [WA] [SMS] [ Mark Delivered ] [Skip] */}
+                      <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center gap-1.5 sm:gap-2">
+                        {c.phone_number && (
+                          <>
+                            {/* WhatsApp 1-Tap Shortcut */}
+                            <a
+                              href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(c.phone_number)}&text=${encodeURIComponent(
+                                `Hi ${c.full_name}, your tiffin has been delivered! Enjoy your meal!`
+                              )}`}
+                              title="Send WhatsApp Delivery Notice"
+                              className="h-10 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs transition-colors cursor-pointer shrink-0"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" />
+                              <span>WA</span>
+                            </a>
+
+                            {/* SMS 1-Tap Fallback Shortcut */}
+                            <a
+                              href={`sms:${cleanPhoneNumberForWhatsApp(c.phone_number)}?&body=${encodeURIComponent(
+                                `Hi ${c.full_name}, your tiffin has been delivered! Enjoy your meal!`
+                              )}`}
+                              title="Send Direct SMS"
+                              className="h-10 px-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center shadow-xs transition-colors cursor-pointer shrink-0"
+                            >
+                              <span>SMS</span>
+                            </a>
+                          </>
+                        )}
+
+                        {/* Direct Database Action: Instant 0-delay click */}
                         <button
                           type="button"
                           disabled={busyId === c.id}
-                          onClick={() => {
-                            setProofCustomer(c);
-                            setPhotoPreview(null);
-                            setCopiedNote(false);
-                          }}
-                          className="flex-1 h-11 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                          onClick={() => handleMarkDelivered(c.id)}
+                          className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer min-w-0"
                         >
-                          <Check className="w-4 h-4 stroke-[3]" />
-                          <span>{busyId === c.id ? 'Saving…' : 'Mark Delivered'}</span>
+                          <Check className="w-4 h-4 stroke-[3] shrink-0" />
+                          <span className="truncate">{busyId === c.id ? 'Saving…' : 'Mark Delivered'}</span>
                         </button>
 
+                        {/* Skip Button */}
                         <button
                           type="button"
                           disabled={busyId === c.id}
-                          onClick={() => {
-                            setBusyId(c.id);
-                            run(() => logSkip(c.id));
-                          }}
-                          className="h-11 px-4 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                          onClick={() => handleLogSkip(c.id)}
+                          className="h-10 px-3 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
                         >
                           Skip
                         </button>
@@ -1079,10 +1147,7 @@ export default function DeliveriesClient({
                       <button
                         type="button"
                         disabled={busyId === customerId}
-                        onClick={() => {
-                          setBusyId(customerId);
-                          run(() => undoTodayDispatchAction(customerId));
-                        }}
+                        onClick={() => handleUndo(customerId)}
                         className="px-2.5 py-1 text-xs font-bold text-gray-500 hover:text-rose-600 bg-gray-50 hover:bg-rose-50 border border-gray-200 rounded-lg transition-colors cursor-pointer"
                       >
                         {busyId === customerId ? 'Undoing…' : 'Undo'}
