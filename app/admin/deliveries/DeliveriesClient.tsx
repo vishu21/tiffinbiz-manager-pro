@@ -718,6 +718,21 @@ export default function DeliveriesClient({
     }
   };
 
+  const handleRenewPlan = async (customerId: string) => {
+    setBusyId(customerId);
+    setErrorMsg('');
+    setRenewedAt({ id: customerId, at: new Date().toISOString() });
+    try {
+      await renewPlan(customerId);
+      router.refresh();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to renew plan');
+      setRenewedAt(null);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const planTier = (tier: string | null) => (tier === 'trial' ? 'Trial' : tier === 'monthly' ? 'Monthly' : 'Weekly');
 
   return (
@@ -1209,12 +1224,8 @@ export default function DeliveriesClient({
                         <button
                           type="button"
                           disabled={busyId === c.id}
-                          onClick={() => {
-                            setBusyId(c.id);
-                            setRenewedAt({ id: c.id, at: new Date().toISOString() });
-                            run(() => renewPlan(c.id));
-                          }}
-                          className="px-3 py-1.5 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg shadow-2xs"
+                          onClick={() => handleRenewPlan(c.id)}
+                          className="px-3 py-1.5 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg shadow-2xs cursor-pointer"
                         >
                           {busyId === c.id ? 'Renewing…' : 'Renew Plan'}
                         </button>
@@ -1498,9 +1509,8 @@ export default function DeliveriesClient({
                         type="button"
                         onClick={async () => {
                           const customerId = proofCustomer.id;
-                          setBusyId(customerId);
                           setProofCustomer(null);
-                          await run(() => markDelivered(customerId));
+                          await handleMarkDelivered(customerId);
                         }}
                         className="h-11 px-2.5 bg-gray-900 hover:bg-black text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                       >
