@@ -37,6 +37,8 @@ export default async function DeliveriesPage() {
     roti_count: c.roti_count ?? null,
     is_pickup: c.is_pickup || false,
     pickup_days: c.pickup_days || [],
+    delivery_lat: c.delivery_lat ?? null,
+    delivery_lng: c.delivery_lng ?? null,
     start_date: c.start_date || null,
     cycle_end_date: c.cycle_end_date || null,
     scheduled_cancel_date: c.scheduled_cancel_date || null,

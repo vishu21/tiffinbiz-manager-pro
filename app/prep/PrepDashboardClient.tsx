@@ -1756,43 +1756,57 @@ const manifestCustomers = useMemo(() => {
 
       {/* UNIFIED RESPONSIVE HEADER */}
       <div className="px-3 sm:px-6 py-2.5 bg-white border-b border-[#EEEEEE] flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0 print:hidden">
-        {/* Left: Title + Operational Metrics Group */}
-        <div className="flex flex-wrap items-center justify-between md:justify-start gap-2.5 shrink-0">
-          <h1 className="text-[16px] sm:text-[17px] font-black text-[#11142D] tracking-tight">
-            Kitchen Prep &amp; Packaging
-          </h1>
+        {/* Left: Title + Operational Metrics Group + Mobile Print */}
+        <div className="flex flex-wrap items-center justify-between md:justify-start gap-2.5 shrink-0 w-full md:w-auto">
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-[16px] sm:text-[17px] font-black text-[#11142D] tracking-tight">
+              Kitchen Prep &amp; Packaging
+            </h1>
+            <div className="h-5 w-px bg-gray-200 hidden sm:block" />
+          </div>
 
-          <div className="h-5 w-px bg-gray-200 hidden sm:block" />
-
-          <div className="flex items-center gap-2">
-            <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs">
-              <span className="font-bold text-gray-900">{metrics.totalMeals} Orders</span>
-              <span className="text-gray-300">|</span>
-              <div className="flex items-center gap-1.5 font-semibold text-[11px]">
-                <span className="text-emerald-700">
-                  {activeCustomers.filter(c => !c.isSkipped && !c.meal_type?.toLowerCase().includes('non')).length} Veg
-                </span>
-                <span className="text-gray-300">·</span>
-                <span className="text-rose-700">
-                  {activeCustomers.filter(c => !c.isSkipped && c.meal_type?.toLowerCase().includes('non')).length} Non-Veg
-                </span>
+          <div className="flex items-center gap-2 flex-1 md:flex-initial justify-between md:justify-start">
+            <div className="flex items-center gap-2">
+              <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs">
+                <span className="font-bold text-gray-900">{metrics.totalMeals} Orders</span>
+                <span className="text-gray-300">|</span>
+                <div className="flex items-center gap-1.5 font-semibold text-[11px]">
+                  <span className="text-emerald-700">
+                    {activeCustomers.filter(c => !c.isSkipped && !c.meal_type?.toLowerCase().includes('non')).length} Veg
+                  </span>
+                  <span className="text-gray-300">·</span>
+                  <span className="text-rose-700">
+                    {activeCustomers.filter(c => !c.isSkipped && c.meal_type?.toLowerCase().includes('non')).length} Non-Veg
+                  </span>
+                </div>
               </div>
+
+              {activeClosure ? (
+                <span className="px-2 py-1 rounded-lg text-[11px] font-bold uppercase bg-amber-50 text-amber-800 border border-amber-200">
+                  Closed
+                </span>
+              ) : (
+                <span
+                  className={`px-2 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wide border ${isChickenDay
+                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}
+                >
+                  {isChickenDay ? 'NV Day' : 'Veg Day'}
+                </span>
+              )}
             </div>
 
-            {activeClosure ? (
-              <span className="px-2 py-1 rounded-lg text-[11px] font-bold uppercase bg-amber-50 text-amber-800 border border-amber-200">
-                Closed
-              </span>
-            ) : (
-              <span
-                className={`px-2 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wide border ${isChickenDay
-                  ? 'bg-rose-50 text-rose-700 border-rose-200'
-                  : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  }`}
-              >
-                {isChickenDay ? 'NV Day' : 'Veg Day'}
-              </span>
-            )}
+            {/* Mobile-Only Print Button: Sits right in your highlighted red space */}
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="md:hidden h-8 inline-flex items-center gap-1 px-2.5 border border-gray-200 rounded-lg shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 cursor-pointer shrink-0 ml-auto"
+              title="Print Manifest"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Print</span>
+            </button>
           </div>
         </div>
 
@@ -1811,9 +1825,9 @@ const manifestCustomers = useMemo(() => {
           ) : null}
         </div>
 
-        {/* Right: Consolidated Date Navigation Strip + Print */}
+        {/* Right: Consolidated Date Navigation Strip */}
         <div className="flex items-center justify-between md:justify-end gap-2 shrink-0 w-full md:w-auto overflow-visible">
-          <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs shrink-0 overflow-visible relative">
+          <div className="inline-flex items-center justify-between sm:justify-start bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs shrink-0 overflow-visible relative w-full sm:w-auto">
             {/* Prev Week Button */}
             <button
               type="button"
@@ -1825,7 +1839,7 @@ const manifestCustomers = useMemo(() => {
             </button>
 
             {/* 5-Day Mobile / 7-Day Desktop Selector Strip */}
-            <div className="flex items-center gap-0.5 px-0.5 sm:px-1">
+            <div className="flex items-center justify-around sm:justify-start gap-0.5 px-0.5 sm:px-1 flex-1 sm:flex-initial">
               {weekDays.map((item) => {
                 const isSelected = selectedDateKey === item.dateKey;
                 const isClosed = closuresMap.has(item.dateKey);
@@ -1882,14 +1896,14 @@ const manifestCustomers = useMemo(() => {
             />
           </div>
 
-          {/* Print Button */}
+          {/* Desktop-Only Print Button */}
           <button
             type="button"
             onClick={() => window.print()}
-            className="h-9 inline-flex items-center gap-1.5 px-3 border border-gray-200 rounded-xl shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors shrink-0"
+            className="hidden md:inline-flex h-9 items-center gap-1.5 px-3 border border-gray-200 rounded-xl shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors shrink-0"
           >
             <Printer className="w-4 h-4" />
-            <span className="hidden sm:inline">Print</span>
+            <span>Print</span>
           </button>
         </div>
       </div>
@@ -2229,378 +2243,278 @@ const manifestCustomers = useMemo(() => {
           </div>
         )}
 
-        {/* MENU SELECTOR & DUAL-COLUMN BATCH PREP CALCULATOR */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 print:hidden items-stretch">
-          {/* Left Column (Menu Selectors): 4 of 12 columns */}
-          <div className="lg:col-span-4 bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4 flex flex-col justify-between">
+        {/* UNIFIED 3-STATION PREP HUB */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch print:hidden">
+
+          {/* STATION 1: BREADS & SIDES (3 of 12 cols) */}
+          <div className="xl:col-span-3 bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4 flex flex-col justify-between">
             <div>
-              <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-gray-100">
-                <div className="flex items-center gap-2">
-                  <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
-                    Today&apos;s Menu
-                  </span>
-                  <a
-                    href="/admin/recipes"
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded transition-colors"
-                  >
-                    <Settings2 className="w-3.5 h-3.5" /> Manage
-                  </a>
-                </div>
-                <span className="text-[10.5px] font-bold text-gray-400">
-                  {isMenuSelectionSaving ? '⏳ Saving...' : <span className="flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Saved</span>}
+              {/* Card Header */}
+              <div className="flex items-center justify-between pb-2 mb-3 border-b border-gray-100">
+                <span className="text-xs font-black uppercase tracking-wide text-gray-700 flex items-center gap-1.5">
+                  <Wheat className="w-4 h-4 text-amber-600" /> Breads &amp; Sides
+                </span>
+                <span className="text-[10px] font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded border border-blue-100">
+                  {metrics.totalRiceContainers} Total Boxes
                 </span>
               </div>
 
-              <div className="flex flex-col gap-3">
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10.5px] font-bold text-amber-700 uppercase tracking-wider">
-                    Today&apos;s Dal
-                  </span>
-                  <select
-                    value={selectedDalId}
-                    onChange={e => handleSelectDal(e.target.value)}
-                    className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-9"
-                  >
-                    <option value="">— Not selected —</option>
-                    {activeDalRecipes.map(r => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10.5px] font-bold text-green-700 uppercase tracking-wider">
-                    Today&apos;s Sabji
-                  </span>
-                  <select
-                    value={selectedSabjiId}
-                    onChange={e => handleSelectSabji(e.target.value)}
-                    className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-9"
-                  >
-                    <option value="">— Not selected —</option>
-                    {activeSabjiRecipes.map(r => (
-                      <option key={r.id} value={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10.5px] font-bold text-rose-700 uppercase tracking-wider">
-                    Today&apos;s Non-Veg
-                  </span>
-                  <select
-                    value={nonVeg}
-                    onChange={e => setNonVeg(e.target.value)}
-                    disabled={isVegDay || isMenuLoading}
-                    className="text-[12.5px] px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:bg-white focus:border-[#5D5FEF] h-9 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <option value="Chicken Curry">Chicken Curry</option>
-                    <option value="">None (Veg Day)</option>
-                  </select>
-                </label>
-              </div>
-
-              {menuSelectionError && (
-                <p className="mt-3 text-[11.5px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500" /> {menuSelectionError}
-                </p>
-              )}
-            </div>
-
-            <div className="pt-3 mt-3 border-t border-gray-100 text-[11px] font-medium text-gray-400">
-              Selections dynamically scale recipe batches on the right.
-            </div>
-          </div>
-
-          {/* Right Column (Batch Prep Calculator with 2 inner columns): 8 of 12 columns */}
-          <div className="lg:col-span-8 bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-gray-100">
-                <span className="text-[11.5px] font-bold text-gray-400 uppercase tracking-wide">
-                  Raw Ingredient
-                </span>
-                <span className="text-[11px] font-semibold text-gray-500 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded-md">
-                  {metrics.dalPackRG + metrics.dalPackLG + metrics.sabjiPackRG + metrics.sabjiPackLG} containers
-                </span>
-              </div>
-
-              {!selectedDalRecipe && !selectedSabjiRecipe ? (
-                <p className="text-[12px] text-gray-400 py-10 text-center">
-                  Select a Dal or Sabji on the left to view scaled raw-ingredient weights.
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
-                  <div className="bg-amber-50/20 border border-amber-100 rounded-xl p-3 flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-2 pb-1.5 border-b border-amber-100">
-                        <span className="text-[12px] font-bold text-amber-800 truncate">
-                          Dal · {selectedDalRecipe ? selectedDalRecipe.name.replace(/daal/gi, 'Dal') : 'Not Selected'}
-                        </span>
-                        <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded shrink-0">
-                          {metrics.dalPackRG} RG · {metrics.dalPackLG} LG
-                        </span>
-                      </div>
-                      {!selectedDalRecipe ? (
-                        <p className="text-xs text-gray-400 italic py-2">Select a Dal to view.</p>
-                      ) : dalBatchRows.length === 0 ? (
-                        <p className="text-xs text-gray-400 italic py-2">No ingredients defined.</p>
-                      ) : (
-                        <ul className="space-y-1">
-                          {dalBatchRows.map(row => (
-                            <li
-                              key={row.id}
-                              className="flex items-baseline justify-between gap-2 text-[11.5px] border-b border-gray-50 pb-0.5"
-                            >
-                              <span className="font-semibold text-gray-700 truncate min-w-0">
-                                {row.name.replace(/daal/gi, 'Dal')}:
-                              </span>
-                              <span className="shrink-0 font-mono font-bold text-gray-900 text-[11px]">
-                                {formatOz(row.totalOz)} ({formatWeight(row.totalOz)})
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="bg-emerald-50/20 border border-emerald-100 rounded-xl p-3 flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-2 pb-1.5 border-b border-emerald-100">
-                        <span className="text-[12px] font-bold text-emerald-800 truncate">
-                          Sabji · {selectedSabjiRecipe ? selectedSabjiRecipe.name : 'Not Selected'}
-                        </span>
-                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded shrink-0">
-                          {metrics.sabjiPackRG} RG · {metrics.sabjiPackLG} LG
-                        </span>
-                      </div>
-                      {!selectedSabjiRecipe ? (
-                        <p className="text-xs text-gray-400 italic py-2">Select a Sabji to view.</p>
-                      ) : sabjiBatchRows.length === 0 ? (
-                        <p className="text-xs text-gray-400 italic py-2">No ingredients defined.</p>
-                      ) : (
-                        <ul className="space-y-1">
-                          {sabjiBatchRows.map(row => (
-                            <li
-                              key={row.id}
-                              className="flex items-baseline justify-between gap-2 text-[11.5px] border-b border-gray-50 pb-0.5"
-                            >
-                              <span className="font-semibold text-gray-700 truncate min-w-0">
-                                {row.name}:
-                              </span>
-                              <span className="shrink-0 font-mono font-bold text-gray-900 text-[11px]">
-                                {formatOz(row.totalOz)} ({formatWeight(row.totalOz)})
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* 3-STATION GRID */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 print:hidden items-stretch">
-
-          {/* Card 1: Breads & Sides */}
-          <div className="bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-3.5 sm:p-4 flex flex-col justify-between">
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <div className="inline-flex items-center gap-1.5 text-gray-400">
-                <Wheat className="w-3.5 h-3.5 shrink-0 text-amber-600" strokeWidth={2} />
-                <span className="text-[11.5px] font-bold uppercase tracking-wide">
-                  Breads &amp; Sides
-                </span>
-              </div>
-              <span className="text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-100 px-1.5 py-0.5 rounded whitespace-nowrap">
-                {metrics.totalRiceContainers} Rice Boxes
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="min-w-0">
-                <span className="text-xs font-bold text-gray-700 uppercase tracking-wider truncate block">
-                  ROTI
-                </span>
-                <div className="flex items-baseline gap-1">
-                  <span className="text-2xl font-black text-gray-900">
-                    {metrics.totalRoti}
-                  </span>
-                  <span className="text-xs font-bold text-gray-500 uppercase">Roti</span>
-                  {metrics.totalPronthi > 0 && (
-                    <span className="text-xs font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded ml-1">
-                      +{metrics.totalPronthi}P
+              <div className="space-y-4">
+                {/* 1. Breads (Roti + Pronthi) */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10.5px] font-black uppercase text-gray-400 tracking-wider">
+                      Breads
                     </span>
-                  )}
-                </div>
-
-                <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1 space-y-1">
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">Roti</span>
-                    <span className="font-bold text-gray-900">{metrics.totalRoti}</span>
+                    {metrics.totalPronthi > 0 && (
+                      <span className="text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.5 rounded">
+                        +{metrics.totalPronthi} Pronthi
+                      </span>
+                    )}
                   </div>
-                  {metrics.totalPronthi > 0 ? (
+                  <div className="text-2xl font-black text-gray-900 mt-0.5">
+                    {metrics.totalRoti} <span className="text-xs font-bold text-gray-500 uppercase font-sans">Roti</span>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1.5 space-y-1">
                     <div className="flex justify-between">
-                      <span className="font-semibold text-amber-900">Pronthi</span>
-                      <span className="font-bold text-amber-900">{metrics.totalPronthi}</span>
+                      <span className="font-semibold text-gray-600">Roti</span>
+                      <span className="font-bold text-gray-900">{metrics.totalRoti}</span>
                     </div>
-                  ) : (
-                    <div className="flex justify-between text-gray-400">
-                      <span>Pronthi</span>
-                      <span>0</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="min-w-0">
-                <span className="text-xs font-bold text-blue-600 uppercase tracking-wider truncate block">
-                  RICE
-                </span>
-                <div className="text-2xl font-black text-blue-600">
-                  {metrics.totalRiceContainers} <span className="text-xs font-bold text-blue-500 uppercase font-sans">Boxes</span>
+                    {metrics.totalPronthi > 0 ? (
+                      <div className="flex justify-between">
+                        <span className="font-semibold text-amber-900">Pronthi</span>
+                        <span className="font-bold text-amber-900">{metrics.totalPronthi}</span>
+                      </div>
+                    ) : (
+                      <div className="flex justify-between text-gray-400">
+                        <span>Pronthi</span>
+                        <span>0</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1 space-y-1">
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">LG Box</span>
-                    <span className="font-bold text-gray-900">{metrics.rice.lg}</span>
+                {/* 2. Rice Boxes - Matches Dal & Sabji Format (RG first, then LG) */}
+                <div className="pt-3 border-t border-gray-100">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10.5px] font-black uppercase text-blue-600 tracking-wider">
+                      Rice Boxes
+                    </span>
+                    <span className="text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded">
+                      {metrics.rice.rg} RG · {metrics.rice.lg} LG{metrics.rice.xl > 0 ? ` · ${metrics.rice.xl} XL` : ''}
+                    </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">RG Box</span>
-                    <span className="font-bold text-gray-900">{metrics.rice.rg}</span>
+                  <div className="text-xl font-black text-blue-900 mt-1">
+                    {metrics.totalRiceContainers} <span className="text-xs font-bold text-blue-500 uppercase font-sans">Boxes</span>
                   </div>
-                  {metrics.rice.xl > 0 && (
-                    <div className="flex justify-between">
-                      <span className="font-semibold text-gray-600">XL Box</span>
-                      <span className="font-bold text-gray-900">{metrics.rice.xl}</span>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5 pt-2 mt-2 border-t border-gray-100">
-              <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+            {/* 3. Sides Footer Badges */}
+            <div className="flex items-center gap-2 pt-3 mt-3 border-t border-gray-100 text-xs font-bold">
+              <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg">
                 {metrics.saladCount} Salad
               </span>
-              <span className="text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">
+              <span className="px-2.5 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg">
                 {metrics.dessertCount} Dessert
               </span>
             </div>
           </div>
 
-          {/* Card 2: Dal & Sabji */}
-          <div className="bg-white rounded-xl shadow-sm p-3.5 sm:p-4 flex flex-col border-x border-b border-[#EEEEEE] border-t-4 border-t-green-500">
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <div className="inline-flex items-center gap-1.5 text-gray-400">
-                <Soup className="w-3.5 h-3.5 shrink-0 text-emerald-600" strokeWidth={2} />
-                <span className="text-[11.5px] font-bold uppercase tracking-wide">
-                  Dal &amp; Sabji
-                </span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="min-w-0">
-                <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider truncate block">
-                  {veg2 ? `SABJI · ${veg2}` : 'SABJI'}
-                </span>
-                <div className="text-2xl font-black text-emerald-600">
-                  {metrics.sabjiOz} oz
+          {/* STATION 2: UNIFIED DAL & SABJI HUB (6 of 12 cols) */}
+          <div className="xl:col-span-6 bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between pb-2 mb-3 border-b border-gray-100">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black uppercase tracking-wide text-gray-700 flex items-center gap-1.5">
+                    <Soup className="w-4 h-4 text-emerald-600" /> Dal &amp; Sabji Station
+                  </span>
+                  <span className="text-[10.5px] font-semibold text-gray-400 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded">
+                    {metrics.dalPackRG + metrics.dalPackLG + metrics.sabjiPackRG + metrics.sabjiPackLG} containers
+                  </span>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1 space-y-1">
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">LG (12 oz)</span>
-                    <span className="font-bold text-gray-900">{metrics.sabjiPackLG}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">RG (8 oz)</span>
-                    <span className="font-bold text-gray-900">{metrics.sabjiPackRG}</span>
-                  </div>
+                <div className="flex items-center gap-2">
+                  <a
+                    href="/admin/recipes"
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded transition-colors"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" /> Manage Recipes
+                  </a>
+                  <span className="text-[10px] font-bold text-gray-400">
+                    {isMenuSelectionSaving ? '⏳' : <Check className="w-3.5 h-3.5 text-emerald-600 inline" />}
+                  </span>
                 </div>
               </div>
 
-              <div className="min-w-0">
-                <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider truncate block">
-                  {veg1 ? `DAL · ${veg1}` : 'DAL'}
-                </span>
-                <div className="text-2xl font-black text-emerald-600">
-                  {metrics.dalOz} oz
-                </div>
-                <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1 space-y-1">
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">LG (12 oz)</span>
-                    <span className="font-bold text-gray-900">{metrics.dalPackLG}</span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                {/* Dal Side */}
+                <div className="bg-amber-50/25 border border-amber-200/60 rounded-xl p-3 flex flex-col justify-between">
+                  <div>
+                    <label className="block mb-1.5">
+                      <span className="text-[10.5px] font-black uppercase text-amber-800 tracking-wide block mb-1">
+                        Today&apos;s Dal
+                      </span>
+                      <select
+                        value={selectedDalId}
+                        onChange={e => handleSelectDal(e.target.value)}
+                        className="w-full text-xs font-bold px-2.5 py-1.5 bg-white border border-amber-300 rounded-lg outline-none focus:border-[#5D5FEF]"
+                      >
+                        <option value="">— Select Dal —</option>
+                        {activeDalRecipes.map(r => (
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <div className="flex items-baseline justify-between mt-2.5 pt-2 border-t border-amber-200/50">
+                      <div>
+                        <span className="text-[10px] font-bold text-gray-400 uppercase">Pot Target</span>
+                        <div className="text-xl font-black text-amber-900">{metrics.dalOz} oz</div>
+                      </div>
+                      <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded border border-amber-300 shrink-0">
+                        {metrics.dalPackRG} RG · {metrics.dalPackLG} LG
+                      </span>
+                    </div>
+
+                    <div className="mt-3 pt-2.5 border-t border-amber-200/50">
+                      <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider block mb-1">
+                        Raw Ingredients
+                      </span>
+                      {!selectedDalRecipe ? (
+                        <p className="text-[11px] text-gray-400 italic py-1">Select a Dal to view raw weights.</p>
+                      ) : dalBatchRows.length === 0 ? (
+                        <p className="text-[11px] text-gray-400 italic py-1">No ingredients defined.</p>
+                      ) : (
+                        <ul className="space-y-1">
+                          {dalBatchRows.map(row => (
+                            <li key={row.id} className="flex justify-between text-[11px] border-b border-amber-100/50 pb-0.5">
+                              <span className="font-semibold text-gray-700 truncate">{row.name.replace(/daal/gi, 'Dal')}:</span>
+                              <span className="font-mono font-bold text-gray-900 shrink-0 ml-1">{formatOz(row.totalOz)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">RG (8 oz)</span>
-                    <span className="font-bold text-gray-900">{metrics.dalPackRG}</span>
+                </div>
+
+                {/* Sabji Side */}
+                <div className="bg-emerald-50/25 border border-emerald-200/60 rounded-xl p-3 flex flex-col justify-between">
+                  <div>
+                    <label className="block mb-1.5">
+                      <span className="text-[10.5px] font-black uppercase text-emerald-800 tracking-wide block mb-1">
+                        Today&apos;s Sabji
+                      </span>
+                      <select
+                        value={selectedSabjiId}
+                        onChange={e => handleSelectSabji(e.target.value)}
+                        className="w-full text-xs font-bold px-2.5 py-1.5 bg-white border border-emerald-300 rounded-lg outline-none focus:border-[#5D5FEF]"
+                      >
+                        <option value="">— Select Sabji —</option>
+                        {activeSabjiRecipes.map(r => (
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <div className="flex items-baseline justify-between mt-2.5 pt-2 border-t border-emerald-200/50">
+                      <div>
+                        <span className="text-[10px] font-bold text-gray-400 uppercase">Pot Target</span>
+                        <div className="text-xl font-black text-emerald-900">{metrics.sabjiOz} oz</div>
+                      </div>
+                      <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-300 shrink-0">
+                        {metrics.sabjiPackRG} RG · {metrics.sabjiPackLG} LG
+                      </span>
+                    </div>
+
+                    <div className="mt-3 pt-2.5 border-t border-emerald-200/50">
+                      <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider block mb-1">
+                        Raw Ingredients
+                      </span>
+                      {!selectedSabjiRecipe ? (
+                        <p className="text-[11px] text-gray-400 italic py-1">Select a Sabji to view raw weights.</p>
+                      ) : sabjiBatchRows.length === 0 ? (
+                        <p className="text-[11px] text-gray-400 italic py-1">No ingredients defined.</p>
+                      ) : (
+                        <ul className="space-y-1">
+                          {sabjiBatchRows.map(row => (
+                            <li key={row.id} className="flex justify-between text-[11px] border-b border-emerald-100/50 pb-0.5">
+                              <span className="font-semibold text-gray-700 truncate">{row.name}:</span>
+                              <span className="font-mono font-bold text-gray-900 shrink-0 ml-1">{formatOz(row.totalOz)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
+
+            {menuSelectionError && (
+              <p className="mt-2 text-[11.5px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-500 inline mr-1" /> {menuSelectionError}
+              </p>
+            )}
           </div>
 
-          {/* Card 3: Non-Veg */}
-          <div className="bg-white rounded-xl shadow-sm p-3.5 sm:p-4 flex flex-col justify-between border-x border-b border-[#EEEEEE] border-t-4 border-t-red-500">
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <div className="inline-flex items-center gap-1.5 text-gray-400">
-                <Flame className="w-3.5 h-3.5 shrink-0 text-rose-600" strokeWidth={2} />
-                <span className="text-[11.5px] font-bold uppercase tracking-wide">
-                  Non-Veg Station
+          {/* STATION 3: NON-VEG (3 of 12 cols) */}
+          <div className="xl:col-span-3 bg-white rounded-xl border border-[#EEEEEE] shadow-sm p-4 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between pb-2 mb-3 border-b border-gray-100">
+                <span className="text-xs font-black uppercase tracking-wide text-gray-700 flex items-center gap-1.5">
+                  <Flame className="w-4 h-4 text-rose-600" /> Non-Veg Station
                 </span>
+                <select
+                  value={nonVeg}
+                  onChange={e => setNonVeg(e.target.value)}
+                  disabled={isVegDay || isMenuLoading}
+                  className="text-xs font-bold px-2 py-1 bg-gray-50 border border-gray-200 rounded-md outline-none focus:border-[#5D5FEF] disabled:opacity-50 cursor-pointer"
+                >
+                  <option value="Chicken Curry">Chicken Curry</option>
+                  <option value="">None (Veg Day)</option>
+                </select>
               </div>
-              {isChickenDay && metrics.chickenOz > 0 && (
-                <span className="text-[10.5px] font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded">
-                  {nonVeg || 'Chicken Curry'}
-                </span>
+
+              {isVegDay || metrics.chickenOz === 0 ? (
+                <div className="flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-xl py-8 px-3">
+                  <Leaf className="w-5 h-5 text-gray-300 mb-1" />
+                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                    Veg Day — Chicken Idle
+                  </span>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <span className="text-[11px] font-bold text-red-600 uppercase tracking-wider block truncate">
+                      {nonVeg || 'CHICKEN CURRY'}
+                    </span>
+                    <div className="flex items-baseline gap-1.5 mt-0.5">
+                      <span className="text-2xl font-black text-red-600">{metrics.chickenOz} oz</span>
+                      {metrics.chickenLegs > 0 && (
+                        <span className="text-xs font-bold text-red-500 font-sans">
+                          ({metrics.chickenLegs} legs)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="font-semibold text-gray-600">LG (12 oz)</span>
+                      <span className="font-bold text-gray-900">{metrics.chickenPackLG}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="font-semibold text-gray-600">RG (8 oz)</span>
+                      <span className="font-bold text-gray-900">{metrics.chickenPackRG}</span>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
 
-            {isVegDay || metrics.chickenOz === 0 ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-center border-2 border-dashed border-gray-100 rounded-lg py-6 px-3">
-                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                  <Leaf className="w-3.5 h-3.5" /> Veg Day — Chicken Station Idle
-                </span>
-              </div>
-            ) : (
-              <div>
-                <span className="text-xs font-bold text-red-600 uppercase tracking-wider truncate block">
-                  {nonVeg ? `CHICKEN · ${nonVeg}` : 'CHICKEN CURRY'}
-                </span>
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-2xl font-black text-red-600">
-                    {metrics.chickenOz} oz
-                  </span>
-                  {metrics.chickenLegs > 0 && (
-                    <span className="text-xs font-bold text-red-500 font-sans">
-                      ({metrics.chickenLegs} legs)
-                    </span>
-                  )}
-                </div>
-
-                <div className="bg-gray-50 rounded-lg p-2 border border-gray-100 text-xs mt-1 space-y-1">
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">LG (12 oz)</span>
-                    <span className="font-bold text-gray-900">{metrics.chickenPackLG}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="font-semibold text-gray-600">RG (8 oz)</span>
-                    <span className="font-bold text-gray-900">{metrics.chickenPackRG}</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="pt-2 mt-2 border-t border-gray-100 text-[11px] font-semibold text-gray-500">
+            <div className="pt-2 mt-3 border-t border-gray-100 text-[11px] font-semibold text-gray-500">
               {isChickenDay
                 ? `${metrics.chickenPackLG + metrics.chickenPackRG} total NV orders`
                 : 'No non-veg deliveries today'}

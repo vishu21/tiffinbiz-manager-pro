@@ -268,3 +268,27 @@ export async function saveDeliveryRouteOrder(
     return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
   }
 }
+
+export async function getDeliveryDateData(dateKey: string) {
+  const supabase = await createClient();
+
+  const [logsRes, routeRes] = await Promise.all([
+    supabase
+      .from('customer_deliveries')
+      .select('customer_id, event')
+      .eq('delivery_date', dateKey),
+    supabase
+      .from('daily_delivery_routes')
+      .select('stop_order')
+      .eq('delivery_date', dateKey)
+      .maybeSingle(),
+  ]);
+
+  return {
+    todayLogs: (logsRes.data || []).map((r: any) => ({
+      customerId: r.customer_id,
+      event: r.event as 'delivered' | 'skipped',
+    })),
+    routeOrder: (routeRes.data?.stop_order as string[]) || [],
+  };
+}

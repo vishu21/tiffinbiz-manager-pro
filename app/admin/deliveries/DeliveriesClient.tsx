@@ -2,6 +2,8 @@
 
 import { useMemo, useState, useEffect, useSyncExternalStore, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import PrepDatePicker from '@/app/components/PrepDatePicker';
+import { getDeliveryDateData } from './actions';
 import { 
   Package, 
   BookOpen, 
@@ -19,12 +21,14 @@ import {
   ExternalLink,
   MapPin,
   Camera,
-  MessageSquare
+  MessageSquare,
+  Loader2
 } from 'lucide-react';
 import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction, saveDeliveryRouteOrder } from './actions';
+import { backfillExistingCustomerCoordinates } from '@/app/admin/actions';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
+import { optimizeRouteNearestNeighbor } from '@/app/utils/geocoding';
 import { 
-  sortDeliveriesChained, 
   DEFAULT_KITCHEN_ORIGIN, 
   sanitizeAddressForUrl, 
   DeliveryCustomer 
@@ -49,6 +53,8 @@ type CustomerRow = {
   roti_count?: number | null;
   is_pickup?: boolean | null;
   pickup_days?: string[] | null;
+  delivery_lat?: number | null;
+  delivery_lng?: number | null;
   start_date?: string | null;
   scheduled_cancel_date?: string | null;
   pause_start_date?: string | null;
@@ -187,11 +193,20 @@ function resolveCustomerChannel(phoneOrContact: string | null | undefined): { ch
   return { channel: 'sms', destination: cleanPhone || raw };
 }
 
+function cleanPhoneNumberForWhatsApp(phone: string | null | undefined): string {
+  if (!phone) return '';
+  let digits = phone.replace(/\D/g, '');
+  if (digits.length === 10) {
+    digits = `1${digits}`;
+  }
+  return digits;
+}
+
 function buildMessagingUrl(channel: ContactChannel, destination: string, text: string): string {
   const encodedText = encodeURIComponent(text);
   if (channel === 'whatsapp') {
-    const intlPhone = destination.length === 10 ? `1${destination}` : destination;
-    return `https://wa.me/${intlPhone}?text=${encodedText}`;
+    const phone = cleanPhoneNumberForWhatsApp(destination);
+    return `whatsapp://send?phone=${phone}&text=${encodedText}`;
   }
   if (channel === 'messenger') {
     if (destination.startsWith('http://') || destination.startsWith('https://')) {
@@ -201,7 +216,27 @@ function buildMessagingUrl(channel: ContactChannel, destination: string, text: s
   }
   return `sms:${destination}?&body=${encodedText}`;
 }
+const resolveNextActiveDeliveryDate = (customers: CustomerRow[]): Date => {
+  const anchor = new Date();
+  anchor.setHours(12, 0, 0, 0);
 
+  // Look ahead up to 14 days for the nearest upcoming active delivery date
+  for (let offset = 1; offset <= 14; offset++) {
+    const candidate = new Date(anchor);
+    candidate.setDate(anchor.getDate() + offset);
+    const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][candidate.getDay()];
+    const dateKey = toLocalDateKey(candidate);
+
+    if (customers.some(c => isCustomerScheduledToday(c, dayName, dateKey) && !isPickupOnDay(c, dayName))) {
+      return candidate;
+    }
+  }
+
+  // Fallback to tomorrow if no specific customer schedule matched
+  const fallback = new Date(anchor);
+  fallback.setDate(anchor.getDate() + 1);
+  return fallback;
+};
 export default function DeliveriesClient({
   initialCustomers,
   todayLogs,
@@ -220,6 +255,7 @@ export default function DeliveriesClient({
   const [showOrderSheet, setShowOrderSheet] = useState(false);
   const [customOrderIds, setCustomOrderIds] = useState<string[]>(initialRouteOrder);
   const [renewedAt, setRenewedAt] = useState<{ id: string; at: string } | null>(null);
+  const [isOptimizing, setIsOptimizing] = useState(false);
 
   // Delivery Confirmation Flow State
   const [proofCustomer, setProofCustomer] = useState<CustomerRow | null>(null);
@@ -278,59 +314,109 @@ export default function DeliveriesClient({
     };
   }, []);
 
-  const todayName = useMemo(() => {
-    return new Date().toLocaleDateString('en-US', { weekday: 'long' });
-  }, []);
+  const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-  const todayKey = useMemo(() => {
-    const d = new Date();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${d.getFullYear()}-${m}-${day}`;
-  }, []);
+  // Dynamic selected date (defaults to current date, selectable across weeks)
+  const [selectedDate, setSelectedDate] = useState<Date>(() =>
+  resolveNextActiveDeliveryDate(initialCustomers)
+);
+  const [activeLogs, setActiveLogs] = useState<DailyLog[]>(todayLogs);
+  const [isDateSwitching, setIsDateSwitching] = useState(false);
 
-  // Sync route order from Supabase (fallback to localStorage if offline/new)
+  const selectedDateKey = useMemo(() => toLocalDateKey(selectedDate), [selectedDate]);
+  const activeDay = useMemo(() => DAYS_OF_WEEK[(selectedDate.getDay() + 6) % 7], [selectedDate]);
+
+  const currentWeekMonday = useMemo(() => {
+    const d = new Date(selectedDate);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    d.setDate(diff);
+    d.setHours(12, 0, 0, 0);
+    return d;
+  }, [selectedDate]);
+
+  const weekDays = useMemo(() => {
+    return Array.from({ length: 7 }, (_, i) => {
+      const date = new Date(currentWeekMonday);
+      date.setDate(currentWeekMonday.getDate() + i);
+      const dayName = DAYS_OF_WEEK[i];
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const dStr = String(date.getDate()).padStart(2, '0');
+      return {
+        name: dayName,
+        short: dayName.substring(0, 3),
+        dayNum: date.getDate(),
+        dateKey: `${y}-${m}-${dStr}`,
+        dateObj: date,
+      };
+    });
+  }, [currentWeekMonday]);
+
+  const changeWeek = (direction: 'prev' | 'next') => {
+    const targetMonday = new Date(currentWeekMonday);
+    targetMonday.setDate(currentWeekMonday.getDate() + (direction === 'next' ? 7 : -7));
+    targetMonday.setHours(12, 0, 0, 0);
+    setSelectedDate(targetMonday);
+  };
+
+  const isSelectedToday = useMemo(() => {
+    return toLocalDateKey(new Date()) === selectedDateKey;
+  }, [selectedDateKey]);
+
+  const isSelectedTomorrow = useMemo(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return toLocalDateKey(tomorrow) === selectedDateKey;
+  }, [selectedDateKey]);
+
+  const formattedTargetDate = useMemo(() => {
+    return selectedDate.toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+    });
+  }, [selectedDate]);
+
+  // Sync route and logs dynamically whenever selectedDate changes
   useEffect(() => {
-    if (!todayKey) return;
-    if (initialRouteOrder && initialRouteOrder.length > 0) {
-      setCustomOrderIds(initialRouteOrder);
+    let cancelled = false;
+    setIsDateSwitching(true);
+
+    (async () => {
       try {
-        localStorage.setItem(`delivery_route_${todayKey}`, JSON.stringify(initialRouteOrder));
-      } catch (e) {}
-      return;
-    }
-
-    try {
-      const saved = localStorage.getItem(`delivery_route_${todayKey}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setCustomOrderIds(parsed);
-          saveDeliveryRouteOrder(todayKey, parsed).catch(console.warn);
+        const data = await getDeliveryDateData(selectedDateKey);
+        if (!cancelled) {
+          setActiveLogs(data.todayLogs);
+          setCustomOrderIds(data.routeOrder);
         }
+      } catch (err) {
+        console.error('[Deliveries] Date fetch failed:', err);
+      } finally {
+        if (!cancelled) setIsDateSwitching(false);
       }
-    } catch (e) {
-      console.warn('Failed to load saved route order', e);
-    }
-  }, [todayKey, initialRouteOrder]);
+    })();
 
-  // Saves both locally and to Supabase so all devices stay in sync
- const saveOrder = async (order: string[]) => {
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDateKey]);
+
+  const saveOrder = async (order: string[]) => {
     setCustomOrderIds(order);
     try {
-      localStorage.setItem(`delivery_route_${todayKey}`, JSON.stringify(order));
+      localStorage.setItem(`delivery_route_${selectedDateKey}`, JSON.stringify(order));
     } catch (e) {
       console.warn('Failed to save route order locally', e);
     }
 
-    // Call Supabase action and display error on screen if it fails
     try {
-      const res = await saveDeliveryRouteOrder(todayKey, order);
+      const res = await saveDeliveryRouteOrder(selectedDateKey, order);
       if (!res?.success) {
         console.error('❌ [Deliveries Save Error]:', res?.message);
         setErrorMsg(`Database Save Error: ${res?.message || 'Could not save route to Supabase'}`);
       } else {
-        setErrorMsg(''); // Success!
+        setErrorMsg('');
       }
     } catch (err: any) {
       console.error('❌ [Deliveries Exception]:', err);
@@ -364,27 +450,27 @@ export default function DeliveriesClient({
     [initialCustomers, closuresSet, skipsMap]
   );
 
-  const todayLoggedIds = useMemo(() => todayLogs.map(l => l.customerId), [todayLogs]);
+  const todayLoggedIds = useMemo(() => activeLogs.map(l => l.customerId), [activeLogs]);
 
   const completedList = useMemo(
     () =>
-      todayLogs
+      activeLogs
         .flatMap(log => {
           const customer = customers.find(c => c.id === log.customerId);
           return customer ? [{ ...log, customer }] : [];
         })
         .sort((a, b) => a.customer.full_name.localeCompare(b.customer.full_name)),
-    [customers, todayLogs]
+    [customers, activeLogs]
   );
 
   const allScheduledToday = useMemo(
     () =>
       customers.filter(
         c =>
-          isCustomerScheduledToday(c, todayName, todayKey) &&
-          !isPickupOnDay(c, todayName)
+          isCustomerScheduledToday(c, activeDay, selectedDateKey) &&
+          !isPickupOnDay(c, activeDay)
       ),
-    [customers, todayName, todayKey]
+    [customers, activeDay, selectedDateKey]
   );
 
   const pendingDispatchList = useMemo(() => {
@@ -535,18 +621,37 @@ export default function DeliveriesClient({
     setDragOverIndex(null);
   };
 
-  const handleAutoOptimize = () => {
+  const handleAutoOptimize = async () => {
     if (pendingDispatchList.length <= 1) return;
-    const mappedCustomers: DeliveryCustomer[] = pendingDispatchList.map(c => ({
-      id: c.id,
-      name: c.full_name,
-      delivery_address: c.delivery_address || '',
-    }));
+    setIsOptimizing(true);
+    setErrorMsg('');
 
-    const groups = sortDeliveriesChained(mappedCustomers);
-    const optimizedIds = groups.flatMap(g => g.customers.map(c => c.id));
-    saveOrder(optimizedIds);
-    setShowOrderSheet(false);
+    try {
+      // 1. Check if any stops lack coordinates, and automatically backfill them via OpenStreetMap
+      const missingCoords = pendingDispatchList.filter(
+        c => (!c.delivery_lat || !c.delivery_lng) && c.delivery_address && !c.is_pickup
+      );
+
+      if (missingCoords.length > 0) {
+        setErrorMsg(`Geocoding ${missingCoords.length} addresses with OpenStreetMap (approx. ${missingCoords.length}s)...`);
+        await backfillExistingCustomerCoordinates();
+        router.refresh();
+      }
+
+      // 2. Compute Haversine Nearest-Neighbor driving loop starting from the Kitchen
+      const optimized = optimizeRouteNearestNeighbor(pendingDispatchList);
+      const optimizedIds = optimized.map(c => c.id);
+
+      // 3. Save sequence to local state, localStorage, and Supabase database
+      await saveOrder(optimizedIds);
+      setShowOrderSheet(false);
+      setErrorMsg('');
+    } catch (err: any) {
+      console.error('[Deliveries] Auto-optimize error:', err);
+      setErrorMsg(`Optimization error: ${err?.message || 'Failed to auto-optimize'}`);
+    } finally {
+      setIsOptimizing(false);
+    }
   };
 
   if (!isMounted) {
@@ -574,56 +679,146 @@ export default function DeliveriesClient({
   return (
     <div className="flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] pb-12 font-sans select-none">
       
-      {/* 1. TOP RESPONSIVE HEADER */}
-      <div className="bg-white border-b border-gray-200 px-4 sm:px-8 py-3 sticky top-0 z-30 shadow-2xs">
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-[#5D5FEF] text-white flex items-center justify-center shrink-0">
-              <Truck className="w-4 h-4" />
-            </div>
-            <div>
-              <h1 className="text-[17px] sm:text-[20px] font-black text-[#11142D] tracking-tight truncate leading-tight">
-                Deliveries · {todayName}
+      {/* 1. TOP RESPONSIVE HEADER (EXACT 1-TO-1 MATCH WITH PREP PAGE) */}
+      <div className="bg-white border-b border-gray-200 px-3 sm:px-6 py-2.5 sticky top-0 z-30 shadow-2xs print:hidden">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
+          
+          {/* Left: Title + Operational Stops Counter */}
+          <div className="flex flex-wrap items-center justify-between md:justify-start gap-2.5 shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-[#5D5FEF] text-white flex items-center justify-center shrink-0">
+                <Truck className="w-4 h-4" />
+              </div>
+              <h1 className="text-[16px] sm:text-[18px] font-black text-[#11142D] tracking-tight leading-tight">
+                Deliveries · {activeDay}
               </h1>
-              <p className="text-[11px] text-gray-400 font-semibold">
-                {totalStopsCount - todayLoggedIds.length} stops left of {totalStopsCount}
-              </p>
+            </div>
+
+            <div className="h-5 w-px bg-gray-200 hidden sm:block" />
+
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs font-bold text-gray-700">
+              <span>{totalStopsCount - activeLogs.length} left of {totalStopsCount} stops</span>
             </div>
           </div>
 
-          <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
-            <button
-              type="button"
-              onClick={() => setTab('dispatch')}
-              className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
-                tab === 'dispatch'
-                  ? 'bg-white text-[#5D5FEF] shadow-xs'
-                  : 'text-gray-500 hover:text-gray-800'
-              }`}
-            >
-              Dispatch ({pendingDispatchList.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab('ledger')}
-              className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
-                tab === 'ledger'
-                  ? 'bg-white text-[#5D5FEF] shadow-xs'
-                  : 'text-gray-500 hover:text-gray-800'
-              }`}
-            >
-              Ledger
-            </button>
+          {/* Center: Target Date Context (Identical to Prep Target) */}
+          <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-gray-50/70 border border-gray-200/80 rounded-lg text-xs font-semibold text-gray-500 shrink-0">
+            <span>Route target:</span>
+            <strong className="text-gray-900">{formattedTargetDate}</strong>
+            {isSelectedToday ? (
+              <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                Today
+              </span>
+            ) : isSelectedTomorrow ? (
+              <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100">
+                Tomorrow
+              </span>
+            ) : null}
+          </div>
+
+          {/* Right: Consolidated Date Navigation Strip + Dispatch/Ledger */}
+          <div className="flex items-center justify-between md:justify-end gap-2 shrink-0 w-full md:w-auto overflow-visible">
+            {/* Weekday Selector Strip */}
+            <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs shrink-0 overflow-visible relative">
+              <button
+                type="button"
+                onClick={() => changeWeek('prev')}
+                title="Previous Week"
+                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+              >
+                ‹
+              </button>
+
+              <div className="flex items-center gap-0.5 px-0.5 sm:px-1">
+                {weekDays.map((item) => {
+                  const isSelected = selectedDateKey === item.dateKey;
+                  const isClosed = closuresSet.has(item.dateKey);
+                  const isWeekend = item.short === 'Sat' || item.short === 'Sun';
+
+                  return (
+                    <button
+                      key={item.dateKey}
+                      type="button"
+                      onClick={() => setSelectedDate(item.dateObj)}
+                      title={isClosed ? 'Kitchen Closed' : undefined}
+                      className={`px-2 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5
+                        ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
+                        ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
+                        ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs' : ''}
+                        ${!isSelected && isClosed ? 'bg-amber-100 text-amber-900 border border-amber-300' : ''}
+                        ${!isSelected && !isClosed && isWeekend ? 'text-gray-400 opacity-40 hover:opacity-80 hover:bg-white' : ''}
+                        ${!isSelected && !isClosed && !isWeekend ? 'text-gray-600 hover:bg-white hover:text-gray-900' : ''}
+                      `}
+                    >
+                      <span className={isClosed && !isSelected ? 'line-through decoration-amber-600' : ''}>
+                        {item.short}
+                      </span>
+                      <span className="opacity-80 font-normal text-[10.5px]">{item.dayNum}</span>
+                      {isClosed && (
+                        <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : 'bg-amber-600'}`} />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => changeWeek('next')}
+                title="Next Week"
+                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+              >
+                ›
+              </button>
+
+              <div className="h-4 w-px bg-gray-200 mx-1" />
+
+              <PrepDatePicker
+                selectedDate={selectedDateKey}
+                onChange={(newDateStr) => {
+                  const picked = new Date(`${newDateStr}T12:00:00`);
+                  if (!isNaN(picked.getTime())) setSelectedDate(picked);
+                }}
+                closures={Array.from(closuresSet)}
+              />
+            </div>
+
+            {/* Tab Pill: Dispatch / Ledger (Aligned on the far right just like Print) */}
+            <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
+              <button
+                type="button"
+                onClick={() => setTab('dispatch')}
+                className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
+                  tab === 'dispatch'
+                    ? 'bg-white text-[#5D5FEF] shadow-xs'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                Dispatch ({pendingDispatchList.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab('ledger')}
+                className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
+                  tab === 'ledger'
+                    ? 'bg-white text-[#5D5FEF] shadow-xs'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                Ledger
+              </button>
+            </div>
           </div>
         </div>
 
+        {/* Route Progress Bar */}
         {tab === 'dispatch' && totalStopsCount > 0 && (
-          <div className="mt-1">
+          <div className="mt-2 pt-2 border-t border-gray-100">
             <div className="flex items-center justify-between text-[11px] font-bold text-gray-500 mb-1">
               <span>Route Progress</span>
               <span className="text-emerald-600">{completedCount} of {totalStopsCount} Delivered ({progressPercent}%)</span>
             </div>
-            <div className="w-full h-2 rounded-full bg-gray-100 overflow-hidden">
+            <div className="w-full h-1.5 rounded-full bg-gray-100 overflow-hidden">
               <div
                 className="h-full bg-emerald-500 rounded-full transition-all duration-300"
                 style={{ width: `${progressPercent}%` }}
@@ -635,8 +830,8 @@ export default function DeliveriesClient({
 
       <div className="max-w-4xl mx-auto px-3 sm:px-6 py-4">
         {errorMsg && (
-          <div className="mb-3 px-3.5 py-2.5 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-bold flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
+          <div className="mb-3 px-3.5 py-2.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-bold flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-indigo-600" />
             <span>{errorMsg}</span>
           </div>
         )}
@@ -660,12 +855,17 @@ export default function DeliveriesClient({
 
                   <button
                     type="button"
+                    disabled={isOptimizing}
                     onClick={handleAutoOptimize}
-                    title="Automatically sequences stops along the shortest driving path"
-                    className="px-3 py-2 text-xs font-bold rounded-xl border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 transition-colors flex items-center gap-1.5 cursor-pointer"
+                    title="Automatically sequences stops along the shortest driving path using real coordinates"
+                    className="px-3.5 py-2 text-xs font-bold rounded-xl border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                   >
-                    <Wand2 className="w-4 h-4 text-purple-600" />
-                    <span>Auto-Optimize</span>
+                    {isOptimizing ? (
+                      <Loader2 className="w-4 h-4 text-purple-600 animate-spin" />
+                    ) : (
+                      <Wand2 className="w-4 h-4 text-purple-600" />
+                    )}
+                    <span>{isOptimizing ? 'Optimizing…' : 'Auto-Optimize'}</span>
                   </button>
                 </div>
 
@@ -765,14 +965,41 @@ export default function DeliveriesClient({
 
                           <div className="flex items-center gap-1.5 shrink-0">
                             {c.phone_number && (
-                              <a
-                                href={`tel:${c.phone_number}`}
-                                title="Call customer"
-                                className="h-9 w-9 rounded-lg bg-white border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors"
-                              >
-                                <Phone className="w-4 h-4" />
-                              </a>
+                              <>
+                                {/* 1-Tap WhatsApp Button */}
+                                <a
+                                  href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(c.phone_number)}&text=${encodeURIComponent(
+                                    `Hi ${c.full_name}, your tiffin has been delivered! Enjoy your meal!`
+                                  )}`}
+                                  title="Send WhatsApp Delivery Notice"
+                                  className="h-9 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                                >
+                                  <MessageSquare className="w-3.5 h-3.5" />
+                                  <span>WA</span>
+                                </a>
+
+                                {/* 1-Tap Native SMS Fallback Button (Zero-cost native texting) */}
+                                <a
+                                  href={`sms:${cleanPhoneNumberForWhatsApp(c.phone_number)}?&body=${encodeURIComponent(
+                                    `Hi ${c.full_name}, your tiffin has been delivered! Enjoy your meal!`
+                                  )}`}
+                                  title="Send Direct SMS"
+                                  className="h-9 px-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                                >
+                                  <span>SMS</span>
+                                </a>
+
+                                {/* Direct Call */}
+                                <a
+                                  href={`tel:${c.phone_number}`}
+                                  title="Call customer"
+                                  className="h-9 w-9 rounded-lg bg-white border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors"
+                                >
+                                  <Phone className="w-4 h-4" />
+                                </a>
+                              </>
                             )}
+
                             <a
                               href={googleMapsUrl!}
                               target="_blank"
@@ -961,7 +1188,6 @@ export default function DeliveriesClient({
               </button>
             </div>
 
-            {/* Scrollable list (natural touch scrolling enabled) */}
             <div 
               className="flex-1 overflow-y-auto p-3 space-y-1.5"
               onTouchMove={(e) => {
@@ -992,7 +1218,7 @@ export default function DeliveriesClient({
                     }`}
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
-                      {/* Touch-only drag handle (drag triggers ONLY when touching this handle) */}
+                      {/* Touch-only drag handle */}
                       <div
                         onTouchStart={(e) => handleTouchStart(i, e)}
                         className="p-1.5 -ml-1 text-gray-400 hover:text-gray-700 active:text-indigo-600 touch-none cursor-grab active:cursor-grabbing select-none"
@@ -1014,7 +1240,7 @@ export default function DeliveriesClient({
                       </div>
                     </div>
 
-                    {/* Quick Move Up/Down buttons (tap-friendly on mobile) */}
+                    {/* Single-tap nudge buttons */}
                     <div className="flex items-center gap-1 shrink-0">
                       <button
                         type="button"
@@ -1043,11 +1269,16 @@ export default function DeliveriesClient({
             <div className="p-3 border-t border-gray-100 bg-gray-50 shrink-0 flex items-center justify-between">
               <button
                 type="button"
+                disabled={isOptimizing}
                 onClick={handleAutoOptimize}
-                className="text-xs font-bold text-purple-700 hover:underline flex items-center gap-1 cursor-pointer"
+                className="text-xs font-bold text-purple-700 hover:underline flex items-center gap-1 cursor-pointer disabled:opacity-50"
               >
-                <Wand2 className="w-3.5 h-3.5" />
-                <span>Auto-Optimize</span>
+                {isOptimizing ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Wand2 className="w-3.5 h-3.5" />
+                )}
+                <span>{isOptimizing ? 'Optimizing…' : 'Auto-Optimize'}</span>
               </button>
 
               <button
@@ -1066,7 +1297,6 @@ export default function DeliveriesClient({
       {proofCustomer && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-2xs">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200">
-            {/* Header */}
             <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-gray-50">
               <div className="min-w-0">
                 <h3 className="text-sm font-black text-gray-900 truncate capitalize">
@@ -1088,9 +1318,7 @@ export default function DeliveriesClient({
               </button>
             </div>
 
-            {/* Body */}
             <div className="p-4 overflow-y-auto space-y-4">
-              {/* Step 1: Capture Photo */}
               <div>
                 <label className="block text-[11px] font-bold uppercase text-gray-500 tracking-wider mb-2">
                   1. Delivery Photo Proof
@@ -1135,10 +1363,9 @@ export default function DeliveriesClient({
                 )}
               </div>
 
-              {/* Step 2: Message & Recipient Preview */}
               {(() => {
                 const info = resolveCustomerChannel(proofCustomer.phone_number);
-                const messageText = `Hi ${proofCustomer.full_name}, your tiffin delivery from Tiffin OS has just been delivered! Enjoy your meal!`;
+                const messageText = `Hi ${proofCustomer.full_name}, your tiffin has been delivered! Enjoy your meal!`;
                 const actionUrl = buildMessagingUrl(info.channel, info.destination, messageText);
 
                 const channelLabel = 
@@ -1167,9 +1394,10 @@ export default function DeliveriesClient({
                       </p>
                     </div>
 
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {/* 1. WhatsApp Button */}
                       <a
-                        href={actionUrl}
+                        href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}&text=${encodeURIComponent(messageText)}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={() => {
@@ -1178,12 +1406,29 @@ export default function DeliveriesClient({
                             setCopiedNote(true);
                           }
                         }}
-                        className={`h-11 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer ${channelColor}`}
+                        className="h-11 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white"
                       >
                         <MessageSquare className="w-4 h-4" />
-                        <span>Send on {channelLabel}</span>
+                        <span>WhatsApp</span>
                       </a>
 
+                      {/* 2. Direct SMS Fallback Button */}
+                      <a
+                        href={`sms:${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}?&body=${encodeURIComponent(messageText)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => {
+                          if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                            navigator.clipboard.writeText(messageText);
+                            setCopiedNote(true);
+                          }
+                        }}
+                        className="h-11 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer bg-blue-600 hover:bg-blue-700 text-white"
+                      >
+                        <span>Direct SMS</span>
+                      </a>
+
+                      {/* 3. Complete and Deduct */}
                       <button
                         type="button"
                         onClick={async () => {
@@ -1192,7 +1437,7 @@ export default function DeliveriesClient({
                           setProofCustomer(null);
                           await run(() => markDelivered(customerId));
                         }}
-                        className="h-11 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                        className="h-11 px-2.5 bg-gray-900 hover:bg-black text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                       >
                         <Check className="w-4 h-4" />
                         <span>Complete &amp; Deduct</span>

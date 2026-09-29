@@ -1,7 +1,7 @@
 'use server';
 
 import { createClient } from '@/utils/supabase/server';
-import { geocodeAddress } from '../utils/geocoding';
+import { geocodeAddress } from '@/app/utils/geocoding';
 import { revalidatePath } from 'next/cache';
 import { normalizePickupDays } from '@/app/utils/customerPickup';
 
@@ -26,14 +26,7 @@ type CustomerPayload = {
   meal_type: string | null;
   portion_size: string | null;
   roti_count: number | null;
-  // Optional: the pronthi_count column landed in migration 00006 and may not exist on
-  // older schemas yet, so callers can omit it (and actions.ts strips it when Supabase
-  // reports PGRST204 / a missing column).
   pronthi_count?: number | null;
-  // Optional: is_pickup + pickup_days landed in migration 00011 and may not exist on
-  // older schemas yet, so callers can omit them (and actions.ts strips them when
-  // Supabase reports PGRST204 / a missing column). pickup_days stores full day names,
-  // e.g. ['Tuesday', 'Wednesday'].
   is_pickup?: boolean | null;
   pickup_days?: string[] | null;
   rice_count: string | null;
@@ -52,47 +45,28 @@ type CustomerPayload = {
   pause_end_date?: string | null;
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
-  // Optional: scheduled (future) cancel/pause support landed in migration 00014 and may not
-  // exist on older schemas yet, so callers can omit them (and actions.ts strips/skips them
-  // when Supabase reports the column is missing). scheduled_cancel_date is the customer's
-  // "Last Service Date"; scheduled_status is applied automatically once that date has passed.
   scheduled_cancel_date?: string | null;
   scheduled_status?: 'cancelled' | 'paused' | null;
-  // Optional: referred_by (free-text referral source — a person's name or a channel such
-  // as "Instagram" / "Flyer") landed in migration 00012 and may not exist on older schemas
-  // yet, so callers can omit it (and actions.ts strips it when Supabase reports PGRST204 /
-  // a missing column).
   referred_by?: string | null;
 };
 
-// Normalizes optional metadata fields before hitting Supabase so empty/undefined values are
-// handled gracefully:
-//  - `curry_config` empty/whitespace → `null`
-//  - any key explicitly `undefined` → removed from the payload (Supabase leaves it untouched)
 const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => {
   const clean: CustomerPayload = { ...payload };
 
-  // Fall back to the standard Mon–Fri weekday plan whenever the schedule is
-  // undefined, null, empty, or whitespace-only.
   const schedule = clean.delivery_schedule?.trim();
   clean.delivery_schedule = schedule || DEFAULT_DELIVERY_SCHEDULE;
 
-  // Phone is optional: trim it and store null when blank ("" → null).
   if (clean.phone_number === '' || clean.phone_number === null) {
     clean.phone_number = null;
   } else if (typeof clean.phone_number === 'string') {
     clean.phone_number = clean.phone_number.trim() || null;
   }
 
-  // Pronthi is an integer bread count: coerce gracefully before sending.
   const pronthiNum = Number(clean.pronthi_count);
   clean.pronthi_count = Number.isFinite(pronthiNum)
     ? Math.max(0, Math.trunc(pronthiNum))
     : 0;
 
-  // Pickup flags are canonicalized before hitting Supabase: pickup_days keeps only
-  // recognized full day names, and is_pickup falls back to "any pickup day" when the
-  // caller did not provide an explicit boolean.
   if (clean.pickup_days !== undefined && clean.pickup_days !== null) {
     clean.pickup_days = normalizePickupDays(clean.pickup_days);
   }
@@ -100,10 +74,6 @@ const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => 
     clean.is_pickup = (clean.pickup_days?.length ?? 0) > 0;
   }
 
-  // Defensive fallback: pickup-only records legitimately have no destination address, but
-  // some `customers` schemas enforce NOT NULL (or a CHECK) on delivery_address. Persist the
-  // legacy "Kitchen Pickup" marker instead of an empty string — older views also use that
-  // marker to recognise pickup records before migration 00011 runs.
   if (
     clean.is_pickup &&
     typeof clean.delivery_address === 'string' &&
@@ -117,7 +87,6 @@ const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => 
     clean.curry_config = trimmed === '' ? null : trimmed;
   }
 
-  // Plan tier + credit ledger values (default to Monthly / 20 when omitted).
   if (clean.plan_tier !== undefined && clean.plan_tier !== null) {
     const tier = clean.plan_tier;
     clean.plan_tier = tier === 'trial' || tier === 'weekly' || tier === 'monthly' ? tier : 'monthly';
@@ -132,13 +101,11 @@ const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => 
   } else if (clean.total_tiffin_credits === undefined || clean.total_tiffin_credits === null) {
     clean.total_tiffin_credits = TIER_CREDITS[clean.plan_tier || 'monthly'];
   }
-  // Optional subscription start date — blank → null.
   if (clean.start_date !== undefined) {
     const start = clean.start_date?.trim();
     clean.start_date = start ? start : null;
   }
 
-  // Referral source is optional free text — blank/whitespace → null.
   if (clean.referred_by !== undefined) {
     const referral = clean.referred_by?.trim();
     clean.referred_by = referral ? referral : null;
@@ -151,16 +118,19 @@ const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => 
   return clean;
 };
 
-// Removes pronthi_count so a profile update can succeed before the migration runs.
 const stripPronthiCount = (payload: CustomerPayload): CustomerPayload => {
   const copy: CustomerPayload = { ...payload };
   delete copy.pronthi_count;
   return copy;
 };
 
-// Shared helper: does a Supabase/Postgres error mention any of the given column names?
-// Covers PostgREST PGRST204 ("schema cache") plus a direct Postgres 42703 undefined_column
-// error so the stripping retries below fire in both cases.
+const stripCoordinates = (payload: CustomerPayload): CustomerPayload => {
+  const copy: CustomerPayload = { ...payload };
+  delete copy.delivery_lat;
+  delete copy.delivery_lng;
+  return copy;
+};
+
 const isMissingColumnError = (error: unknown, names: string[]): boolean => {
   if (!error || typeof error !== 'object') return false;
   const e = error as { code?: string; message?: string; details?: string; hint?: string };
@@ -176,11 +146,12 @@ const isMissingColumnError = (error: unknown, names: string[]): boolean => {
   );
 };
 
-// True when Supabase rejected the payload because the pronthi_count column is absent.
 const isPronthiColumnMissing = (error: unknown): boolean =>
   isMissingColumnError(error, ['pronthi_count']);
 
-// Removes is_pickup / pickup_days so a save can succeed before migration 00011 runs.
+const isCoordinatesColumnMissing = (error: unknown): boolean =>
+  isMissingColumnError(error, ['delivery_lat', 'delivery_lng']);
+
 const stripPickupColumns = (payload: CustomerPayload): CustomerPayload => {
   const copy: CustomerPayload = { ...payload };
   delete copy.is_pickup;
@@ -188,29 +159,18 @@ const stripPickupColumns = (payload: CustomerPayload): CustomerPayload => {
   return copy;
 };
 
-// True when Supabase rejected the payload because the is_pickup / pickup_days column(s)
-// are absent (PGRST204 "could not find the column ... in the schema cache" or a direct
-// Postgres 42703 undefined_column error).
 const isPickupColumnMissing = (error: unknown): boolean =>
   isMissingColumnError(error, ['pickup_days', 'is_pickup']);
 
-// Removes referred_by so a save can succeed before migration 00012 runs.
 const stripReferredByColumn = (payload: CustomerPayload): CustomerPayload => {
   const copy: CustomerPayload = { ...payload };
   delete copy.referred_by;
   return copy;
 };
 
-// True when Supabase rejected the payload because the referred_by column is absent.
 const isReferredByColumnMissing = (error: unknown): boolean =>
   isMissingColumnError(error, ['referred_by']);
 
-// ── Scheduled (future) cancel/pause support ────────────────────────────────────────────
-// Columns landed in migration 00014_add_scheduled_status.sql:
-//   scheduled_cancel_date DATE → the customer's last service (tiffin) day
-//   scheduled_status TEXT      → 'cancelled' | 'paused', applied once that day has passed
-// While the date is in the future the customer stays subscription_status = 'active' and
-// keeps appearing on the prep manifest (with a LAST DAY badge on the date itself).
 const SCHEDULED_COLUMNS = ['scheduled_cancel_date', 'scheduled_status'];
 const SCHEDULE_MIGRATION_HINT =
   'Scheduling a future cancel/pause requires supabase/migrations/00014_add_scheduled_status.sql. Please run the migration and try again.';
@@ -218,7 +178,6 @@ const SCHEDULE_MIGRATION_HINT =
 const isScheduledColumnMissing = (error: unknown): boolean =>
   isMissingColumnError(error, SCHEDULED_COLUMNS);
 
-// Removes the scheduled columns so an immediate write still succeeds on an old schema.
 const stripScheduledColumns = (payload: Record<string, unknown>): Record<string, unknown> => {
   const copy = { ...payload };
   delete copy.scheduled_cancel_date;
@@ -226,25 +185,15 @@ const stripScheduledColumns = (payload: Record<string, unknown>): Record<string,
   return copy;
 };
 
-// ── Scheduled-column schema probe ─────────────────────────────────────────────────────
-// Dry-run SELECT of a single column with LIMIT 1. PostgREST resolves the requested
-// column list before returning any rows, so a genuinely missing column (Postgres 42703)
-// or a STALE PostgREST schema cache (PGRST204) surfaces as an error, while an empty
-// customers table still succeeds. No rows are transferred.
 const probeScheduledColumn = async (
   supabase: Awaited<ReturnType<typeof createClient>>,
   column: string
 ): Promise<boolean> => {
   const { error } = await supabase.from('customers').select(column).limit(1);
   if (!error) return true;
-  // Any non-missing error (RLS, network, auth) is NOT treated as an absent column so a
-  // transient failure can never be mistaken for an unapplied migration.
   return !isMissingColumnError(error, [column]);
 };
 
-// Probes BOTH scheduled columns and returns exactly which ones are present/missing.
-// The result is always logged so an operator can see whether
-// supabase/migrations/00014_add_scheduled_status.sql still needs to be run in Supabase.
 const probeScheduledColumns = async (
   supabase: Awaited<ReturnType<typeof createClient>>,
   context: string
@@ -262,7 +211,6 @@ const probeScheduledColumns = async (
   return { present, missing };
 };
 
-// Local server date as YYYY-MM-DD (Postgres DATE columns round-trip in this shape).
 const toDateKey = (date: Date): string => {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -271,9 +219,6 @@ const toDateKey = (date: Date): string => {
 };
 const serverDateKey = (): string => toDateKey(new Date());
 
-// Shared customers write used by pause/cancel: future-dated (scheduled) writes require the
-// migration 00014 columns; immediate writes degrade gracefully by stripping those columns
-// when the target database hasn't been migrated yet.
 const runCustomerStatusUpdate = async (
   id: string,
   payload: Record<string, unknown>,
@@ -282,14 +227,8 @@ const runCustomerStatusUpdate = async (
   const supabase = await createClient();
   let current = { ...payload };
 
-  // When a scheduled (future-dated) write needs the migration 00014 columns, probe them
-  // up-front so the server log states exactly which columns are present/missing.
   if (options.requiresScheduledColumns) {
     let probe = await probeScheduledColumns(supabase, options.context);
-
-    // The columns can be genuinely present while PostgREST still serves a STALE schema
-    // cache (migration 00014 issues NOTIFY pgrst, 'reload schema' but PostgREST applies
-    // it asynchronously). Ask for ONE explicit reload and re-probe before giving up.
     if (probe.missing.length > 0) {
       const { error: reloadError } = await supabase.rpc('notify_pgrst_reload');
       if (!reloadError) {
@@ -315,9 +254,6 @@ const runCustomerStatusUpdate = async (
         console.error(`[${options.context}] Scheduled columns are missing on the database.`, error);
         throw new Error(SCHEDULE_MIGRATION_HINT);
       }
-      console.warn(
-        `[${options.context}] Database schema missing scheduled_cancel_date/scheduled_status — retrying without them.`
-      );
       current = stripScheduledColumns(current);
       continue;
     }
@@ -327,9 +263,6 @@ const runCustomerStatusUpdate = async (
   throw new Error(`${options.context} failed after stripping optional schema columns.`);
 };
 
-// ── Database error helpers ────────────────────────────────────────────────────────────
-// Supabase/PostgREST errors carry { code, message, details, hint }; we surface every field
-// so a rejected insert/update shows the exact failing constraint or column.
 type DatabaseErrorShape = {
   code?: string | null;
   message?: string | null;
@@ -348,7 +281,6 @@ const readDatabaseError = (error: unknown): DatabaseErrorShape => {
   };
 };
 
-// Structured console output for debugging a failed Supabase write.
 const logDatabaseError = (context: string, error: unknown) => {
   const e = readDatabaseError(error);
   console.error(`[${context}] Supabase rejected the database write.`, {
@@ -360,8 +292,6 @@ const logDatabaseError = (context: string, error: unknown) => {
   });
 };
 
-// Single-line message that keeps code/hint/details alongside the Postgres text so the
-// client alert/toast shows exactly why the write failed.
 const formatDatabaseError = (error: unknown): string => {
   const e = readDatabaseError(error);
   const parts = [
@@ -373,12 +303,6 @@ const formatDatabaseError = (error: unknown): string => {
   return parts.join(' | ');
 };
 
-// ── Duplicate-phone handling ───────────────────────────────────────────────────────────
-// Returns true when Postgres rejected the write with a unique-violation (SQLSTATE 23505)
-// on the customers.phone_number column. Migration 00013 drops customers_phone_number_key
-// so roommates/family members can share a contact number, but this guard stays so a DB
-// that hasn't been migrated yet surfaces an actionable message instead of raw constraint
-// internals.
 const isDuplicatePhoneError = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') return false;
   const e = error as { code?: string | null; message?: string | null; details?: string | null };
@@ -387,8 +311,6 @@ const isDuplicatePhoneError = (error: unknown): boolean => {
   return text.includes('phone_number') || text.includes('customers_phone_number_key');
 };
 
-// Friendly message used when a duplicate phone write slips through; the server log still
-// receives the full structured error via logDatabaseError before this throw.
 const DUPLICATE_PHONE_MESSAGE =
   'A customer with this phone number already exists. Please modify the phone number or adjust database constraints.';
 
@@ -399,22 +321,24 @@ const formatCustomerWriteError = (error: unknown): string =>
 export async function createCustomer(payload: CustomerPayload) {
   const supabase = await createClient();
 
-  // Geocode the delivery address if present
-  const coords = payload.delivery_address
-    ? await geocodeAddress(payload.delivery_address)
-    : null;
-  if (coords) {
-    payload.delivery_lat = coords.lat;
-    payload.delivery_lng = coords.lng;
+  // Geocode address automatically if present
+  if (payload.delivery_address && !payload.is_pickup) {
+    try {
+      const coords = await geocodeAddress(payload.delivery_address);
+      if (coords) {
+        payload.delivery_lat = coords.lat;
+        payload.delivery_lng = coords.lng;
+      }
+    } catch (e) {
+      console.warn('[createCustomer] Geocoding skipped:', e);
+    }
   }
 
   const normalized = normalizeCustomerPayload(payload);
 
-  // Retry loop strips optional columns (pronthi_count / pickup columns) that may not
-  // exist yet when a migration hasn't been applied to the target database.
   const attemptInsert = async (row: CustomerPayload): Promise<Record<string, unknown> | null> => {
     let current = { ...row };
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       const { data, error } = await supabase
         .from('customers')
         .insert([current])
@@ -422,64 +346,58 @@ export async function createCustomer(payload: CustomerPayload) {
         .single();
       if (!error) return data;
       if (isPronthiColumnMissing(error)) {
-        console.warn('Database schema missing pronthi_count, retrying without pronthi_count...');
         current = stripPronthiCount(current);
         continue;
       }
+      if (isCoordinatesColumnMissing(error)) {
+        current = stripCoordinates(current);
+        continue;
+      }
       if (isPickupColumnMissing(error)) {
-        console.warn(
-          'Database schema is missing is_pickup/pickup_days — retrying without them. ' +
-          'Run supabase/migrations/00011_add_pickup_days.sql to persist per-day pickup data.'
-        );
         current = stripPickupColumns(current);
         continue;
       }
       if (isReferredByColumnMissing(error)) {
-        console.warn(
-          'Database schema is missing referred_by — retrying without it. ' +
-          'Run supabase/migrations/00012_add_referred_by.sql to persist referral sources.'
-        );
         current = stripReferredByColumn(current);
         continue;
       }
-      // Surface every field of the underlying Postgres error (code / message / details /
-      // hint) in the server log AND in the error rethrown to the client alert/toast.
       logDatabaseError('createCustomer.insert', error);
       throw new Error(formatCustomerWriteError(error));
     }
     throw new Error('Customer insert failed after stripping optional schema columns.');
   };
 
-  // Returns the created row so the client can prepend it at index 0 and highlight it.
   const created = (await attemptInsert(normalized)) ?? null;
   revalidatePath('/admin/customers');
   revalidatePath('/prep');
+  revalidatePath('/admin/deliveries');
   return created;
 }
 
 // 2. UPDATE CUSTOMER
-// Returns the refreshed Supabase row (or null) so callers can patch local UI state
-// immediately instead of racing router.refresh(). pickup_days is persisted as-is on the
-// normal path; it is only stripped on a retry when the DB schema predates migration 00011.
 export async function updateCustomer(
   id: string,
   payload: CustomerPayload
 ): Promise<Record<string, unknown> | null> {
   const supabase = await createClient();
 
-  // Geocode the delivery address if present
-  const coords = payload.delivery_address
-    ? await geocodeAddress(payload.delivery_address)
-    : null;
-  if (coords) {
-    payload.delivery_lat = coords.lat;
-    payload.delivery_lng = coords.lng;
+  // Geocode address automatically if present
+  if (payload.delivery_address && !payload.is_pickup) {
+    try {
+      const coords = await geocodeAddress(payload.delivery_address);
+      if (coords) {
+        payload.delivery_lat = coords.lat;
+        payload.delivery_lng = coords.lng;
+      }
+    } catch (e) {
+      console.warn('[updateCustomer] Geocoding skipped:', e);
+    }
   }
 
   const normalized = normalizeCustomerPayload(payload);
 
   let current = { ...normalized };
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const { data, error } = await supabase
       .from('customers')
       .update(current)
@@ -487,35 +405,27 @@ export async function updateCustomer(
       .select('*')
       .maybeSingle();
     if (!error) {
-      // Invalidate the customers table AND the Prep manifest (both consume pickup flags).
       revalidatePath('/admin/customers');
       revalidatePath('/prep');
-      // Return the refreshed row so the drawer/list reflect the save immediately.
+      revalidatePath('/admin/deliveries');
       return data;
     }
     if (isPronthiColumnMissing(error)) {
-      console.warn('Database schema missing pronthi_count, retrying without pronthi_count...');
       current = stripPronthiCount(current);
       continue;
     }
+    if (isCoordinatesColumnMissing(error)) {
+      current = stripCoordinates(current);
+      continue;
+    }
     if (isPickupColumnMissing(error)) {
-      console.warn(
-        'Database schema is missing is_pickup/pickup_days — retrying without them. ' +
-        'Run supabase/migrations/00011_add_pickup_days.sql to persist per-day pickup data.'
-      );
       current = stripPickupColumns(current);
       continue;
     }
     if (isReferredByColumnMissing(error)) {
-      console.warn(
-        'Database schema is missing referred_by — retrying without it. ' +
-        'Run supabase/migrations/00012_add_referred_by.sql to persist referral sources.'
-      );
       current = stripReferredByColumn(current);
       continue;
     }
-    // Surface every field of the underlying Postgres error (code / message / details /
-    // hint) in the server log AND in the error rethrown to the client alert/toast.
     logDatabaseError('updateCustomer.update', error);
     throw new Error(formatCustomerWriteError(error));
   }
@@ -528,14 +438,10 @@ export async function deleteCustomer(id: string) {
   const { error } = await supabase.from('customers').delete().eq('id', id);
   if (error) throw error;
   revalidatePath('/admin/customers');
+  revalidatePath('/admin/deliveries');
 }
 
 // 4. PAUSE CUSTOMER SERVICE
-// lastServiceDate = the customer's last tiffin day (YYYY-MM-DD).
-//   • Today or earlier → pause immediately.
-//   • Future date → stays active through that date (the prep manifest still shows the
-//     customer and marks it LAST TIFFIN), then pauses automatically the following day via
-//     applyScheduledStatusTransitions.
 export async function pauseCustomer(id: string, lastServiceDate: string, endDate: string | null) {
   const effectiveDate =
     (lastServiceDate || serverDateKey()).trim().slice(0, 10) || serverDateKey();
@@ -545,7 +451,6 @@ export async function pauseCustomer(id: string, lastServiceDate: string, endDate
     id,
     isScheduled
       ? {
-        // Status stays active; only the schedule + optional resume window are recorded.
         pause_start_date: null,
         pause_end_date: endDate,
         scheduled_cancel_date: effectiveDate,
@@ -566,10 +471,6 @@ export async function pauseCustomer(id: string, lastServiceDate: string, endDate
 }
 
 // 5. CANCEL CUSTOMER SERVICE
-// cancelledAt is the requested effective time; its date part is the "Last Service Date".
-//   • Today or earlier → cancel immediately.
-//   • Future date → stays active through that date (LAST TIFFIN on the manifest), then
-//     cancels automatically the following day via applyScheduledStatusTransitions.
 export async function cancelCustomer(id: string, reason: string | null, cancelledAt?: string | null) {
   const effective = cancelledAt && cancelledAt.trim() ? cancelledAt : new Date().toISOString();
   const effectiveDate = effective.slice(0, 10);
@@ -579,7 +480,6 @@ export async function cancelCustomer(id: string, reason: string | null, cancelle
     id,
     isScheduled
       ? {
-        // Status stays active; keep the reason so it is shown once the cancel applies.
         cancellation_reason: reason,
         cancelled_at: null,
         scheduled_cancel_date: effectiveDate,
@@ -599,10 +499,7 @@ export async function cancelCustomer(id: string, reason: string | null, cancelle
   revalidatePath('/prep');
 }
 
-// 5b. APPLY DUE SCHEDULED STATUS CHANGES (idempotent — no cron required)
-// Flips every customer whose scheduled_cancel_date has already passed to their scheduled
-// status ('cancelled' | 'paused') and clears the schedule columns. Called when the prep
-// manifest and the customers table load so the kitchen always sees current statuses.
+// 5b. APPLY DUE SCHEDULED STATUS CHANGES
 export async function applyScheduledStatusTransitions(): Promise<number> {
   const supabase = await createClient();
   const today = serverDateKey();
@@ -614,10 +511,7 @@ export async function applyScheduledStatusTransitions(): Promise<number> {
     .lt('scheduled_cancel_date', today);
 
   if (error) {
-    if (isScheduledColumnMissing(error)) {
-      console.warn('[applyScheduledStatusTransitions] scheduled columns not present yet — nothing to do.');
-      return 0;
-    }
+    if (isScheduledColumnMissing(error)) return 0;
     console.error('Database scheduled-status transition read error:', error);
     return 0;
   }
@@ -634,9 +528,6 @@ export async function applyScheduledStatusTransitions(): Promise<number> {
       scheduledStatus === 'cancelled'
         ? {
           subscription_status: 'cancelled',
-          // Legacy convenience flag: some `customers` schemas carry an is_active
-          // boolean alongside subscription_status. Cleared here when present; the
-          // missing-column retry below strips it when the column does not exist.
           is_active: false,
           cancelled_at: new Date(`${scheduledDate}T00:00:00`).toISOString(),
           scheduled_cancel_date: null,
@@ -654,8 +545,6 @@ export async function applyScheduledStatusTransitions(): Promise<number> {
       await supabase.from('customers').update(payload).eq('id', row.id)
     ).error;
 
-    // is_active is optional (no migration creates it) — retry without it so a missing
-    // legacy column never blocks the rollover itself.
     if (updateError && isMissingColumnError(updateError, ['is_active'])) {
       const withoutIsActive = { ...payload };
       delete withoutIsActive.is_active;
@@ -664,20 +553,13 @@ export async function applyScheduledStatusTransitions(): Promise<number> {
       ).error;
     }
 
-    if (updateError) {
-      console.error(`[applyScheduledStatusTransitions] failed to transition customer ${row.id}:`, updateError);
-    } else {
-      transitioned++;
-    }
+    if (!updateError) transitioned++;
   }
 
   return transitioned;
 }
 
-// 5c. CLEAR A PENDING SCHEDULED CANCELLATION (Undo)
-// Removes the pending schedule so the customer keeps being served and no automatic
-// transition runs. subscription_status is intentionally untouched: scheduling never
-// changed it (the customer is still active through their last tiffin day).
+// 5c. CLEAR PENDING SCHEDULED CANCELLATION
 export async function clearScheduledCancellation(customerId: string) {
   await runCustomerStatusUpdate(
     customerId,
@@ -711,7 +593,7 @@ export async function resumeCustomer(id: string) {
   revalidatePath('/prep');
 }
 
-// 6b. RENEW CREDIT CYCLE (payment + reset)
+// 6b. RENEW CREDIT CYCLE
 export async function renewCustomerCycle(customerId: string) {
   const supabase = await createClient();
 
@@ -725,9 +607,7 @@ export async function renewCustomerCycle(customerId: string) {
 
   const used = cust.used_credits || 0;
   const total = cust.total_tiffin_credits || 20;
-  // Grace tiffins consumed beyond the cycle (used - total).
   const graceUsed = Math.max(0, used - total);
-  // Carry the grace over as the new cycle's used count, capped by the plan total.
   const nextUsed = Math.min(graceUsed, 20);
 
   const { error } = await supabase
@@ -750,14 +630,14 @@ export async function renewCustomerCycle(customerId: string) {
   revalidatePath('/admin/deliveries');
 }
 
-// 6c. UPGRADE PLAN (top-up credits, keeps used credits + profile data intact)
+// 6c. UPGRADE PLAN
 export async function upgradeCustomerPlan(customerId: string, newTier: 'weekly' | 'monthly') {
   const supabase = await createClient();
 
   const credits = TIER_CREDITS[newTier];
   if (!credits) throw new Error('Unknown plan tier');
 
-  const { data: cust, error: fetchError } = await supabase
+  const { data: cust } = await supabase
     .from('customers')
     .select('used_credits')
     .eq('id', customerId)
@@ -785,7 +665,7 @@ export async function upgradeCustomerPlan(customerId: string, newTier: 'weekly' 
   revalidatePath('/admin/deliveries');
 }
 
-// 7. UPDATE CANCELLATION DETAILS (date + reason only — never touches meal/carb prefs)
+// 7. UPDATE CANCELLATION DETAILS
 export async function updateCancellationDetails(
   id: string,
   cancelledAt: string,
@@ -811,7 +691,7 @@ export async function updateCancellationDetails(
   revalidatePath('/prep');
 }
 
-// 8. REACTIVATE CANCELLED CUSTOMER SERVICE
+// 8. REACTIVATE CANCELLED CUSTOMER
 export async function reactivateCustomer(id: string) {
   await runCustomerStatusUpdate(
     id,
@@ -827,9 +707,7 @@ export async function reactivateCustomer(id: string) {
   revalidatePath('/prep');
 }
 
-// 8b. UPDATE MEAL CONFIG FROM THE PREP TAP-TO-EDIT QUICK SHEET
-// Scoped partial update — only meal-config columns are ever touched, so the
-// delivery schedule / plan tier / credit ledger can never be reset by this path.
+// 8b. UPDATE MEAL CONFIG QUICK SHEET
 export type MealConfigPayload = {
   meal_type?: 'Veg' | 'Non-veg';
   portion_size?: string;
@@ -837,9 +715,6 @@ export type MealConfigPayload = {
   pronthi_count?: number;
   rice_count?: string;
   dietary_notes?: string | null;
-  // Curry distribution sync: delivery_instructions carries the plain daily side-count
-  // text the kitchen/prep parsers read, while is_custom_curry + curry_config keep the
-  // structured weekly (M/W/F + T/Th) profile in sync with the /admin/customers editor.
   delivery_instructions?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
@@ -853,8 +728,7 @@ export async function updateCustomerMealConfig(id: string, config: MealConfigPay
     payload.meal_type = config.meal_type === 'Veg' ? 'Veg' : 'Non-veg';
   }
   if (config.portion_size !== undefined) {
-    const portion = String(config.portion_size || '').trim();
-    payload.portion_size = portion || 'RG';
+    payload.portion_size = String(config.portion_size || '').trim() || 'RG';
   }
   if (config.roti_count !== undefined) {
     const roti = Number(config.roti_count);
@@ -865,16 +739,13 @@ export async function updateCustomerMealConfig(id: string, config: MealConfigPay
     payload.pronthi_count = Number.isFinite(pronthi) ? Math.max(0, Math.trunc(pronthi)) : 0;
   }
   if (config.rice_count !== undefined) {
-    const rice = String(config.rice_count || '').trim();
-    payload.rice_count = rice || 'None';
+    payload.rice_count = String(config.rice_count || '').trim() || 'None';
   }
   if (config.dietary_notes !== undefined) {
-    const notes = String(config.dietary_notes || '').trim();
-    payload.dietary_notes = notes || null;
+    payload.dietary_notes = String(config.dietary_notes || '').trim() || null;
   }
   if (config.delivery_instructions !== undefined) {
-    const instructions = String(config.delivery_instructions || '').trim();
-    payload.delivery_instructions = instructions || null;
+    payload.delivery_instructions = String(config.delivery_instructions || '').trim() || null;
   }
   if (config.is_custom_curry !== undefined) {
     payload.is_custom_curry = config.is_custom_curry === true;
@@ -900,10 +771,9 @@ export async function updateCustomerMealConfig(id: string, config: MealConfigPay
   revalidatePath('/admin/customers');
 }
 
-// 9. GET CUSTOMER COUNTS BY STATUS
+// 9. GET CUSTOMER COUNTS
 export async function getCustomerCounts() {
   const supabase = await createClient();
-
   const { data: all } = await supabase.from('customers').select('subscription_status');
 
   if (!all) return { total: 0, active: 0, paused: 0, cancelled: 0 };
@@ -916,7 +786,7 @@ export async function getCustomerCounts() {
   };
 }
 
-// 10. ADDRESS SUGGESTIONS WRAPPER
+// 10. ADDRESS SEARCH
 export async function searchAddress(query: string) {
   try {
     const res = await fetch(
@@ -929,13 +799,44 @@ export async function searchAddress(query: string) {
       }
     );
     if (!res.ok) throw new Error(`OSM status: ${res.status}`);
-    const data = await res.json();
-    return data;
+    return await res.json();
   } catch (error) {
     console.error("Server-side geocoding failed securely:", error);
     return [];
   }
-}// 11. CUSTOMER AUDIT ACTIVITY LOGS
+}
+
+// 11. ONE-TIME BATCH COORDINATES BACKFILL
+export async function backfillExistingCustomerCoordinates(): Promise<{ updated: number; total: number }> {
+  const supabase = await createClient();
+  const { data: customers } = await supabase
+    .from('customers')
+    .select('id, delivery_address, delivery_lat, delivery_lng')
+    .is('delivery_lat', null);
+
+  if (!customers || customers.length === 0) return { updated: 0, total: 0 };
+
+  let updatedCount = 0;
+  for (const c of customers) {
+    if (!c.delivery_address || c.delivery_address.toLowerCase().includes('pickup')) continue;
+
+    const coords = await geocodeAddress(c.delivery_address);
+    if (coords) {
+      await supabase
+        .from('customers')
+        .update({ delivery_lat: coords.lat, delivery_lng: coords.lng })
+        .eq('id', c.id);
+      updatedCount++;
+    }
+    // Respect Nominatim 1 req/sec rate limit
+    await new Promise(r => setTimeout(r, 1100));
+  }
+
+  revalidatePath('/admin/deliveries');
+  return { updated: updatedCount, total: customers.length };
+}
+
+// 12. CUSTOMER AUDIT ACTIVITY LOGS
 export type CustomerActivityLog = {
   id: string;
   customer_id: string;
@@ -948,9 +849,7 @@ export type CustomerActivityLog = {
 
 export async function getCustomerActivityLogs(customerId: string): Promise<CustomerActivityLog[]> {
   try {
-    const { createClient } = await import('@/utils/supabase/server');
     const supabase = await createClient();
-
     const { data, error } = await supabase
       .from('customer_activity_logs')
       .select('*')
@@ -961,23 +860,21 @@ export async function getCustomerActivityLogs(customerId: string): Promise<Custo
       console.error('[Logs] Failed to fetch customer activity logs:', error);
       return [];
     }
-
     return (data as CustomerActivityLog[]) || [];
   } catch (err) {
     console.error('[Logs] Error fetching logs:', err);
     return [];
   }
 }
+
 export async function addManualCustomerLog(params: {
   customerId: string;
   summary: string;
   actionType?: string;
-  date?: string; // YYYY-MM-DD or ISO string
+  date?: string;
 }) {
   try {
-    const { createClient } = await import('@/utils/supabase/server');
     const supabase = await createClient();
-
     const timestamp = params.date
       ? new Date(`${params.date}T12:00:00`).toISOString()
       : new Date().toISOString();
