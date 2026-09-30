@@ -4,6 +4,7 @@ import { useMemo, useState, useEffect, useSyncExternalStore, useRef } from 'reac
 import { useRouter } from 'next/navigation';
 import PrepDatePicker from '@/app/components/PrepDatePicker';
 import { getDeliveryDateData } from './actions';
+import { formatDeliveryMessage } from '@/app/utils/messageTemplate';
 import { 
   Package, 
   BookOpen, 
@@ -305,6 +306,15 @@ export default function DeliveriesClient({
   const [copiedNote, setCopiedNote] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Automated Driver Notification Templates State
+  const [msgTemplates, setMsgTemplates] = useState<{
+    delivery_message_template: string;
+    last_day_message_template: string;
+  }>({
+    delivery_message_template: 'Hi {customer_name}, your tiffin has been delivered! Enjoy your meal!',
+    last_day_message_template: 'Hi {customer_name}, your tiffin has been delivered! Today is your final delivery for this cycle. Please leave your empty tiffin bag out for collection.',
+  });
+
   // Drag and Drop State
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
@@ -321,12 +331,17 @@ export default function DeliveriesClient({
         const { createClient } = await import('@/utils/supabase/client');
         const supabase = createClient();
 
-        const [closuresRes, skipsRes] = await Promise.all([
+        const [closuresRes, skipsRes, settingsRes] = await Promise.all([
           supabase.from('kitchen_closures').select('closure_date'),
           supabase
             .from('customer_daily_overrides')
             .select('customer_id, override_date')
             .eq('is_skipped', true),
+          supabase
+            .from('app_settings')
+            .select('delivery_message_template, last_day_message_template')
+            .eq('id', 'default')
+            .maybeSingle(),
         ]);
 
         if (isMountedFlag) {
@@ -344,6 +359,16 @@ export default function DeliveriesClient({
               }
             });
             setSkipsMap(map);
+          }
+          if (settingsRes?.data) {
+            setMsgTemplates({
+              delivery_message_template:
+                settingsRes.data.delivery_message_template ||
+                'Hi {customer_name}, your tiffin has been delivered! Enjoy your meal!',
+              last_day_message_template:
+                settingsRes.data.last_day_message_template ||
+                'Hi {customer_name}, your tiffin has been delivered! Today is your final delivery for this cycle. Please leave your empty tiffin bag out for collection.',
+            });
           }
         }
       } catch (err) {
@@ -1491,65 +1516,95 @@ export default function DeliveriesClient({
             </div>
 
             {/* Notification & Deduct Actions */}
-            <div className="p-4 space-y-3">
-              <p className="text-xs text-gray-500 font-semibold">
-                Select an option to notify customer and mark delivery complete:
-              </p>
+            {(() => {
+              const used = proofCustomer.used_credits || 0;
+              const total = proofCustomer.total_tiffin_credits || 0;
+              const remaining = Math.max(0, total - used);
+              const isLastDay =
+                remaining <= 1 ||
+                (proofCustomer.cycle_end_date && proofCustomer.cycle_end_date.slice(0, 10) === selectedDateKey);
 
-              {proofCustomer.phone_number ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {/* WhatsApp + Auto-Complete */}
-                  <a
-                    href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}&text=${encodeURIComponent(
-                      `Hi ${proofCustomer.full_name}, your tiffin has been delivered! Enjoy your meal!`
-                    )}`}
+              const rawTemplate = isLastDay
+                ? msgTemplates.last_day_message_template
+                : msgTemplates.delivery_message_template;
+
+              const formattedText = formatDeliveryMessage(rawTemplate, {
+                customer_name: proofCustomer.full_name,
+                address: formatStreetOnlyAddress(proofCustomer.delivery_address),
+                remaining_meals: remaining,
+              });
+
+              return (
+                <div className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-gray-500 font-semibold">
+                      Select an option to notify customer and mark delivery complete:
+                    </p>
+                    {isLastDay && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase bg-rose-100 text-rose-800 border border-rose-300">
+                        Final Delivery
+                      </span>
+                    )}
+                  </div>
+
+                  {proofCustomer.phone_number ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {/* WhatsApp + Auto-Complete */}
+                      <a
+                        href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}&text=${encodeURIComponent(formattedText)}`}
+                        onClick={() => {
+                          const id = proofCustomer.id;
+                          setProofCustomer(null);
+                          handleMarkDelivered(id);
+                        }}
+                        className="h-12 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white"
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        <span>WhatsApp &amp; Complete</span>
+                      </a>
+
+                      {/* SMS + Auto-Complete */}
+                      <a
+                        href={`sms:${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}?&body=${encodeURIComponent(formattedText)}`}
+                        onClick={() => {
+                          const id = proofCustomer.id;
+                          setProofCustomer(null);
+                          handleMarkDelivered(id);
+                        }}
+                        className="h-12 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-blue-600 hover:bg-blue-700 text-white"
+                      >
+                        <Phone className="w-4 h-4" />
+                        <span>SMS &amp; Complete</span>
+                      </a>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-medium">
+                      ⚠️ No phone number saved for this customer.
+                    </p>
+                  )}
+
+                  {/* Template Live Preview */}
+                  <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-200/60 text-[11.5px] text-gray-600 leading-snug">
+                    <span className="font-bold text-gray-400 not-italic uppercase text-[9.5px] block mb-0.5">Template Preview:</span>
+                    <p className="italic">&quot;{formattedText}&quot;</p>
+                  </div>
+
+                  {/* Complete without Sending Notification */}
+                  <button
+                    type="button"
                     onClick={() => {
                       const id = proofCustomer.id;
                       setProofCustomer(null);
                       handleMarkDelivered(id);
                     }}
-                    className="h-12 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white"
+                    className="w-full h-11 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer mt-1"
                   >
-                    <MessageSquare className="w-4 h-4" />
-                    <span>WhatsApp &amp; Complete</span>
-                  </a>
-
-                  {/* SMS + Auto-Complete */}
-                  <a
-                    href={`sms:${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}?&body=${encodeURIComponent(
-                      `Hi ${proofCustomer.full_name}, your tiffin has been delivered! Enjoy your meal!`
-                    )}`}
-                    onClick={() => {
-                      const id = proofCustomer.id;
-                      setProofCustomer(null);
-                      handleMarkDelivered(id);
-                    }}
-                    className="h-12 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-blue-600 hover:bg-blue-700 text-white"
-                  >
-                    <Phone className="w-4 h-4" />
-                    <span>SMS &amp; Complete</span>
-                  </a>
+                    <Check className="w-4 h-4 text-emerald-600 stroke-[3]" />
+                    <span>Mark Delivered Without Notifying</span>
+                  </button>
                 </div>
-              ) : (
-                <p className="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-medium">
-                  ⚠️ No phone number saved for this customer.
-                </p>
-              )}
-
-              {/* Complete without Sending Notification */}
-              <button
-                type="button"
-                onClick={() => {
-                  const id = proofCustomer.id;
-                  setProofCustomer(null);
-                  handleMarkDelivered(id);
-                }}
-                className="w-full h-11 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer mt-1"
-              >
-                <Check className="w-4 h-4 text-emerald-600 stroke-[3]" />
-                <span>Mark Delivered Without Notifying</span>
-              </button>
-            </div>
+              );
+            })()}
           </div>
         </div>
       )}

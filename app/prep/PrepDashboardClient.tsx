@@ -18,7 +18,9 @@ import {
   reloadSchemaCache,
   getDailyManifestSnapshot,
   saveDailyManifestSnapshot,
+  getCustomerActiveSkipRanges,
   type DailyManifestSnapshotRow,
+  type CustomerSkipWindow,
 } from './actions';
 import type { Recipe, DailyOverrideRow, RenewCustomerSubscriptionResult } from './actions';
 import PrepDatePicker from '@/app/components/PrepDatePicker';
@@ -126,12 +128,14 @@ const calculateTargetLastDay = (
   totalMeals: number | null | undefined,
   deliverySchedule?: string | null,
   closureDates?: Set<string> | Map<string, string> | null,
+  customerSkips?: Set<string> | null,
 ): string | null =>
   computeCycleEndDate({
     startDate: startDateStr,
     totalMeals,
     deliveryDays: resolveDeliveryDayNumbers(deliverySchedule),
     closureDates,
+    customerSkips,
   });
 
 const resolveCustomerTotalMeals = (customer: Customer): number => {
@@ -222,13 +226,15 @@ const getDeliveryScheduleStatus = (
 
   if (!dayMatches) return false;
 
-  const totalMeals = resolveCustomerTotalMeals(customer);
-  const computedEnd = calculateTargetLastDay(
-    customer.start_date,
-    totalMeals,
-    customer.delivery_schedule
-  );
   const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
+  const totalMeals = resolveCustomerTotalMeals(customer);
+  const computedEnd = !explicitEnd && customer.start_date
+    ? calculateTargetLastDay(
+        customer.start_date,
+        totalMeals,
+        customer.delivery_schedule
+      )
+    : null;
   const effectiveEnd = explicitEnd || computedEnd;
 
   const scheduledCancel = customer.scheduled_cancel_date;
@@ -862,6 +868,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
   const [schemaReloading, setSchemaReloading] = useState(false);
   const [isLapsedTrayOpen, setIsLapsedTrayOpen] = useState(false);
+  const [skipRanges, setSkipRanges] = useState<Record<string, CustomerSkipWindow>>({});
   const router = useRouter();
 
 const selectedDateKey = toLocalDateKey(selectedDate);
@@ -1347,13 +1354,20 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
         const { createClient } = await import('@/utils/supabase/client');
         const supabase = createClient();
 
-        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes] = await Promise.all([
+        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes, skipRangesData] = await Promise.all([
           getDailyOverrides(selectedDateKey),
           fetchDailyMenu(selectedDateKey),
           getDailyMenuSelection(selectedDateKey),
           getDailyManifestSnapshot(selectedDateKey),
           supabase.from('customer_deliveries').select('customer_id').eq('delivery_date', selectedDateKey),
+          getCustomerActiveSkipRanges(selectedDateKey),
         ]);
+
+        if (skipRangesData) {
+          setSkipRanges(skipRangesData);
+        } else {
+          setSkipRanges({});
+        }
 
         if (cancelled) return;
 
@@ -1572,7 +1586,19 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
   }, [activeDay]);
 
   const isVegDay = !isChickenDay;
-
+// Pre-aggregate customer skip dates across all loaded overrides for cycle projection
+  const customerSkipsMap = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    Object.entries(overridesByDate).forEach(([dayKey, customerRows]) => {
+      Object.entries(customerRows).forEach(([cId, row]) => {
+        if (row.is_skipped) {
+          if (!map.has(cId)) map.set(cId, new Set());
+          map.get(cId)!.add(dayKey);
+        }
+      });
+    });
+    return map;
+  }, [overridesByDate]);
   const mergedCustomers = useMemo(() => {
     return initialCustomers.map(customer => {
       const edit = localEdits[customer.id];
@@ -1602,14 +1628,16 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
       const status = getDeliveryScheduleStatus(customer, activeDay, selectedDateKey, hasLog);
       if (!status) return;
 
-      const totalMeals = resolveCustomerTotalMeals(customer);
-      const computedEnd = calculateTargetLastDay(
-        customer.start_date,
-        totalMeals,
-        customer.delivery_schedule,
-        closuresMap
-      );
       const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
+      const totalMeals = resolveCustomerTotalMeals(customer);
+      const computedEnd = !explicitEnd && customer.start_date
+        ? calculateTargetLastDay(
+            customer.start_date,
+            totalMeals,
+            customer.delivery_schedule,
+            closuresMap
+          )
+        : null;
       const effectiveEnd = explicitEnd || computedEnd || '';
 
       // If customer has a log on this date but their renewed start_date is in the future,
@@ -2215,15 +2243,17 @@ const manifestCustomers = useMemo(() => {
                       }
                     }
 
+                    const custSkips = customerSkipsMap.get(customer.id);
                     const computedEnd = calculateTargetLastDay(
                       customer.start_date,
                       totalMeals,
                       customer.delivery_schedule,
-                      closuresMap
+                      closuresMap,
+                      custSkips
                     );
                     const isComputedEnd = computedEnd === normalizedSelected;
 
-                    const isLastDay = isExplicitEnd || isComputedEnd;
+                    const isLastDay = (isExplicitEnd || isComputedEnd) && !customer.isSkipped;
                     const alertText = buildAlertSummary({
                       isLastDay,
                       customRule,
@@ -2651,8 +2681,6 @@ const manifestCustomers = useMemo(() => {
               manifestCustomers.map(customer => {
                 const normalizedSelected = selectedDateKey.slice(0, 10);
                 const scheduledDate = customer.scheduled_cancel_date;
-                const explicitEnd = customer.cycle_end_date?.slice(0, 10);
-                const isExplicitEnd = explicitEnd === normalizedSelected || scheduledDate === selectedDateKey;
 
                 let totalMeals = typeof customer.total_tiffin_credits === 'number' && customer.total_tiffin_credits > 0
                   ? customer.total_tiffin_credits
@@ -2671,16 +2699,25 @@ const manifestCustomers = useMemo(() => {
                   }
                 }
 
-                const computedEnd = customer.start_date
+                // Rely on explicit database cycle_end_date first; only walk dates if missing
+                const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
+                const custSkips = customerSkipsMap.get(customer.id);
+                const computedEnd = !explicitEnd && customer.start_date
                   ? calculateTargetLastDay(
-                    customer.start_date,
-                    totalMeals,
-                    customer.delivery_schedule,
-                    closuresMap
-                  )
+                      customer.start_date,
+                      totalMeals,
+                      customer.delivery_schedule,
+                      closuresMap,
+                      custSkips
+                    )
                   : null;
-                const isComputedEnd = computedEnd === normalizedSelected;
-                const isLastDay = isExplicitEnd || isComputedEnd;
+                const effectiveTargetEnd = explicitEnd || computedEnd;
+
+                // LAST DAY triggers strictly on the single true final day, provided today is delivered
+                const isLastDay =
+                  !customer.isSkipped &&
+                  !customer.isExpiredRenewalPending &&
+                  (effectiveTargetEnd === normalizedSelected || scheduledDate === selectedDateKey);
 
                 const activeOverride = dailyOverrides[customer.id];
                 const baseRow = baseCustomerById.get(customer.id);
@@ -2826,17 +2863,35 @@ const manifestCustomers = useMemo(() => {
 
                     {/* Bottom Row: Kitchen Overrides & Notes */}
                     {customer.isSkipped ? (
-                      <div className="flex items-center justify-between pt-1">
-                        <span className="inline-flex items-center gap-1 text-[11px] font-black uppercase text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded">
-                          <Ban className="w-3 h-3" /> SKIPPED
-                        </span>
+                      <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
+                        <div className="inline-flex items-center gap-1.5 text-[10.5px] font-bold text-amber-900 bg-amber-100/90 border border-amber-300 px-2 py-0.5 rounded flex-wrap">
+                          <Ban className="w-3 h-3 text-amber-700 shrink-0" />
+                          <span className="font-black uppercase">SKIPPED</span>
+                          {skipRanges[customer.id] && skipRanges[customer.id].count > 1 ? (
+                            <>
+                              <span className="text-amber-400">·</span>
+                              <span>
+                                {skipRanges[customer.id].count}d ({formatShortDate(skipRanges[customer.id].start)}–{formatShortDate(skipRanges[customer.id].end)})
+                              </span>
+                              <span className="text-amber-400">·</span>
+                              <span className="text-emerald-800 font-bold">
+                                Resumes {formatShortDate(skipRanges[customer.id].resumes)}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-amber-400">·</span>
+                              <span className="font-medium text-amber-800">1 Day Only</span>
+                            </>
+                          )}
+                        </div>
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             handleToggleSkip(customer.id, false);
                           }}
-                          className="text-[11px] font-bold text-amber-800 bg-white border border-amber-300 px-2.5 py-1 rounded hover:bg-amber-50"
+                          className="text-[11px] font-bold text-amber-800 bg-white border border-amber-300 px-2.5 py-1 rounded hover:bg-amber-50 cursor-pointer shrink-0"
                         >
                           Undo
                         </button>
@@ -2901,8 +2956,6 @@ const manifestCustomers = useMemo(() => {
                   manifestCustomers.map(customer => {
                     const normalizedSelected = selectedDateKey.slice(0, 10);
                     const scheduledDate = customer.scheduled_cancel_date;
-                    const explicitEnd = customer.cycle_end_date?.slice(0, 10);
-                    const isExplicitEnd = explicitEnd === normalizedSelected || scheduledDate === selectedDateKey;
 
                     let totalMeals = typeof customer.total_tiffin_credits === 'number' && customer.total_tiffin_credits > 0
                       ? customer.total_tiffin_credits
@@ -2921,16 +2974,24 @@ const manifestCustomers = useMemo(() => {
                       }
                     }
 
-                    const computedEnd = customer.start_date
+                    // Rely on explicit database cycle_end_date first; only walk dates if missing
+                    const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
+                    const custSkips = customerSkipsMap.get(customer.id);
+                    const computedEnd = !explicitEnd && customer.start_date
                       ? calculateTargetLastDay(
-                        customer.start_date,
-                        totalMeals,
-                        customer.delivery_schedule,
-                        closuresMap
-                      )
+                          customer.start_date,
+                          totalMeals,
+                          customer.delivery_schedule,
+                          closuresMap,
+                          custSkips
+                        )
                       : null;
-                    const isComputedEnd = computedEnd === normalizedSelected;
-                    const isLastDay = isExplicitEnd || isComputedEnd;
+                    const effectiveTargetEnd = explicitEnd || computedEnd;
+
+                    const isLastDay =
+                      !customer.isSkipped &&
+                      !customer.isExpiredRenewalPending &&
+                      effectiveTargetEnd === normalizedSelected;
 
                     return (
                       <tr
@@ -3087,12 +3148,36 @@ const manifestCustomers = useMemo(() => {
                         <td className="pl-3 pr-6 py-2 align-top print:py-1 print:px-1.5 print:text-[11px]">
                           {(() => {
                             if (customer.isSkipped) {
+                              const range = skipRanges[customer.id];
+                              const formatRangeDay = (key: string) => {
+                                const d = new Date(`${key}T12:00:00`);
+                                return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                              };
+
                               return (
-                                <div className="flex items-center gap-1.5">
-                                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-100 text-amber-800 border border-amber-300 text-[10.5px] font-black tracking-wide uppercase whitespace-nowrap leading-none">
-                                    <Ban className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2} />
-                                    <span>SKIPPED</span>
-                                  </span>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-100/90 text-amber-900 border border-amber-300 text-[11px] font-bold leading-none shadow-2xs">
+                                    <Ban className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2.5} />
+                                    <span className="font-black uppercase tracking-wider">SKIPPED</span>
+                                    {range && range.count > 1 ? (
+                                      <>
+                                        <span className="text-amber-400">·</span>
+                                        <span>
+                                          {range.count} Days ({formatRangeDay(range.start)} → {formatRangeDay(range.end)})
+                                        </span>
+                                        <span className="text-amber-400">·</span>
+                                        <span className="text-emerald-800 font-black">
+                                          Resumes {formatRangeDay(range.resumes)}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <span className="text-amber-400">·</span>
+                                        <span className="font-medium text-amber-800">1 Day Only</span>
+                                      </>
+                                    )}
+                                  </div>
+
                                   <button
                                     type="button"
                                     onClick={event => {

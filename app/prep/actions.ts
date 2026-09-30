@@ -1842,3 +1842,99 @@ export async function saveDailyManifestSnapshot(
     return { success: false, message: err instanceof Error ? err.message : 'Failed to save snapshot' };
   }
 }
+
+export type CustomerSkipWindow = {
+  start: string;
+  end: string;
+  count: number;
+  resumes: string;
+};
+
+export async function getCustomerActiveSkipRanges(
+  anchorDateKey: string
+): Promise<Record<string, CustomerSkipWindow>> {
+  try {
+    const supabase = await createClient();
+
+    // Look backward up to 14 days and forward up to 30 days to capture contiguous skip ranges
+    const anchor = new Date(`${anchorDateKey}T12:00:00`);
+    const lookback = new Date(anchor);
+    lookback.setDate(anchor.getDate() - 14);
+    const lookahead = new Date(anchor);
+    lookahead.setDate(anchor.getDate() + 30);
+
+    const minDate = toLocalDateKey(lookback);
+    const maxDate = toLocalDateKey(lookahead);
+
+    const { data, error } = await supabase
+      .from('customer_daily_overrides')
+      .select('customer_id, override_date')
+      .eq('is_skipped', true)
+      .gte('override_date', minDate)
+      .lte('override_date', maxDate)
+      .order('override_date', { ascending: true });
+
+    if (error || !data) return {};
+
+    const datesByCustomer = new Map<string, string[]>();
+    data.forEach((row: { customer_id: string; override_date: string }) => {
+      const list = datesByCustomer.get(row.customer_id) || [];
+      list.push(row.override_date);
+      datesByCustomer.set(row.customer_id, list);
+    });
+
+    const results: Record<string, CustomerSkipWindow> = {};
+
+    datesByCustomer.forEach((dates, customerId) => {
+      // Only compute range if the customer is actually skipped on anchorDateKey
+      if (!dates.includes(anchorDateKey)) return;
+
+      const sorted = [...new Set(dates)].sort();
+
+      // Find the contiguous cluster of skip dates surrounding anchorDateKey
+      const anchorIdx = sorted.indexOf(anchorDateKey);
+      let startIdx = anchorIdx;
+      let endIdx = anchorIdx;
+
+      const isConsecutiveDeliveryDay = (d1Str: string, d2Str: string) => {
+        const d1 = new Date(`${d1Str}T12:00:00`);
+        const d2 = new Date(`${d2Str}T12:00:00`);
+        const diffDays = Math.round((d2.getTime() - d1.getTime()) / 86400000);
+        // Adjacent days (1 day diff) or across a weekend (Fri to Mon = 3 days diff)
+        return diffDays === 1 || (d1.getDay() === 5 && diffDays === 3);
+      };
+
+      // Expand left
+      while (startIdx > 0 && isConsecutiveDeliveryDay(sorted[startIdx - 1], sorted[startIdx])) {
+        startIdx--;
+      }
+      // Expand right
+      while (endIdx < sorted.length - 1 && isConsecutiveDeliveryDay(sorted[endIdx], sorted[endIdx + 1])) {
+        endIdx++;
+      }
+
+      const cluster = sorted.slice(startIdx, endIdx + 1);
+      const start = cluster[0];
+      const end = cluster[cluster.length - 1];
+
+      // Calculate next active weekday (resumption day)
+      const lastSkipDate = new Date(`${end}T12:00:00`);
+      const nextDay = new Date(lastSkipDate);
+      do {
+        nextDay.setDate(nextDay.getDate() + 1);
+      } while (nextDay.getDay() === 0 || nextDay.getDay() === 6);
+
+      results[customerId] = {
+        start,
+        end,
+        count: cluster.length,
+        resumes: toLocalDateKey(nextDay),
+      };
+    });
+
+    return results;
+  } catch (err) {
+    console.error('[getCustomerActiveSkipRanges] error:', err);
+    return {};
+  }
+}
