@@ -358,10 +358,12 @@ export default function DeliveriesClient({
 
   const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-  // Dynamic selected date (defaults to current date, selectable across weeks)
-  const [selectedDate, setSelectedDate] = useState<Date>(() =>
-  resolveNextActiveDeliveryDate(initialCustomers)
-);
+// Dynamic selected date (defaults to current calendar day)
+  const [selectedDate, setSelectedDate] = useState<Date>(() => {
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+    return today;
+  });
   const [activeLogs, setActiveLogs] = useState<DailyLog[]>(todayLogs);
   const [isDateSwitching, setIsDateSwitching] = useState(false);
 
@@ -1176,52 +1178,23 @@ export default function DeliveriesClient({
                         </p>
                       )}
 
-                      {/* Bottom Row: [WA] [SMS] [ Mark Delivered ] [Skip] */}
-                      <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center gap-1.5 sm:gap-2">
-                        {c.phone_number && (
-                          <>
-                            {/* WhatsApp 1-Tap Shortcut */}
-                            <a
-                              href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(c.phone_number)}&text=${encodeURIComponent(
-                                `Hi ${c.full_name}, your tiffin has been delivered! Enjoy your meal!`
-                              )}`}
-                              title="Send WhatsApp Delivery Notice"
-                              className="h-10 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs transition-colors cursor-pointer shrink-0"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" />
-                              <span>WA</span>
-                            </a>
-
-                            {/* SMS 1-Tap Fallback Shortcut */}
-                            <a
-                              href={`sms:${cleanPhoneNumberForWhatsApp(c.phone_number)}?&body=${encodeURIComponent(
-                                `Hi ${c.full_name}, your tiffin has been delivered! Enjoy your meal!`
-                              )}`}
-                              title="Send Direct SMS"
-                              className="h-10 px-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center shadow-xs transition-colors cursor-pointer shrink-0"
-                            >
-                              <span>SMS</span>
-                            </a>
-                          </>
-                        )}
-
-                        {/* Direct Database Action: Instant 0-delay click */}
+                      {/* Bottom Row: [ Mark Delivered ] [ Skip ] */}
+                      <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center gap-2">
                         <button
                           type="button"
                           disabled={busyId === c.id}
-                          onClick={() => handleMarkDelivered(c.id)}
-                          className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer min-w-0"
+                          onClick={() => setProofCustomer(c)}
+                          className="flex-1 h-11 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
                         >
                           <Check className="w-4 h-4 stroke-[3] shrink-0" />
-                          <span className="truncate">{busyId === c.id ? 'Saving…' : 'Mark Delivered'}</span>
+                          <span>Mark Delivered</span>
                         </button>
 
-                        {/* Skip Button */}
                         <button
                           type="button"
                           disabled={busyId === c.id}
                           onClick={() => handleLogSkip(c.id)}
-                          className="h-10 px-3 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
+                          className="h-11 px-4 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
                         >
                           Skip
                         </button>
@@ -1494,164 +1467,88 @@ export default function DeliveriesClient({
         </div>
       )}
 
-      {/* DELIVERY PROOF & MESSAGE SHEET */}
+      {/* DELIVERY COMPLETION MODAL */}
       {proofCustomer && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-2xs">
-          <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200">
-            <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-gray-50">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200">
+            {/* Header */}
+            <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-gray-50/70">
               <div className="min-w-0">
                 <h3 className="text-sm font-black text-gray-900 truncate capitalize">
-                  Confirm Delivery · {proofCustomer.full_name}
+                  Deliver to {proofCustomer.full_name}
                 </h3>
                 <p className="text-[11px] text-gray-500 truncate mt-0.5">
-                  {formatStreetOnlyAddress(proofCustomer.delivery_address)}
+                  📍 {formatStreetOnlyAddress(proofCustomer.delivery_address)}
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setProofCustomer(null);
-                  setPhotoPreview(null);
-                }}
-                className="w-8 h-8 rounded-full bg-gray-200/70 text-gray-600 flex items-center justify-center cursor-pointer"
+                onClick={() => setProofCustomer(null)}
+                className="w-8 h-8 rounded-full bg-gray-200/70 text-gray-600 flex items-center justify-center hover:bg-gray-300 transition-colors cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-4 overflow-y-auto space-y-4">
-              <div>
-                <label className="block text-[11px] font-bold uppercase text-gray-500 tracking-wider mb-2">
-                  1. Delivery Photo Proof
-                </label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  ref={fileInputRef}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      setPhotoPreview(URL.createObjectURL(file));
-                    }
-                  }}
-                  className="hidden"
-                />
+            {/* Notification & Deduct Actions */}
+            <div className="p-4 space-y-3">
+              <p className="text-xs text-gray-500 font-semibold">
+                Select an option to notify customer and mark delivery complete:
+              </p>
 
-                {photoPreview ? (
-                  <div className="relative rounded-xl overflow-hidden border border-gray-200 aspect-video bg-black flex items-center justify-center">
-                    <img src={photoPreview} alt="Delivery proof" className="w-full h-full object-cover" />
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="absolute bottom-2 right-2 px-3 py-1 bg-black/60 hover:bg-black/80 text-white text-xs font-bold rounded-lg backdrop-blur-xs flex items-center gap-1 cursor-pointer"
-                    >
-                      <Camera className="w-3.5 h-3.5" /> Retake
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="w-full py-6 border-2 border-dashed border-gray-300 hover:border-[#5D5FEF] bg-gray-50 hover:bg-[#F4F4FE] rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer transition-all"
+              {proofCustomer.phone_number ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {/* WhatsApp + Auto-Complete */}
+                  <a
+                    href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}&text=${encodeURIComponent(
+                      `Hi ${proofCustomer.full_name}, your tiffin has been delivered! Enjoy your meal!`
+                    )}`}
+                    onClick={() => {
+                      const id = proofCustomer.id;
+                      setProofCustomer(null);
+                      handleMarkDelivered(id);
+                    }}
+                    className="h-12 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white"
                   >
-                    <div className="w-10 h-10 rounded-full bg-white shadow-xs border border-gray-200 flex items-center justify-center text-[#5D5FEF]">
-                      <Camera className="w-5 h-5" />
-                    </div>
-                    <span className="text-xs font-bold text-gray-700">Take Doorstep Photo</span>
-                    <span className="text-[10.5px] text-gray-400">Opens your phone camera instantly</span>
-                  </button>
-                )}
-              </div>
+                    <MessageSquare className="w-4 h-4" />
+                    <span>WhatsApp &amp; Complete</span>
+                  </a>
 
-              {(() => {
-                const info = resolveCustomerChannel(proofCustomer.phone_number);
-                const messageText = `Hi ${proofCustomer.full_name}, your tiffin has been delivered! Enjoy your meal!`;
-                const actionUrl = buildMessagingUrl(info.channel, info.destination, messageText);
+                  {/* SMS + Auto-Complete */}
+                  <a
+                    href={`sms:${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}?&body=${encodeURIComponent(
+                      `Hi ${proofCustomer.full_name}, your tiffin has been delivered! Enjoy your meal!`
+                    )}`}
+                    onClick={() => {
+                      const id = proofCustomer.id;
+                      setProofCustomer(null);
+                      handleMarkDelivered(id);
+                    }}
+                    className="h-12 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    <Phone className="w-4 h-4" />
+                    <span>SMS &amp; Complete</span>
+                  </a>
+                </div>
+              ) : (
+                <p className="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-medium">
+                  ⚠️ No phone number saved for this customer.
+                </p>
+              )}
 
-                const channelLabel = 
-                  info.channel === 'whatsapp' ? 'WhatsApp' : 
-                  info.channel === 'messenger' ? 'Facebook Messenger' : 
-                  'Direct SMS';
-
-                const channelColor =
-                  info.channel === 'whatsapp' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' :
-                  info.channel === 'messenger' ? 'bg-blue-600 hover:bg-blue-700 text-white' :
-                  'bg-indigo-600 hover:bg-indigo-700 text-white';
-
-                return (
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase text-gray-500 tracking-wider mb-2">
-                      2. Notify Customer ({channelLabel})
-                    </label>
-
-                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs text-gray-700 space-y-2">
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="font-semibold text-gray-500">Destination:</span>
-                        <strong className="text-gray-900 font-mono">{info.destination || 'On file'}</strong>
-                      </div>
-                      <p className="text-[11.5px] italic text-gray-600 bg-white p-2 rounded-lg border border-gray-200/60 leading-snug">
-                        &quot;{messageText}&quot;
-                      </p>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      {/* 1. WhatsApp Button */}
-                      <a
-                        href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}&text=${encodeURIComponent(messageText)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={() => {
-                          if (typeof navigator !== 'undefined' && navigator.clipboard) {
-                            navigator.clipboard.writeText(messageText);
-                            setCopiedNote(true);
-                          }
-                        }}
-                        className="h-11 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white"
-                      >
-                        <MessageSquare className="w-4 h-4" />
-                        <span>WhatsApp</span>
-                      </a>
-
-                      {/* 2. Direct SMS Fallback Button */}
-                      <a
-                        href={`sms:${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}?&body=${encodeURIComponent(messageText)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={() => {
-                          if (typeof navigator !== 'undefined' && navigator.clipboard) {
-                            navigator.clipboard.writeText(messageText);
-                            setCopiedNote(true);
-                          }
-                        }}
-                        className="h-11 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors cursor-pointer bg-blue-600 hover:bg-blue-700 text-white"
-                      >
-                        <span>Direct SMS</span>
-                      </a>
-
-                      {/* 3. Complete and Deduct */}
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const customerId = proofCustomer.id;
-                          setProofCustomer(null);
-                          await handleMarkDelivered(customerId);
-                        }}
-                        className="h-11 px-2.5 bg-gray-900 hover:bg-black text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                      >
-                        <Check className="w-4 h-4" />
-                        <span>Complete &amp; Deduct</span>
-                      </button>
-                    </div>
-
-                    {copiedNote && (
-                      <p className="text-[10.5px] font-bold text-emerald-600 text-center mt-1.5 animate-pulse">
-                        ✓ Text copied to clipboard! Attach photo in chat and send.
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
+              {/* Complete without Sending Notification */}
+              <button
+                type="button"
+                onClick={() => {
+                  const id = proofCustomer.id;
+                  setProofCustomer(null);
+                  handleMarkDelivered(id);
+                }}
+                className="w-full h-11 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer mt-1"
+              >
+                <Check className="w-4 h-4 text-emerald-600 stroke-[3]" />
+                <span>Mark Delivered Without Notifying</span>
+              </button>
             </div>
           </div>
         </div>
