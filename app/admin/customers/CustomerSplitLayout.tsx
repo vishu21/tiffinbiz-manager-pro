@@ -1051,6 +1051,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [discountType, setDiscountType] = useState<'none' | 'flat' | 'percent'>('none');
   const [discountValue, setDiscountValue] = useState('');
   const [discountNote, setDiscountNote] = useState('');
+  const [deliveryNotes, setDeliveryNotes] = useState('');
 
   // Curry container occupancy only — Salad / Dessert are sides and must never
   // inflate the "(n/2 containers/day)" limit or disable curry + buttons.
@@ -1806,6 +1807,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setPickupDays([]);
     setSideNotes('');
     setSpecialInstructions('');
+    setDeliveryNotes('');
     setDiscountType('none');
     setDiscountValue('');
     setDiscountNote('');
@@ -2041,6 +2043,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       }
     }
     if (customer.delivery_instructions) setSideNotes(customer.delivery_instructions);
+
+    // Populate delivery notes, ignoring legacy meal strings like "1 Sabji + 1 Chicken"
+    const rawDeliveryNotes = customer.delivery_instructions || '';
+    const isLegacyMealText = /(sabji|chicken|dal|paneer|roti|salad|dessert)/i.test(rawDeliveryNotes);
+    setDeliveryNotes(isLegacyMealText ? '' : rawDeliveryNotes);
+
     setSpecialInstructions(customer.dietary_notes || '');
 
     // Restore discount fields
@@ -2435,10 +2443,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           ? customCurryPillText
           : null;
 
-    // Saturday's meal ships together with Friday's → flag the kitchen double pack.
-    const finalInstructions =
-      (structuredSideDish || '1 Dal + 1 Sabji') +
-      (fridayDoublePack ? ' [NOTE: Pack 2 Tiffins on Friday for Saturday meal]' : '');
+    // ✅ Add this line right here:
+    const finalInstructions = deliveryNotes.trim() || null;
 
     // Per-day pickup flags persist only for active schedule days. Fully-pickup records
     // with no typed address keep the legacy "Kitchen Pickup" marker so older views
@@ -4176,12 +4182,23 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         )}
                       </div>
 
-                      {/* Row 3: Delivery Schedule — 6 day buttons + per-day Delivery/Pickup pills.
-                        Unified with the master Kitchen Pickup switch: toggling any pill keeps the
-                        switch in sync (all Pickup ⇒ ON; any Delivery ⇒ OFF). */}
+                      {/* Row 2b: Delivery Notes / Buzzer Code (Driver View) */}
+                      <div className="mt-2.5">
+                        <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
+                          Delivery Notes / Instructions <span className="text-gray-400 font-normal normal-case">(Buzzer, gate code, drop-off note)</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={deliveryNotes}
+                          onChange={(e) => setDeliveryNotes(e.target.value)}
+                          placeholder="e.g. Buzzer #104, leave on front porch, side entrance"
+                          className="w-full px-3 py-1.5 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-gray-800 placeholder-gray-400 bg-white"
+                        />
+                      </div>
+
+                      {/* Row 3: Delivery Schedule — 6 day buttons + per-day Delivery/Pickup pills. */}
                       <div>
-                        <div className="flex items-center justify-between gap-3 bg-[#FCFCFD] border border-gray-200 rounded-lg px-3.5 py-2.5 mb-2">
-                          <div className="min-w-0">
+                        <div className="flex items-center justify-between gap-3 bg-[#FCFCFD] border border-gray-200 rounded-lg px-3.5 py-2.5 mb-2"><div className="min-w-0">
                             <span className="block text-[11px] font-semibold text-[#A2A4B0] uppercase tracking-wide">
                               🛍️ Kitchen Pickup
                             </span>

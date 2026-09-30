@@ -869,6 +869,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const [schemaReloading, setSchemaReloading] = useState(false);
   const [isLapsedTrayOpen, setIsLapsedTrayOpen] = useState(false);
   const [skipRanges, setSkipRanges] = useState<Record<string, CustomerSkipWindow>>({});
+  const [kitchenBaseAddress, setKitchenBaseAddress] = useState<string>(
+    'Unit 42, 3270 Singleton Ave, London, ON N6L 0E5'
+  );
   const router = useRouter();
 
 const selectedDateKey = toLocalDateKey(selectedDate);
@@ -1354,19 +1357,24 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
         const { createClient } = await import('@/utils/supabase/client');
         const supabase = createClient();
 
-        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes, skipRangesData] = await Promise.all([
+        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes, skipRangesData, settingsRes] = await Promise.all([
           getDailyOverrides(selectedDateKey),
           fetchDailyMenu(selectedDateKey),
           getDailyMenuSelection(selectedDateKey),
           getDailyManifestSnapshot(selectedDateKey),
           supabase.from('customer_deliveries').select('customer_id').eq('delivery_date', selectedDateKey),
           getCustomerActiveSkipRanges(selectedDateKey),
+          supabase.from('app_settings').select('kitchen_address').eq('id', 'default').maybeSingle(),
         ]);
 
         if (skipRangesData) {
           setSkipRanges(skipRangesData);
         } else {
           setSkipRanges({});
+        }
+
+        if (settingsRes?.data?.kitchen_address) {
+          setKitchenBaseAddress(settingsRes.data.kitchen_address);
         }
 
         if (cancelled) return;
@@ -3431,7 +3439,7 @@ const manifestCustomers = useMemo(() => {
         onClose={() => setIsDispatchModalOpen(false)}
         manifestCustomers={manifestCustomers}
         activeDay={activeDay}
-        kitchenAddress="Unit 42, 3270 Singleton Ave, London, ON N6L 0E5"
+        kitchenAddress={kitchenBaseAddress}
       />
     </div>
   );

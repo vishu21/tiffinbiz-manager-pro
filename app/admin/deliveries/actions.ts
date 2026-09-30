@@ -235,15 +235,15 @@ export async function undoTodayDispatchAction(customerId: string, targetDate?: s
   revalidatePath('/admin/deliveries');
   revalidatePath('/admin/customers');
 }
+
 export async function saveDeliveryRouteOrder(
   dateKey: string,
   stopOrder: string[]
 ): Promise<{ success: boolean; message?: string }> {
   try {
     const supabase = await createClient();
-    console.log(`[saveDeliveryRouteOrder] Attempting to save ${stopOrder.length} stops for date: ${dateKey}`);
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('daily_delivery_routes')
       .upsert(
         {
@@ -252,20 +252,82 @@ export async function saveDeliveryRouteOrder(
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'delivery_date' }
-      )
-      .select();
+      );
 
     if (error) {
-      console.error('[saveDeliveryRouteOrder] Database Error:', error.message, error.details, error.hint);
-      return { success: false, message: `${error.message} (${error.hint || error.details || 'no details'})` };
+      console.error('[saveDeliveryRouteOrder] Database Error:', error.message);
+      return { success: false, message: error.message };
     }
 
-    console.log(`✅ [saveDeliveryRouteOrder] Successfully saved route for ${dateKey}:`, data);
     revalidatePath('/admin/deliveries');
     return { success: true };
   } catch (err) {
     console.error('[saveDeliveryRouteOrder] Exception:', err);
     return { success: false, message: err instanceof Error ? err.message : 'Unknown server error' };
+  }
+}
+
+/**
+ * Saves route for `dateKey` AND forwards the updated sequence to future uncompleted dates.
+ */
+export async function saveRouteAndPropagateFuture(
+  dateKey: string,
+  stopOrder: string[],
+  propagateDays: number = 7
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const supabase = await createClient();
+
+    // 1. Save for the current date
+    await supabase
+      .from('daily_delivery_routes')
+      .upsert(
+        {
+          delivery_date: dateKey,
+          stop_order: stopOrder,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'delivery_date' }
+      );
+
+    // 2. Identify uncompleted future dates
+    const futureDate = new Date(`${dateKey}T12:00:00`);
+    const futureDateKeys: string[] = [];
+
+    for (let i = 1; i <= propagateDays; i++) {
+      const d = new Date(futureDate);
+      d.setDate(futureDate.getDate() + i);
+      const dayOfWeek = d.getDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) continue;
+      futureDateKeys.push(d.toISOString().slice(0, 10));
+    }
+
+    const { data: completedDates } = await supabase
+      .from('customer_deliveries')
+      .select('delivery_date')
+      .in('delivery_date', futureDateKeys);
+
+    const completedSet = new Set((completedDates || []).map((r: any) => r.delivery_date));
+    const datesToOverwrite = futureDateKeys.filter(dk => !completedSet.has(dk));
+
+    // Overwrite future uncompleted days so they stay aligned with today's master sequence
+    if (datesToOverwrite.length > 0) {
+      const upsertRows = datesToOverwrite.map(dk => ({
+        delivery_date: dk,
+        stop_order: stopOrder,
+        updated_at: new Date().toISOString(),
+      }));
+
+      await supabase
+        .from('daily_delivery_routes')
+        .upsert(upsertRows, { onConflict: 'delivery_date' });
+    }
+
+    revalidatePath('/admin/deliveries');
+    return { success: true };
+  } catch (err: any) {
+    console.error('[saveRouteAndPropagateFuture] Error:', err);
+    return { success: false, message: err?.message || 'Failed to propagate route' };
   }
 }
 
@@ -284,49 +346,70 @@ function parseStopOrder(raw: any): string[] {
 }
 
 export async function getDeliveryDateData(dateKey: string) {
-  const supabase = await createClient();
+  try {
+    const supabase = await createClient();
 
-  const [logsRes, routeRes] = await Promise.all([
-    supabase
-      .from('customer_deliveries')
-      .select('customer_id, event')
-      .eq('delivery_date', dateKey),
-    supabase
+    // 1. Fetch saved manual route order for this specific date
+    const { data: routeRow } = await supabase
       .from('daily_delivery_routes')
       .select('stop_order')
       .eq('delivery_date', dateKey)
-      .maybeSingle(),
-  ]);
-
-  let finalRoute = parseStopOrder(routeRes.data?.stop_order);
-
-  // Fallback: If no explicit route exists for this date, inherit the most recent saved route
-  if (finalRoute.length === 0) {
-    const { data: latestRoute, error: fallbackError } = await supabase
-      .from('daily_delivery_routes')
-      .select('delivery_date, stop_order')
-      .lt('delivery_date', dateKey)
-      .order('delivery_date', { ascending: false })
-      .limit(1)
       .maybeSingle();
 
-    if (fallbackError) {
-      console.warn('[Deliveries] Fallback route query warning:', fallbackError.message);
+    // 2. Fetch logged deliveries using the correct column name: 'event'
+    const { data: logs, error: logsError } = await supabase
+      .from('customer_deliveries')
+      .select('customer_id, event')
+      .eq('delivery_date', dateKey);
+
+    if (logsError) {
+      console.error('[getDeliveryDateData] customer_deliveries query error:', logsError);
     }
 
-    if (latestRoute?.stop_order) {
-      finalRoute = parseStopOrder(latestRoute.stop_order);
-      console.log(`[Deliveries] Inherited route sequence from ${latestRoute.delivery_date} (${finalRoute.length} stops) for ${dateKey}`);
-    } else {
-      console.log(`[Deliveries] No previous route found prior to ${dateKey}`);
+    const todayLogs = (logs || []).map((l: any) => ({
+      customerId: String(l.customer_id),
+      event: (l.event === 'skipped' ? 'skipped' : 'delivered') as 'delivered' | 'skipped',
+    }));
+
+    let routeOrder: string[] = parseStopOrder(routeRow?.stop_order);
+
+    // 3. If deliveries were completed, the actual delivered sequence takes precedence
+    if (todayLogs.length > 0) {
+      const deliveredIds = todayLogs.map(l => l.customerId);
+      if (deliveredIds.length >= routeOrder.length) {
+        routeOrder = deliveredIds;
+      }
     }
+
+    // 4. Inherit route from the most recent active delivery day if this day has no route yet
+    if (routeOrder.length === 0) {
+      const { data: prevRoutes } = await supabase
+        .from('daily_delivery_routes')
+        .select('delivery_date, stop_order')
+        .lt('delivery_date', dateKey)
+        .order('delivery_date', { ascending: false })
+        .limit(5);
+
+      if (prevRoutes && prevRoutes.length > 0) {
+        for (const prev of prevRoutes) {
+          const parsed = parseStopOrder(prev.stop_order);
+          if (parsed.length > 0) {
+            routeOrder = parsed;
+            break;
+          }
+        }
+      }
+    }
+
+    return {
+      routeOrder,
+      todayLogs,
+    };
+  } catch (err) {
+    console.error('[getDeliveryDateData] unexpected error:', err);
+    return {
+      routeOrder: [],
+      todayLogs: [],
+    };
   }
-
-  return {
-    todayLogs: (logsRes.data || []).map((r: any) => ({
-      customerId: r.customer_id,
-      event: r.event as 'delivered' | 'skipped',
-    })),
-    routeOrder: finalRoute,
-  };
 }

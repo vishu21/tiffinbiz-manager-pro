@@ -83,7 +83,15 @@ export function haversineDistance(c1: Coordinates, c2: Coordinates): number {
  * Smart Nearest-Neighbor Algorithm with 2-Opt path untangling.
  * Chains from kitchen base to the nearest stop, then to the nearest neighbor.
  */
-export function optimizeRouteNearestNeighbor<T extends { id: string; lat?: number | null; lng?: number | null }>(
+export function optimizeRouteNearestNeighbor<
+  T extends {
+    id: string;
+    lat?: number | null;
+    lng?: number | null;
+    delivery_lat?: number | null;
+    delivery_lng?: number | null;
+  }
+>(
   items: T[],
   startCoords: Coordinates = DEFAULT_KITCHEN_COORDS
 ): T[] {
@@ -93,8 +101,11 @@ export function optimizeRouteNearestNeighbor<T extends { id: string; lat?: numbe
   const missingStops: T[] = [];
 
   for (const item of items) {
-    if (typeof item.lat === 'number' && typeof item.lng === 'number') {
-      validStops.push({ ...item, coords: { lat: item.lat, lng: item.lng } });
+    const lat = typeof item.delivery_lat === 'number' ? item.delivery_lat : item.lat;
+    const lng = typeof item.delivery_lng === 'number' ? item.delivery_lng : item.lng;
+
+    if (typeof lat === 'number' && typeof lng === 'number') {
+      validStops.push({ ...item, coords: { lat, lng } });
     } else {
       missingStops.push(item);
     }

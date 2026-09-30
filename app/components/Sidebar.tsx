@@ -3,7 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Utensils, Users, ChefHat, Truck, CalendarOff, CreditCard, Settings, Calendar } from 'lucide-react';
+import { Utensils, Users, ChefHat, Truck, CalendarOff, CreditCard, Settings } from 'lucide-react';
 
 // Static navigation — identical on every server and client render pass.
 const navItems = [
@@ -76,27 +76,6 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
             );
           })}
         </nav>
-
-        {/* Bottom Profile/Settings Area */}
-        <div className="p-4 border-t border-white/10 shrink-0">
-          <Link
-            href="/admin/settings"
-            onClick={onClose}
-            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all group ${
-              pathname.startsWith('/admin/settings')
-                ? 'bg-[#5D5FEF] text-white shadow-lg shadow-[#5D5FEF]/20'
-                : 'text-slate-300 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Settings
-              className={`w-[18px] h-[18px] shrink-0 transition-colors ${
-                pathname.startsWith('/admin/settings') ? 'text-white' : 'text-slate-400 group-hover:text-white'
-              }`}
-              strokeWidth={2}
-            />
-            <span>Settings</span>
-          </Link>
-        </div>
       </div>
     </>
   );

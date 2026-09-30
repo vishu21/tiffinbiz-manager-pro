@@ -3,37 +3,35 @@
 import { useMemo, useState, useEffect, useSyncExternalStore, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import PrepDatePicker from '@/app/components/PrepDatePicker';
-import { getDeliveryDateData } from './actions';
+import { getDeliveryDateData, saveRouteAndPropagateFuture } from './actions';
 import { formatDeliveryMessage } from '@/app/utils/messageTemplate';
-import { 
-  Package, 
-  BookOpen, 
-  Check, 
-  Navigation, 
-  Phone, 
-  Search, 
-  X, 
-  CheckCircle2, 
+import {
+  Package,
+  BookOpen,
+  Check,
+  Navigation,
+  Phone,
+  Search,
+  X,
+  CheckCircle2,
   AlertCircle,
   Truck,
-  Wand2,
   ListOrdered,
   GripVertical,
   ExternalLink,
   MapPin,
   Camera,
   MessageSquare,
-  Loader2
+  Loader2,
+  FileText
 } from 'lucide-react';
 import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction, saveDeliveryRouteOrder } from './actions';
-import { backfillExistingCustomerCoordinates } from '@/app/admin/actions';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
-import { optimizeRouteNearestNeighbor } from '@/app/utils/geocoding';
 import { computeCycleEndDate, resolveDeliveryDayNumbers } from '@/app/utils/subscriptionCycle';
-import { 
-  DEFAULT_KITCHEN_ORIGIN, 
-  sanitizeAddressForUrl, 
-  DeliveryCustomer 
+import {
+  DEFAULT_KITCHEN_ORIGIN,
+  sanitizeAddressForUrl,
+  DeliveryCustomer
 } from '@/app/prep/utils/deliveryRouting';
 
 type CustomerRow = {
@@ -65,13 +63,13 @@ type CustomerRow = {
   created_at?: string | null;
 };
 
-const noopSubscribe = () => () => {};
+const noopSubscribe = () => () => { };
 
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 function isCustomerScheduledToday(
-  customer: CustomerRow, 
-  activeDay: string, 
+  customer: CustomerRow,
+  activeDay: string,
   todayKey: string,
   hasDeliveryLog: boolean = false,
   closureDates?: Set<string>
@@ -79,30 +77,24 @@ function isCustomerScheduledToday(
   const subStatus = (customer.subscription_status || 'active').toLowerCase();
   if (subStatus === 'cancelled') return false;
 
-  // 1. Future Start Date check:
-  // Do NOT exclude existing customers who renewed for tomorrow/future dates
   const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
   if (!hasDeliveryLog && startDate && todayKey < startDate) {
     const createdDate = customer.created_at ? customer.created_at.slice(0, 10) : null;
-    // Only exclude genuine brand-new future subscribers who have not started service yet
     if (!createdDate || createdDate > todayKey) {
       return false;
     }
   }
 
-  // 2. Pause Window check
   if (subStatus === 'paused') {
     const pauseEnd = customer.pause_end_date ? customer.pause_end_date.slice(0, 10) : null;
     if (!pauseEnd) return false;
     if (todayKey < pauseEnd) return false;
   }
 
-  // 3. Scheduled Cancel Date check
   if (customer.scheduled_cancel_date && todayKey > customer.scheduled_cancel_date.slice(0, 10)) {
     return false;
   }
 
-  // 4. Delivery Schedule / Day of Week check
   const schedule = customer.delivery_schedule || '';
   if (!schedule || schedule === '—') return false;
 
@@ -118,7 +110,6 @@ function isCustomerScheduledToday(
 
   if (!dayMatches) return false;
 
-  // 5. Expiration / Cycle End check (matches Prep page calculation)
   const totalMeals =
     customer.total_tiffin_credits ||
     (customer.plan_tier === 'trial' ? 1 : customer.plan_tier === 'monthly' ? 20 : 5);
@@ -207,8 +198,7 @@ const calculateElapsedDeliveryDays = (
 const formatStreetOnlyAddress = (address: string | null | undefined): string => {
   if (!address) return '';
   const parts = address.split(',').map(p => p.trim()).filter(Boolean);
-  if (parts.length <= 1) return address;
-
+  
   const streetParts = parts.filter(part => {
     const p = part.toLowerCase();
     const isCity = p === 'london' || p === 'woodstock' || p === 'st. thomas' || p === 'st thomas';
@@ -217,24 +207,10 @@ const formatStreetOnlyAddress = (address: string | null | undefined): string => 
     return !isCity && !isProvince && !isPostal;
   });
 
-  return streetParts.length > 0 ? streetParts.join(', ') : parts[0];
+  const baseStreet = streetParts.length > 0 ? streetParts.join(', ') : parts[0];
+  // Strip trailing city string if entered without a comma
+  return baseStreet.replace(/\s+(london|woodstock|st\.?\s*thomas)$/i, '').trim();
 };
-
-type ContactChannel = 'whatsapp' | 'messenger' | 'sms';
-
-function resolveCustomerChannel(phoneOrContact: string | null | undefined): { channel: ContactChannel; destination: string } {
-  const raw = (phoneOrContact || '').trim();
-  if (/^wa:/i.test(raw)) {
-    const cleanDigits = raw.replace(/^wa:\s*/i, '').replace(/\D/g, '');
-    return { channel: 'whatsapp', destination: cleanDigits };
-  }
-  if (/^fb:/i.test(raw)) {
-    const fbVal = raw.replace(/^fb:\s*/i, '').trim();
-    return { channel: 'messenger', destination: fbVal };
-  }
-  const cleanPhone = raw.replace(/\D/g, '');
-  return { channel: 'sms', destination: cleanPhone || raw };
-}
 
 function cleanPhoneNumberForWhatsApp(phone: string | null | undefined): string {
   if (!phone) return '';
@@ -245,41 +221,6 @@ function cleanPhoneNumberForWhatsApp(phone: string | null | undefined): string {
   return digits;
 }
 
-function buildMessagingUrl(channel: ContactChannel, destination: string, text: string): string {
-  const encodedText = encodeURIComponent(text);
-  if (channel === 'whatsapp') {
-    const phone = cleanPhoneNumberForWhatsApp(destination);
-    return `whatsapp://send?phone=${phone}&text=${encodedText}`;
-  }
-  if (channel === 'messenger') {
-    if (destination.startsWith('http://') || destination.startsWith('https://')) {
-      return destination;
-    }
-    return `https://m.me/${encodeURIComponent(destination)}`;
-  }
-  return `sms:${destination}?&body=${encodedText}`;
-}
-const resolveNextActiveDeliveryDate = (customers: CustomerRow[]): Date => {
-  const anchor = new Date();
-  anchor.setHours(12, 0, 0, 0);
-
-  // Look ahead up to 14 days for the nearest upcoming active delivery date
-  for (let offset = 1; offset <= 14; offset++) {
-    const candidate = new Date(anchor);
-    candidate.setDate(anchor.getDate() + offset);
-    const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][candidate.getDay()];
-    const dateKey = toLocalDateKey(candidate);
-
-    if (customers.some(c => isCustomerScheduledToday(c, dayName, dateKey) && !isPickupOnDay(c, dayName))) {
-      return candidate;
-    }
-  }
-
-  // Fallback to tomorrow if no specific customer schedule matched
-  const fallback = new Date(anchor);
-  fallback.setDate(anchor.getDate() + 1);
-  return fallback;
-};
 export default function DeliveriesClient({
   initialCustomers,
   todayLogs,
@@ -298,13 +239,10 @@ export default function DeliveriesClient({
   const [showOrderSheet, setShowOrderSheet] = useState(false);
   const [customOrderIds, setCustomOrderIds] = useState<string[]>(initialRouteOrder);
   const [renewedAt, setRenewedAt] = useState<{ id: string; at: string } | null>(null);
-  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
 
   // Delivery Confirmation Flow State
   const [proofCustomer, setProofCustomer] = useState<CustomerRow | null>(null);
-  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
-  const [copiedNote, setCopiedNote] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Automated Driver Notification Templates State
   const [msgTemplates, setMsgTemplates] = useState<{
@@ -313,6 +251,17 @@ export default function DeliveriesClient({
   }>({
     delivery_message_template: 'Hi {customer_name}, your tiffin has been delivered! Enjoy your meal!',
     last_day_message_template: 'Hi {customer_name}, your tiffin has been delivered! Today is your final delivery for this cycle. Please leave your empty tiffin bag out for collection.',
+  });
+
+  // Kitchen Base Origin State
+  const [kitchenBase, setKitchenBase] = useState<{
+    address: string;
+    lat: number;
+    lng: number;
+  }>({
+    address: 'Unit 42, 3270 Singleton Ave, London, ON N6L 0E5',
+    lat: 42.9238,
+    lng: -81.2782,
   });
 
   // Drag and Drop State
@@ -339,7 +288,7 @@ export default function DeliveriesClient({
             .eq('is_skipped', true),
           supabase
             .from('app_settings')
-            .select('delivery_message_template, last_day_message_template')
+            .select('delivery_message_template, last_day_message_template, kitchen_address, kitchen_lat, kitchen_lng')
             .eq('id', 'default')
             .maybeSingle(),
         ]);
@@ -369,6 +318,13 @@ export default function DeliveriesClient({
                 settingsRes.data.last_day_message_template ||
                 'Hi {customer_name}, your tiffin has been delivered! Today is your final delivery for this cycle. Please leave your empty tiffin bag out for collection.',
             });
+            if (settingsRes.data.kitchen_address) {
+              setKitchenBase({
+                address: settingsRes.data.kitchen_address,
+                lat: typeof settingsRes.data.kitchen_lat === 'number' ? settingsRes.data.kitchen_lat : 42.9238,
+                lng: typeof settingsRes.data.kitchen_lng === 'number' ? settingsRes.data.kitchen_lng : -81.2782,
+              });
+            }
           }
         }
       } catch (err) {
@@ -383,7 +339,6 @@ export default function DeliveriesClient({
 
   const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-// Dynamic selected date (defaults to current calendar day)
   const [selectedDate, setSelectedDate] = useState<Date>(() => {
     const today = new Date();
     today.setHours(12, 0, 0, 0);
@@ -447,11 +402,9 @@ export default function DeliveriesClient({
     });
   }, [selectedDate]);
 
-  // Sync route, logs, and prep skips dynamically whenever selectedDate changes
   useEffect(() => {
     let cancelled = false;
     setIsDateSwitching(true);
-    console.log(`[DeliveriesClient] 🔄 Switching to date: ${selectedDateKey}`);
 
     (async () => {
       try {
@@ -467,7 +420,6 @@ export default function DeliveriesClient({
         ]);
 
         if (!cancelled) {
-          console.log(`[DeliveriesClient] 📦 Received ${data.routeOrder.length} routeOrder IDs for ${selectedDateKey}:`, data.routeOrder);
           setActiveLogs(data.todayLogs);
           setCustomOrderIds(data.routeOrder);
 
@@ -498,7 +450,7 @@ export default function DeliveriesClient({
 
   const saveOrder = async (order: string[]) => {
     setCustomOrderIds(order);
-    console.log(`[DeliveriesClient] Triggered saveOrder for ${selectedDateKey} with ${order.length} stops`, order);
+    setSaveStatus('saving');
 
     try {
       localStorage.setItem(`delivery_route_${selectedDateKey}`, JSON.stringify(order));
@@ -507,17 +459,18 @@ export default function DeliveriesClient({
     }
 
     try {
-      const res = await saveDeliveryRouteOrder(selectedDateKey, order);
+      const res = await saveRouteAndPropagateFuture(selectedDateKey, order);
       if (!res?.success) {
-        console.error('❌ [Deliveries Save Error]:', res?.message);
-        setErrorMsg(`Database Save Error: ${res?.message || 'Could not save route to Supabase'}`);
+        setErrorMsg(res?.message || 'Could not save route');
+        setSaveStatus('idle');
       } else {
-        console.log(`✅ [DeliveriesClient] Server confirmed route saved for ${selectedDateKey}`);
         setErrorMsg('');
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2500);
       }
     } catch (err: any) {
-      console.error('❌ [Deliveries Exception]:', err);
-      setErrorMsg(`Database Save Exception: ${err?.message || 'Unknown error'}`);
+      setErrorMsg(err?.message || 'Unknown error');
+      setSaveStatus('idle');
     }
   };
 
@@ -561,16 +514,13 @@ export default function DeliveriesClient({
   );
 
   const allScheduledToday = useMemo(() => {
-    // 1. If kitchen is closed on selected date, 0 deliveries
     if (closuresSet.has(selectedDateKey)) return [];
 
     return customers.filter(c => {
-      // 2. Schedule & pickup checks (passing closuresSet for cycle end verification)
       const hasLog = todayLoggedIds.includes(c.id);
       if (!isCustomerScheduledToday(c, activeDay, selectedDateKey, hasLog, closuresSet)) return false;
       if (isPickupOnDay(c, activeDay)) return false;
 
-      // 3. Daily skip check from Prep page (customer_daily_overrides)
       const custSkips = skipsMap.get(c.id);
       if (custSkips && custSkips.has(selectedDateKey)) return false;
 
@@ -581,7 +531,6 @@ export default function DeliveriesClient({
   const pendingDispatchList = useMemo(() => {
     const uncompleted = allScheduledToday.filter(c => !todayLoggedIds.includes(c.id));
     if (customOrderIds.length === 0) {
-      console.log(`[DeliveriesClient] customOrderIds is EMPTY, falling back to uncompleted (${uncompleted.length} stops)`);
       return uncompleted;
     }
 
@@ -596,18 +545,16 @@ export default function DeliveriesClient({
       }
     }
 
-    // Prepend new/unsequenced addresses to the FRONT of the route so they are never missed
     const unsequenced = Array.from(map.values());
-    console.log(`[DeliveriesClient] Sequenced ${sequenced.length} stops, Prepending ${unsequenced.length} new stops`);
-    return [...unsequenced, ...sequenced];
+    return [...sequenced, ...unsequenced];
   }, [allScheduledToday, todayLoggedIds, customOrderIds]);
 
   const routeRuns = useMemo(() => {
     const validStops = pendingDispatchList.filter(c => c.delivery_address && c.delivery_address.length > 3);
     if (validStops.length === 0) return [];
 
-    const kitchenBase = encodeURIComponent(sanitizeAddressForUrl(DEFAULT_KITCHEN_ORIGIN));
-    const runs: { label: string; url: string; stopsCount: number }[] = [];
+    const kitchenOriginEncoded = encodeURIComponent(sanitizeAddressForUrl(kitchenBase.address));
+    const runs: { label: string; url: string; stopsCount: number; isReturn: boolean }[] = [];
     const maxStopsPerRun = 9;
     const totalRuns = Math.ceil(validStops.length / maxStopsPerRun);
 
@@ -620,21 +567,22 @@ export default function DeliveriesClient({
       const isLastRun = i === totalRuns - 1;
 
       const origin = isFirstRun
-        ? kitchenBase
+        ? kitchenOriginEncoded
         : encodeURIComponent(sanitizeAddressForUrl(validStops[startIdx - 1].delivery_address!));
 
       if (isLastRun) {
-        const destination = kitchenBase;
+        const destination = kitchenOriginEncoded;
         const intermediateWaypoints = batch
           .map(s => encodeURIComponent(sanitizeAddressForUrl(s.delivery_address!)))
           .join('|');
 
         const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&waypoints=${intermediateWaypoints}&travelmode=driving`;
-        
+
         runs.push({
-          label: totalRuns === 1 ? 'Start Round Trip (To Kitchen)' : `Run ${i + 1}: Return to Kitchen`,
+          label: totalRuns === 1 ? 'Round Trip' : `Run ${i + 1}: Return`,
           url,
           stopsCount: batch.length,
+          isReturn: true,
         });
       } else {
         const destination = encodeURIComponent(sanitizeAddressForUrl(batch[batch.length - 1].delivery_address!));
@@ -646,15 +594,16 @@ export default function DeliveriesClient({
         const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypointsParam}&travelmode=driving`;
 
         runs.push({
-          label: `Run ${i + 1} (Stops ${startIdx + 1}–${startIdx + batch.length})`,
+          label: `Run ${i + 1} (${startIdx + 1}–${startIdx + batch.length})`,
           url,
           stopsCount: batch.length,
+          isReturn: false,
         });
       }
     }
 
     return runs;
-  }, [pendingDispatchList]);
+  }, [pendingDispatchList, kitchenBase.address]);
 
   const filteredDispatchList = useMemo(() => {
     if (!searchQuery.trim()) return pendingDispatchList;
@@ -732,39 +681,6 @@ export default function DeliveriesClient({
     setDragOverIndex(null);
   };
 
-  const handleAutoOptimize = async () => {
-    if (pendingDispatchList.length <= 1) return;
-    setIsOptimizing(true);
-    setErrorMsg('');
-
-    try {
-      // 1. Check if any stops lack coordinates, and automatically backfill them via OpenStreetMap
-      const missingCoords = pendingDispatchList.filter(
-        c => (!c.delivery_lat || !c.delivery_lng) && c.delivery_address && !c.is_pickup
-      );
-
-      if (missingCoords.length > 0) {
-        setErrorMsg(`Geocoding ${missingCoords.length} addresses with OpenStreetMap (approx. ${missingCoords.length}s)...`);
-        await backfillExistingCustomerCoordinates();
-        router.refresh();
-      }
-
-      // 2. Compute Haversine Nearest-Neighbor driving loop starting from the Kitchen
-      const optimized = optimizeRouteNearestNeighbor(pendingDispatchList);
-      const optimizedIds = optimized.map(c => c.id);
-
-      // 3. Save sequence to local state, localStorage, and Supabase database
-      await saveOrder(optimizedIds);
-      setShowOrderSheet(false);
-      setErrorMsg('');
-    } catch (err: any) {
-      console.error('[Deliveries] Auto-optimize error:', err);
-      setErrorMsg(`Optimization error: ${err?.message || 'Failed to auto-optimize'}`);
-    } finally {
-      setIsOptimizing(false);
-    }
-  };
-
   if (!isMounted) {
     return (
       <div className="h-full flex-1 flex items-center justify-center bg-[#FDFDFD]">
@@ -777,14 +693,12 @@ export default function DeliveriesClient({
     setBusyId(customerId);
     setErrorMsg('');
 
-    // Instant optimistic update: card drops out of pending immediately
     setActiveLogs(prev => [...prev.filter(l => l.customerId !== customerId), { customerId, event: 'delivered' }]);
 
     try {
       await markDelivered(customerId, selectedDateKey);
       router.refresh();
     } catch (err) {
-      // Revert if error
       setActiveLogs(prev => prev.filter(l => l.customerId !== customerId));
       setErrorMsg(err instanceof Error ? err.message : 'Failed to mark delivered');
     } finally {
@@ -796,7 +710,6 @@ export default function DeliveriesClient({
     setBusyId(customerId);
     setErrorMsg('');
 
-    // Instant optimistic update: card drops out of pending immediately
     setActiveLogs(prev => [...prev.filter(l => l.customerId !== customerId), { customerId, event: 'skipped' }]);
 
     try {
@@ -814,7 +727,6 @@ export default function DeliveriesClient({
     setBusyId(customerId);
     setErrorMsg('');
 
-    // Instant optimistic update: card returns to pending list immediately
     setActiveLogs(prev => prev.filter(l => l.customerId !== customerId));
 
     try {
@@ -847,37 +759,33 @@ export default function DeliveriesClient({
   const planTier = (tier: string | null) => (tier === 'trial' ? 'Trial' : tier === 'monthly' ? 'Monthly' : 'Weekly');
 
   return (
-    <div className="flex-1 min-h-0 w-full max-w-full overflow-x-hidden overflow-y-auto bg-[#F8FAFC] pb-12 font-sans select-none">
-      
-      {/* 1. TOP RESPONSIVE HEADER (ZERO HORIZONTAL SCROLL ON MOBILE) */}
-      <div className="w-full max-w-full bg-white border-b border-gray-200 px-2.5 sm:px-6 py-2.5 sticky top-0 z-30 shadow-2xs print:hidden overflow-hidden">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 md:gap-3 w-full max-w-full min-w-0">
-          
-          {/* Top Row on Mobile: Title + Stop Count + (Dispatch/Ledger Toggle) */}
+    <div className="flex-1 min-h-0 w-full max-w-full overflow-x-hidden overflow-y-auto bg-[#F8FAFC] pb-16 font-sans select-none">
+
+      {/* TOP HEADER */}
+      <div className="w-full max-w-full bg-white border-b border-gray-200 px-3 sm:px-6 py-2 sticky top-0 z-30 shadow-2xs print:hidden">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-1.5 md:gap-3 w-full max-w-full min-w-0">
+
           <div className="flex items-center justify-between gap-2 w-full md:w-auto min-w-0 shrink-0">
             <div className="flex items-center gap-2 min-w-0 flex-1">
-              <div className="w-8 h-8 rounded-lg bg-[#5D5FEF] text-white flex items-center justify-center shrink-0">
-                <Truck className="w-4 h-4" />
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[#5D5FEF] text-white flex items-center justify-center shrink-0">
+                <Truck className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               </div>
               <div className="min-w-0 truncate">
-                <h1 className="text-[14px] sm:text-[18px] font-black text-[#11142D] tracking-tight leading-tight truncate">
+                <h1 className="text-[13.5px] sm:text-[17px] font-black text-[#11142D] tracking-tight leading-tight truncate">
                   Deliveries · {activeDay}
                 </h1>
-                <p className="text-[10.5px] sm:text-[11px] text-gray-400 font-semibold truncate">
+                <p className="text-[10px] sm:text-[11px] text-gray-400 font-semibold truncate">
                   {totalStopsCount - activeLogs.length} left of {totalStopsCount} stops
                 </p>
               </div>
             </div>
 
-            {/* Tab Pill on Mobile: Anchored right beside title, perfectly fits within screen */}
             <div className="flex md:hidden bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
               <button
                 type="button"
                 onClick={() => setTab('dispatch')}
-                className={`px-2 py-1 text-[11px] font-bold rounded-md transition-all ${
-                  tab === 'dispatch'
-                    ? 'bg-white text-[#5D5FEF] shadow-xs'
-                    : 'text-gray-500 hover:text-gray-800'
+                className={`px-2 py-0.5 text-[10.5px] font-bold rounded-md transition-all ${
+                  tab === 'dispatch' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500'
                 }`}
               >
                 Dispatch ({pendingDispatchList.length})
@@ -885,10 +793,8 @@ export default function DeliveriesClient({
               <button
                 type="button"
                 onClick={() => setTab('ledger')}
-                className={`px-2 py-1 text-[11px] font-bold rounded-md transition-all ${
-                  tab === 'ledger'
-                    ? 'bg-white text-[#5D5FEF] shadow-xs'
-                    : 'text-gray-500 hover:text-gray-800'
+                className={`px-2 py-0.5 text-[10.5px] font-bold rounded-md transition-all ${
+                  tab === 'ledger' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500'
                 }`}
               >
                 Ledger
@@ -896,7 +802,6 @@ export default function DeliveriesClient({
             </div>
           </div>
 
-          {/* Center: Target Date Context (Desktop Only) */}
           <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-gray-50/70 border border-gray-200/80 rounded-lg text-xs font-semibold text-gray-500 shrink-0">
             <span>Route target:</span>
             <strong className="text-gray-900">{formattedTargetDate}</strong>
@@ -911,15 +816,13 @@ export default function DeliveriesClient({
             ) : null}
           </div>
 
-          {/* Bottom Row on Mobile / Right Group on Desktop */}
-          <div className="flex items-center justify-between md:justify-end gap-1.5 sm:gap-2 w-full md:w-auto min-w-0">
-            {/* Weekday Selector Strip: Strictly contained without stretching or overflowing */}
-            <div className="inline-flex items-center justify-between sm:justify-start bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs w-full md:w-auto min-w-0">
+          <div className="flex items-center justify-between md:justify-end gap-1.5 w-full md:w-auto min-w-0">
+            <div className="inline-flex items-center justify-between sm:justify-start bg-gray-50 border border-gray-200 rounded-xl p-0.5 sm:p-1 shadow-2xs w-full md:w-auto min-w-0">
               <button
                 type="button"
                 onClick={() => changeWeek('prev')}
                 title="Previous Week"
-                className="w-6 sm:w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+                className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-colors shrink-0"
               >
                 ‹
               </button>
@@ -936,7 +839,7 @@ export default function DeliveriesClient({
                       type="button"
                       onClick={() => setSelectedDate(item.dateObj)}
                       title={isClosed ? 'Kitchen Closed' : undefined}
-                      className={`px-1.5 sm:px-2 py-1 text-[11px] sm:text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5 shrink-0
+                      className={`px-1.5 sm:px-2 py-0.5 sm:py-1 text-[10.5px] sm:text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5 shrink-0
                         ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
                         ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
                         ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs' : ''}
@@ -948,7 +851,7 @@ export default function DeliveriesClient({
                       <span className={isClosed && !isSelected ? 'line-through decoration-amber-600' : ''}>
                         {item.short}
                       </span>
-                      <span className="opacity-80 font-normal text-[10px] sm:text-[10.5px]">{item.dayNum}</span>
+                      <span className="opacity-80 font-normal text-[9.5px] sm:text-[10.5px]">{item.dayNum}</span>
                       {isClosed && (
                         <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : 'bg-amber-600'}`} />
                       )}
@@ -961,14 +864,14 @@ export default function DeliveriesClient({
                 type="button"
                 onClick={() => changeWeek('next')}
                 title="Next Week"
-                className="w-6 sm:w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+                className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-colors shrink-0"
               >
                 ›
               </button>
 
-              <div className="h-4 w-px bg-gray-200 mx-0.5 sm:mx-1 shrink-0" />
+              <div className="h-3.5 w-px bg-gray-200 mx-0.5 shrink-0" />
 
-              <div className="shrink-0">
+              <div className="shrink-0 scale-90 sm:scale-100">
                 <PrepDatePicker
                   selectedDate={selectedDateKey}
                   onChange={(newDateStr) => {
@@ -980,15 +883,12 @@ export default function DeliveriesClient({
               </div>
             </div>
 
-            {/* Tab Pill on Desktop: Visible only on md+ screens */}
             <div className="hidden md:flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
               <button
                 type="button"
                 onClick={() => setTab('dispatch')}
                 className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
-                  tab === 'dispatch'
-                    ? 'bg-white text-[#5D5FEF] shadow-xs'
-                    : 'text-gray-500 hover:text-gray-800'
+                  tab === 'dispatch' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500 hover:text-gray-800'
                 }`}
               >
                 Dispatch ({pendingDispatchList.length})
@@ -997,9 +897,7 @@ export default function DeliveriesClient({
                 type="button"
                 onClick={() => setTab('ledger')}
                 className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
-                  tab === 'ledger'
-                    ? 'bg-white text-[#5D5FEF] shadow-xs'
-                    : 'text-gray-500 hover:text-gray-800'
+                  tab === 'ledger' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500 hover:text-gray-800'
                 }`}
               >
                 Ledger
@@ -1008,10 +906,9 @@ export default function DeliveriesClient({
           </div>
         </div>
 
-        {/* Route Progress Bar */}
         {tab === 'dispatch' && totalStopsCount > 0 && (
-          <div className="mt-2 pt-2 border-t border-gray-100 w-full">
-            <div className="flex items-center justify-between text-[11px] font-bold text-gray-500 mb-1">
+          <div className="mt-1.5 pt-1.5 border-t border-gray-100 w-full">
+            <div className="flex items-center justify-between text-[10.5px] font-bold text-gray-500 mb-0.5">
               <span>Route Progress</span>
               <span className="text-emerald-600">{completedCount} of {totalStopsCount} Delivered ({progressPercent}%)</span>
             </div>
@@ -1024,75 +921,86 @@ export default function DeliveriesClient({
           </div>
         )}
       </div>
-      <div className="max-w-4xl mx-auto px-3 sm:px-6 py-4">
+
+      {/* CENTERED CONTENT COLUMN */}
+      <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3">
+        {/* Genuine Errors Only */}
         {errorMsg && (
-          <div className="mb-3 px-3.5 py-2.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-bold flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 text-indigo-600" />
-            <span>{errorMsg}</span>
+          <div className="mb-2.5 px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+              <span>{errorMsg}</span>
+            </div>
+            <button type="button" onClick={() => setErrorMsg('')} className="text-rose-500 hover:text-rose-700">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Floating Sync Toast */}
+        {saveStatus !== 'idle' && (
+          <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 px-3 py-2 rounded-xl bg-[#11142D] text-white text-xs font-semibold shadow-xl border border-white/10 animate-in fade-in slide-in-from-bottom-2 duration-150">
+            {saveStatus === 'saving' ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 text-[#5D5FEF] animate-spin" />
+                <span>Syncing route order...</span>
+              </>
+            ) : (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-400 stroke-[3]" />
+                <span className="text-slate-200">Route synced</span>
+              </>
+            )}
           </div>
         )}
 
         {/* TAB 1: DAILY DISPATCH DRIVER QUEUE */}
         {tab === 'dispatch' && (
-          <div className="space-y-4">
-            
-            {/* ACTION BAR WITH REORDER + START ROUTE BUTTONS */}
-            <div className="bg-white p-3 rounded-2xl border border-gray-200 shadow-2xs space-y-2.5">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => setShowOrderSheet(true)}
-                    className="px-3.5 py-2 text-xs font-bold rounded-xl border border-[#5D5FEF]/30 bg-[#F4F4FE] text-[#5D5FEF] hover:bg-[#5D5FEF] hover:text-white transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                  >
-                    <GripVertical className="w-4 h-4" />
-                    <span>Reorder Stops ({pendingDispatchList.length})</span>
-                  </button>
+          <div className="space-y-2.5">
 
-                  <button
-                    type="button"
-                    disabled={isOptimizing}
-                    onClick={handleAutoOptimize}
-                    title="Automatically sequences stops along the shortest driving path using real coordinates"
-                    className="px-3.5 py-2 text-xs font-bold rounded-xl border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            {/* ACTION BAR: 2-Tier Stack on Mobile (Zero Clipping) */}
+            <div className="bg-white p-2.5 rounded-xl border border-gray-200 shadow-2xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              {/* Primary Navigation Runs: Side-by-side 50/50 Grid on Mobile */}
+              <div className="grid grid-cols-2 sm:flex sm:items-center gap-1.5 w-full sm:w-auto order-1 sm:order-2">
+                {routeRuns.map((run, idx) => (
+                  <a
+                    key={idx}
+                    href={run.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`px-3 py-2 sm:py-1.5 text-xs font-black rounded-lg shadow-xs transition-all flex items-center justify-center gap-1.5 text-center ${
+                      run.isReturn
+                        ? 'bg-slate-700 hover:bg-slate-800 text-white'
+                        : 'bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white'
+                    }`}
                   >
-                    {isOptimizing ? (
-                      <Loader2 className="w-4 h-4 text-purple-600 animate-spin" />
-                    ) : (
-                      <Wand2 className="w-4 h-4 text-purple-600" />
-                    )}
-                    <span>{isOptimizing ? 'Optimizing…' : 'Auto-Optimize'}</span>
-                  </button>
-                </div>
-
-                {/* Primary Route Generator Link(s) */}
-                <div className="flex items-center gap-2 flex-wrap">
-                  {routeRuns.map((run, idx) => (
-                    <a
-                      key={idx}
-                      href={run.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-4 py-2 bg-[#5D5FEF] hover:bg-[#4D4FD9] active:bg-[#3D3FB9] text-white font-black text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5"
-                    >
-                      <Navigation className="w-3.5 h-3.5" />
-                      <span>{run.label}</span>
-                    </a>
-                  ))}
-                </div>
+                    <Navigation className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{run.label}</span>
+                  </a>
+                ))}
               </div>
+
+              {/* Secondary Reorder Stops Action: Full Width on Mobile */}
+              <button
+                type="button"
+                onClick={() => setShowOrderSheet(true)}
+                className="w-full sm:w-auto px-3 py-2 sm:py-1.5 text-xs font-bold rounded-lg border border-[#5D5FEF]/30 bg-[#F4F4FE] text-[#5D5FEF] hover:bg-[#5D5FEF] hover:text-white transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs order-2 sm:order-1 shrink-0"
+              >
+                <GripVertical className="w-3.5 h-3.5 shrink-0" />
+                <span>Reorder Stops ({pendingDispatchList.length})</span>
+              </button>
             </div>
 
-            {/* Quick Search on Route */}
+            {/* Compact Search Bar */}
             {pendingDispatchList.length > 3 && (
               <div className="relative">
-                <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
-                  placeholder="Quick search stop (street or customer name)..."
+                  placeholder="Filter stop by name or street..."
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-8 py-2 bg-white border border-gray-200 rounded-xl text-xs font-semibold text-gray-800 placeholder-gray-400 outline-none focus:border-[#5D5FEF] shadow-2xs"
+                  className="w-full pl-8 pr-7 py-1.5 bg-white border border-gray-200 rounded-xl text-xs font-medium text-gray-800 placeholder-gray-400 outline-none focus:border-[#5D5FEF] shadow-2xs"
                 />
                 {searchQuery && (
                   <button
@@ -1100,7 +1008,7 @@ export default function DeliveriesClient({
                     onClick={() => setSearchQuery('')}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                   >
-                    <X className="w-4 h-4" />
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>
@@ -1120,7 +1028,7 @@ export default function DeliveriesClient({
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-2.5">
                 {filteredDispatchList.map((c, index) => {
                   const used = c.used_credits || 0;
                   const total = c.total_tiffin_credits || 0;
@@ -1132,70 +1040,81 @@ export default function DeliveriesClient({
                   return (
                     <div
                       key={c.id}
-                      className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs overflow-hidden p-3.5 sm:p-4.5 transition-all"
+                      className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs p-3.5 transition-all"
                     >
-                      {/* Top Row: Stop # + Customer Name on left, Phone + Map on the right */}
+                      {/* Top Header: Stop Number + Full Name + Call Button */}
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                          <span className="w-6 h-6 rounded-full bg-gray-100 text-gray-700 text-xs font-black flex items-center justify-center shrink-0">
+                          <span className="w-5 h-5 rounded-full bg-gray-100 text-gray-700 text-[11px] font-black flex items-center justify-center shrink-0">
                             {index + 1}
                           </span>
-                          <span className="text-[16px] font-black text-[#11142D] capitalize truncate">
+                          <span className="text-[15px] font-black text-[#11142D] capitalize truncate">
                             {c.full_name}
                           </span>
 
-                          {/* Highlights unsequenced or new stops positioned at the front */}
-                          {customOrderIds.length > 0 && !customOrderIds.includes(c.id) && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-blue-100 text-blue-800 border border-blue-300 tracking-wide uppercase whitespace-nowrap shrink-0 animate-pulse">
-                              NEW STOP
+                          {(c.used_credits || 0) === 0 && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-black bg-blue-100 text-blue-800 border border-blue-300 tracking-wide uppercase whitespace-nowrap shrink-0">
+                              NEW CUSTOMER
                             </span>
                           )}
 
-                          {/* Customer renewed for future, taking final delivery of current cycle */}
                           {c.start_date && selectedDateKey < c.start_date.slice(0, 10) && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 tracking-wide uppercase whitespace-nowrap shrink-0">
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 tracking-wide uppercase whitespace-nowrap shrink-0">
                               RENEWED
                             </span>
                           )}
                         </div>
 
-                        {/* Top-Right Navigation & Call Controls */}
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {c.phone_number && (
-                            <a
-                              href={`tel:${c.phone_number}`}
-                              title="Call customer"
-                              className="h-8 w-8 rounded-lg bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors"
-                            >
-                              <Phone className="w-3.5 h-3.5" />
-                            </a>
-                          )}
-                          {googleMapsUrl && (
-                            <a
-                              href={googleMapsUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="h-8 px-2.5 rounded-lg bg-[#5D5FEF] text-white font-bold text-xs flex items-center gap-1 shadow-2xs hover:bg-[#4D4FD9] transition-colors"
-                            >
-                              <Navigation className="w-3 h-3" />
-                              <span>Map</span>
-                            </a>
-                          )}
-                        </div>
+                        {c.phone_number && (
+                          <a
+                            href={`tel:${c.phone_number}`}
+                            title="Call customer"
+                            className="h-7 w-7 rounded-lg bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors shrink-0"
+                          >
+                            <Phone className="w-3.5 h-3.5 text-gray-600" />
+                          </a>
+                        )}
                       </div>
 
-                      {/* Middle Row: Full-width Street Address & Remaining Days */}
+                      {/* Middle Row: Street Address & Attached Navigation Button */}
                       {c.delivery_address ? (
-                        <div className="mt-2.5 bg-gray-50 border border-gray-200/70 rounded-xl p-2.5 sm:p-3">
-                          <span 
-                            className="text-[14px] sm:text-[15px] font-black text-gray-900 block leading-snug break-words tracking-tight"
-                            title={c.delivery_address}
-                          >
-                            📍 {formatStreetOnlyAddress(c.delivery_address)}
-                          </span>
-                          <span className="text-[11.5px] font-bold text-gray-500 block mt-0.5">
-                            {used}/{total} delivered · <strong className="text-emerald-700">{remaining} left</strong>
-                          </span>
+                        <div className="mt-2 bg-gray-50 border border-gray-200/70 rounded-xl p-2.5 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <span
+                                className="text-[13.5px] font-black text-gray-900 block leading-tight break-words"
+                                title={c.delivery_address}
+                              >
+                                📍 {formatStreetOnlyAddress(c.delivery_address)}
+                              </span>
+                              <span className="text-[11px] font-bold text-gray-500 block mt-0.5">
+                                {used}/{total} delivered · <strong className="text-emerald-700">{remaining} left</strong>
+                              </span>
+                            </div>
+
+                            {googleMapsUrl && (
+                              <a
+                                href={googleMapsUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="h-8 px-2.5 rounded-lg bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors shrink-0"
+                              >
+                                <Navigation className="w-3 h-3" />
+                                <span>Map</span>
+                              </a>
+                            )}
+                          </div>
+
+                          {/* Delivery Instructions / Buzzer Code Callout Chip (Driver Logistics Only) */}
+                          {c.delivery_instructions && !/(sabji|chicken|dal|paneer|roti|salad|dessert)/i.test(c.delivery_instructions) && (
+                            <div className="pt-1.5 border-t border-gray-200/60 flex items-start gap-1.5 text-amber-900 bg-amber-50/80 px-2 py-1.5 rounded-lg border border-amber-200/80">
+                              <FileText className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+                              <span className="text-[11px] font-semibold leading-snug break-words">
+                                <strong className="text-amber-800 font-bold uppercase text-[9.5px] tracking-wide mr-1">Drop-off:</strong>
+                                {c.delivery_instructions}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <p className="mt-2 text-xs font-semibold text-amber-700 bg-amber-50 p-2 rounded-lg border border-amber-200">
@@ -1203,13 +1122,13 @@ export default function DeliveriesClient({
                         </p>
                       )}
 
-                      {/* Bottom Row: [ Mark Delivered ] [ Skip ] */}
-                      <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center gap-2">
+                      {/* Bottom Action Row */}
+                      <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center gap-2">
                         <button
                           type="button"
                           disabled={busyId === c.id}
                           onClick={() => setProofCustomer(c)}
-                          className="flex-1 h-11 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                          className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
                         >
                           <Check className="w-4 h-4 stroke-[3] shrink-0" />
                           <span>Mark Delivered</span>
@@ -1219,7 +1138,7 @@ export default function DeliveriesClient({
                           type="button"
                           disabled={busyId === c.id}
                           onClick={() => handleLogSkip(c.id)}
-                          className="h-11 px-4 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
+                          className="h-10 px-3 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
                         >
                           Skip
                         </button>
@@ -1232,7 +1151,7 @@ export default function DeliveriesClient({
 
             {/* COMPLETED ACCORDION */}
             {completedList.length > 0 && (
-              <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-2xs mt-6">
+              <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-2xs mt-4">
                 <div className="flex items-center justify-between pb-2 border-b border-gray-100 mb-2">
                   <div className="flex items-center gap-1.5 text-xs font-black uppercase text-gray-700 tracking-wide">
                     <CheckCircle2 className="w-4 h-4 text-emerald-600" />
@@ -1243,7 +1162,7 @@ export default function DeliveriesClient({
 
                 <div className="divide-y divide-gray-100">
                   {completedList.map(({ customerId, event, customer: c }) => (
-                    <div key={customerId} className="py-2.5 flex items-center justify-between gap-2">
+                    <div key={customerId} className="py-2 flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <span className="text-xs font-bold text-gray-900 block truncate capitalize">
                           {c.full_name}
@@ -1304,7 +1223,7 @@ export default function DeliveriesClient({
                           {planTier(c.plan_tier)}
                         </span>
                       </div>
-                      
+
                       <div className="flex items-center gap-2 mt-1.5 max-w-xs">
                         <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden">
                           <div className="h-full rounded-full bg-[#5D5FEF]" style={{ width: `${pct}%` }} />
@@ -1342,7 +1261,7 @@ export default function DeliveriesClient({
 
       </div>
 
-      {/* DRAG & DROP QUICK REORDER MODAL SHEET */}
+      {/* REORDER MODAL SHEET */}
       {showOrderSheet && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/40 backdrop-blur-2xs">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
@@ -1355,21 +1274,50 @@ export default function DeliveriesClient({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  title="Copy driving sequence from previous delivery day"
+                  title="Copy exact driving sequence from previous active delivery day"
                   onClick={async () => {
-                    const yesterday = new Date(selectedDate);
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    const prevKey = toLocalDateKey(yesterday);
-                    const prevData = await getDeliveryDateData(prevKey);
+                    let lookback = new Date(selectedDate);
+                    let prevData = null;
+                    let foundKey = '';
+
+                    for (let i = 1; i <= 5; i++) {
+                      lookback.setDate(lookback.getDate() - 1);
+                      const day = lookback.getDay();
+                      if (day === 0 || day === 6) continue;
+
+                      const key = toLocalDateKey(lookback);
+                      if (closuresSet.has(key)) continue;
+
+                      const data = await getDeliveryDateData(key);
+                      if (data?.routeOrder && data.routeOrder.length > 0) {
+                        prevData = data;
+                        foundKey = key;
+                        break;
+                      }
+                    }
+
                     if (prevData?.routeOrder && prevData.routeOrder.length > 0) {
-                      await saveOrder(prevData.routeOrder);
+                      const prevIds = prevData.routeOrder;
+                      const todayCustomerIds = new Set(allScheduledToday.map(c => c.id));
+
+                      const orderedToday = prevIds.filter(id => todayCustomerIds.has(id));
+                      const unsequencedToday = allScheduledToday
+                        .filter(c => !prevIds.includes(c.id))
+                        .map(c => c.id);
+
+                      const mergedOrder = [...orderedToday, ...unsequencedToday];
+                      await saveOrder(mergedOrder);
+                      setErrorMsg(`✓ Copied ${orderedToday.length} stops from ${foundKey}`);
+                      setTimeout(() => setErrorMsg(''), 4000);
+                    } else {
+                      setErrorMsg('No previous route sequence found to copy.');
+                      setTimeout(() => setErrorMsg(''), 4000);
                     }
                   }}
                   className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#5D5FEF]/30 rounded-lg transition-colors cursor-pointer"
                 >
                   ↻ Copy Prev Route
                 </button>
-
                 <button
                   type="button"
                   onClick={() => setShowOrderSheet(false)}
@@ -1380,7 +1328,7 @@ export default function DeliveriesClient({
               </div>
             </div>
 
-            <div 
+            <div
               className="flex-1 overflow-y-auto p-3 space-y-1.5"
               onTouchMove={(e) => {
                 if (touchStartIndex.current !== null) {
@@ -1405,12 +1353,11 @@ export default function DeliveriesClient({
                       isDragging
                         ? 'opacity-40 bg-gray-50 border-dashed border-indigo-400 scale-[0.98]'
                         : isDragOver
-                        ? 'border-indigo-600 bg-indigo-50/70 border-2'
-                        : 'bg-white border-gray-200/80 hover:border-gray-300'
+                          ? 'border-indigo-600 bg-indigo-50/70 border-2'
+                          : 'bg-white border-gray-200/80 hover:border-gray-300'
                     }`}
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
-                      {/* Touch-only drag handle */}
                       <div
                         onTouchStart={(e) => handleTouchStart(i, e)}
                         className="p-1.5 -ml-1 text-gray-400 hover:text-gray-700 active:text-indigo-600 touch-none cursor-grab active:cursor-grabbing select-none"
@@ -1427,7 +1374,7 @@ export default function DeliveriesClient({
                           <span className="text-xs font-bold text-gray-900 truncate capitalize">
                             {c.full_name}
                           </span>
-                          {customOrderIds.length > 0 && !customOrderIds.includes(c.id) && (
+                          {(c.used_credits || 0) === 0 && (
                             <span className="px-1 py-0.2 rounded text-[9px] font-black bg-blue-100 text-blue-800 border border-blue-200 uppercase tracking-wide">
                               NEW
                             </span>
@@ -1439,7 +1386,6 @@ export default function DeliveriesClient({
                       </div>
                     </div>
 
-                    {/* Single-tap nudge buttons */}
                     <div className="flex items-center gap-1 shrink-0">
                       <button
                         type="button"
@@ -1465,25 +1411,23 @@ export default function DeliveriesClient({
               })}
             </div>
 
-            <div className="p-3 border-t border-gray-100 bg-gray-50 shrink-0 flex items-center justify-between">
+            <div className="p-3 border-t border-gray-100 bg-gray-50 shrink-0 flex items-center justify-end">
               <button
                 type="button"
-                disabled={isOptimizing}
-                onClick={handleAutoOptimize}
-                className="text-xs font-bold text-purple-700 hover:underline flex items-center gap-1 cursor-pointer disabled:opacity-50"
-              >
-                {isOptimizing ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Wand2 className="w-3.5 h-3.5" />
-                )}
-                <span>{isOptimizing ? 'Optimizing…' : 'Auto-Optimize'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowOrderSheet(false)}
-                className="px-4 py-2 bg-[#5D5FEF] text-white text-xs font-bold rounded-xl shadow-xs hover:bg-[#4D4FD9] cursor-pointer"
+                onClick={async () => {
+                  setShowOrderSheet(false);
+                  const orderedIds = pendingDispatchList.map(c => c.id);
+                  setSaveStatus('saving');
+                  const res = await saveRouteAndPropagateFuture(selectedDateKey, orderedIds);
+                  if (res?.success) {
+                    setSaveStatus('saved');
+                    setTimeout(() => setSaveStatus('idle'), 2500);
+                  } else {
+                    setErrorMsg(res?.message || 'Failed to sync route');
+                    setSaveStatus('idle');
+                  }
+                }}
+                className="px-5 py-2 bg-[#5D5FEF] text-white text-xs font-bold rounded-xl shadow-xs hover:bg-[#4D4FD9] cursor-pointer"
               >
                 Done
               </button>
@@ -1496,7 +1440,6 @@ export default function DeliveriesClient({
       {proofCustomer && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-2xs">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200">
-            {/* Header */}
             <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-gray-50/70">
               <div className="min-w-0">
                 <h3 className="text-sm font-black text-gray-900 truncate capitalize">
@@ -1515,7 +1458,6 @@ export default function DeliveriesClient({
               </button>
             </div>
 
-            {/* Notification & Deduct Actions */}
             {(() => {
               const used = proofCustomer.used_credits || 0;
               const total = proofCustomer.total_tiffin_credits || 0;
@@ -1549,7 +1491,6 @@ export default function DeliveriesClient({
 
                   {proofCustomer.phone_number ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {/* WhatsApp + Auto-Complete */}
                       <a
                         href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}&text=${encodeURIComponent(formattedText)}`}
                         onClick={() => {
@@ -1563,7 +1504,6 @@ export default function DeliveriesClient({
                         <span>WhatsApp &amp; Complete</span>
                       </a>
 
-                      {/* SMS + Auto-Complete */}
                       <a
                         href={`sms:${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}?&body=${encodeURIComponent(formattedText)}`}
                         onClick={() => {
@@ -1579,17 +1519,15 @@ export default function DeliveriesClient({
                     </div>
                   ) : (
                     <p className="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-medium">
-                      ⚠️ No phone number saved for this customer.
+                      ⚠ No phone number saved for this customer.
                     </p>
                   )}
 
-                  {/* Template Live Preview */}
                   <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-200/60 text-[11.5px] text-gray-600 leading-snug">
                     <span className="font-bold text-gray-400 not-italic uppercase text-[9.5px] block mb-0.5">Template Preview:</span>
                     <p className="italic">&quot;{formattedText}&quot;</p>
                   </div>
 
-                  {/* Complete without Sending Notification */}
                   <button
                     type="button"
                     onClick={() => {
