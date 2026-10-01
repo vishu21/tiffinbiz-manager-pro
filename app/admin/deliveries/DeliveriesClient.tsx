@@ -243,6 +243,7 @@ export default function DeliveriesClient({
 
   // Delivery Confirmation Flow State
   const [proofCustomer, setProofCustomer] = useState<CustomerRow | null>(null);
+  const [showRunsMenu, setShowRunsMenu] = useState(false);
 
   // Automated Driver Notification Templates State
   const [msgTemplates, setMsgTemplates] = useState<{
@@ -550,11 +551,23 @@ export default function DeliveriesClient({
   }, [allScheduledToday, todayLoggedIds, customOrderIds]);
 
   const routeRuns = useMemo(() => {
-    const validStops = pendingDispatchList.filter(c => c.delivery_address && c.delivery_address.length > 3);
+    // Preserve the complete scheduled route order so completed stops don't mutate route legs
+    const map = new Map(allScheduledToday.map(c => [c.id, c]));
+    const sequencedAll: CustomerRow[] = [];
+
+    for (const id of customOrderIds) {
+      const match = map.get(id);
+      if (match) {
+        sequencedAll.push(match);
+        map.delete(id);
+      }
+    }
+    const orderedStops = [...sequencedAll, ...Array.from(map.values())];
+    const validStops = orderedStops.filter(c => c.delivery_address && c.delivery_address.length > 3);
     if (validStops.length === 0) return [];
 
     const kitchenOriginEncoded = encodeURIComponent(sanitizeAddressForUrl(kitchenBase.address));
-    const runs: { label: string; url: string; stopsCount: number; isReturn: boolean }[] = [];
+    const runs = [];
     const maxStopsPerRun = 9;
     const totalRuns = Math.ceil(validStops.length / maxStopsPerRun);
 
@@ -566,24 +579,22 @@ export default function DeliveriesClient({
       const isFirstRun = i === 0;
       const isLastRun = i === totalRuns - 1;
 
+      // Track how many stops in this specific segment are already delivered/skipped
+      const completedInBatch = batch.filter(c => todayLoggedIds.includes(c.id)).length;
+      const isRunFinished = completedInBatch === batch.length;
+
       const origin = isFirstRun
         ? kitchenOriginEncoded
         : encodeURIComponent(sanitizeAddressForUrl(validStops[startIdx - 1].delivery_address!));
 
+      let url = '';
       if (isLastRun) {
         const destination = kitchenOriginEncoded;
         const intermediateWaypoints = batch
           .map(s => encodeURIComponent(sanitizeAddressForUrl(s.delivery_address!)))
           .join('|');
 
-        const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&waypoints=${intermediateWaypoints}&travelmode=driving`;
-
-        runs.push({
-          label: totalRuns === 1 ? 'Round Trip' : `Run ${i + 1}: Return`,
-          url,
-          stopsCount: batch.length,
-          isReturn: true,
-        });
+        url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&waypoints=${intermediateWaypoints}&travelmode=driving`;
       } else {
         const destination = encodeURIComponent(sanitizeAddressForUrl(batch[batch.length - 1].delivery_address!));
         const intermediateStops = batch.slice(0, -1);
@@ -591,19 +602,29 @@ export default function DeliveriesClient({
           ? `&waypoints=${intermediateStops.map(s => encodeURIComponent(sanitizeAddressForUrl(s.delivery_address!))).join('|')}`
           : '';
 
-        const url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypointsParam}&travelmode=driving`;
-
-        runs.push({
-          label: `Run ${i + 1} (${startIdx + 1}–${startIdx + batch.length})`,
-          url,
-          stopsCount: batch.length,
-          isReturn: false,
-        });
+        url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypointsParam}&travelmode=driving`;
       }
+
+      runs.push({
+        id: i + 1,
+        label: totalRuns === 1 ? 'Full Round Trip' : isLastRun ? `Run ${i + 1}: Return Leg` : `Run ${i + 1} (Stops ${startIdx + 1}–${startIdx + batch.length})`,
+        shortLabel: totalRuns === 1 ? 'Round Trip' : isLastRun ? `Run ${i + 1}: Return` : `Run ${i + 1}`,
+        rangeText: `Stops ${startIdx + 1}–${startIdx + batch.length}`,
+        url,
+        isFinished: isRunFinished,
+        completedCount: completedInBatch,
+        totalCount: batch.length,
+        isReturn: isLastRun,
+      });
     }
 
     return runs;
-  }, [pendingDispatchList, kitchenBase.address]);
+  }, [allScheduledToday, customOrderIds, todayLoggedIds, kitchenBase.address]);
+
+  // Find the first unfinished run for the main active navigation button
+  const activeRun = useMemo(() => {
+    return routeRuns.find(r => !r.isFinished) || routeRuns[routeRuns.length - 1] || null;
+  }, [routeRuns]);
 
   const filteredDispatchList = useMemo(() => {
     if (!searchQuery.trim()) return pendingDispatchList;
@@ -958,59 +979,135 @@ export default function DeliveriesClient({
         {tab === 'dispatch' && (
           <div className="space-y-2.5">
 
-            {/* ACTION BAR: 2-Tier Stack on Mobile (Zero Clipping) */}
-            <div className="bg-white p-2.5 rounded-xl border border-gray-200 shadow-2xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              {/* Primary Navigation Runs: Side-by-side 50/50 Grid on Mobile */}
-              <div className="grid grid-cols-2 sm:flex sm:items-center gap-1.5 w-full sm:w-auto order-1 sm:order-2">
-                {routeRuns.map((run, idx) => (
-                  <a
-                    key={idx}
-                    href={run.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={`px-3 py-2 sm:py-1.5 text-xs font-black rounded-lg shadow-xs transition-all flex items-center justify-center gap-1.5 text-center ${
-                      run.isReturn
-                        ? 'bg-slate-700 hover:bg-slate-800 text-white'
-                        : 'bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white'
-                    }`}
-                  >
-                    <Navigation className="w-3.5 h-3.5 shrink-0" />
-                    <span className="truncate">{run.label}</span>
-                  </a>
-                ))}
-              </div>
-
-              {/* Secondary Reorder Stops Action: Full Width on Mobile */}
-              <button
-                type="button"
-                onClick={() => setShowOrderSheet(true)}
-                className="w-full sm:w-auto px-3 py-2 sm:py-1.5 text-xs font-bold rounded-lg border border-[#5D5FEF]/30 bg-[#F4F4FE] text-[#5D5FEF] hover:bg-[#5D5FEF] hover:text-white transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs order-2 sm:order-1 shrink-0"
-              >
-                <GripVertical className="w-3.5 h-3.5 shrink-0" />
-                <span>Reorder Stops ({pendingDispatchList.length})</span>
-              </button>
-            </div>
-
-            {/* Compact Search Bar */}
-            {pendingDispatchList.length > 3 && (
-              <div className="relative">
+            {/* TOP CONTROLS: Filter Search + Mini Reorder Button */}
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
                 <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
                   placeholder="Filter stop by name or street..."
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-7 py-1.5 bg-white border border-gray-200 rounded-xl text-xs font-medium text-gray-800 placeholder-gray-400 outline-none focus:border-[#5D5FEF] shadow-2xs"
+                  className="w-full pl-8 pr-7 py-2 bg-white border border-gray-200 rounded-xl text-xs font-medium text-gray-800 placeholder-gray-400 outline-none focus:border-[#5D5FEF] shadow-2xs"
                 />
                 {searchQuery && (
                   <button
                     type="button"
                     onClick={() => setSearchQuery('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
                 )}
+              </div>
+
+              {/* Compact Mini Reorder Trigger */}
+              <button
+                type="button"
+                onClick={() => setShowOrderSheet(true)}
+                title={`Reorder route sequence (${pendingDispatchList.length} stops)`}
+                className="h-9 px-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer shrink-0"
+              >
+                <GripVertical className="w-3.5 h-3.5 text-gray-400" />
+                <span className="text-[11px] font-mono text-gray-600 font-bold">{pendingDispatchList.length}</span>
+              </button>
+            </div>
+
+            {/* ACTIVE RUN CARD + ALL RUNS DROPDOWN */}
+            {activeRun && (
+              <div className="relative bg-white rounded-2xl border border-gray-200/90 p-2.5 sm:p-3 shadow-2xs flex items-center justify-between gap-2">
+                {/* 1. Large Primary Action Button for Next/Active Run */}
+                <a
+                  href={activeRun.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`flex-1 h-11 px-3.5 rounded-xl text-xs sm:text-[13px] font-black shadow-xs transition-all flex items-center justify-between gap-2 min-w-0 cursor-pointer ${
+                    activeRun.isFinished
+                      ? 'bg-slate-800 hover:bg-slate-900 text-white'
+                      : 'bg-[#5D5FEF] hover:bg-[#4D4FD9] active:bg-[#3D3FB9] text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Navigation className="w-4 h-4 shrink-0" />
+                    <span className="truncate">
+                      {activeRun.isFinished ? `Revisit ${activeRun.shortLabel}` : `Navigate ${activeRun.label}`}
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded-md bg-white/20 whitespace-nowrap shrink-0">
+                    {activeRun.completedCount}/{activeRun.totalCount} done
+                  </span>
+                </a>
+
+                {/* 2. "All Runs" Dropdown Trigger */}
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowRunsMenu(prev => !prev)}
+                    className="h-11 px-3 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                  >
+                    <span>Runs ({routeRuns.length})</span>
+                    <span className="text-[10px] text-gray-400">▼</span>
+                  </button>
+
+                  {/* Backdrop & Menu */}
+                  {showRunsMenu && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-30"
+                        onClick={() => setShowRunsMenu(false)}
+                      />
+                      <div className="absolute right-0 top-12 z-40 w-72 bg-white border border-gray-200 rounded-2xl shadow-xl p-2 space-y-1 animate-in fade-in zoom-in-95 duration-100">
+                        <div className="px-2.5 py-1.5 border-b border-gray-100 flex items-center justify-between">
+                          <span className="text-[10.5px] font-black uppercase text-gray-400 tracking-wider">
+                            All Route Segments
+                          </span>
+                          <span className="text-[10px] font-bold text-gray-500">
+                            {routeRuns.filter(r => r.isFinished).length}/{routeRuns.length} completed
+                          </span>
+                        </div>
+
+                        <div className="max-h-60 overflow-y-auto divide-y divide-gray-50">
+                          {routeRuns.map(run => (
+                            <a
+                              key={run.id}
+                              href={run.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => setShowRunsMenu(false)}
+                              className={`p-2.5 rounded-xl flex items-center justify-between gap-2 transition-colors cursor-pointer ${
+                                run.id === activeRun.id && !run.isFinished
+                                  ? 'bg-indigo-50/80 border border-indigo-200'
+                                  : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs font-bold text-gray-900 truncate">
+                                    {run.label}
+                                  </span>
+                                  {run.isFinished && (
+                                    <span className="text-[9.5px] font-black px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
+                                      Done
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[11px] text-gray-400 block font-medium">
+                                  {run.completedCount} of {run.totalCount} stops logged
+                                </span>
+                              </div>
+
+                              <div className="shrink-0 text-right">
+                                <span className="text-xs font-bold text-[#5D5FEF] hover:underline">
+                                  Open →
+                                </span>
+                              </div>
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1122,7 +1219,7 @@ export default function DeliveriesClient({
                         </p>
                       )}
 
-                      {/* Bottom Direct Action Row: WA, SMS, Mark Delivered, Skip */}
+                      {/* Bottom Direct Action Row: Single Smart Dynamic Button + Fallback Icon + Skip */}
                       {(() => {
                         const isLastDay =
                           remaining <= 1 ||
@@ -1140,46 +1237,67 @@ export default function DeliveriesClient({
 
                         const cleanPhone = cleanPhoneNumberForWhatsApp(c.phone_number);
 
+                        // Parse customer preferred channel: 'whatsapp' (default), 'phone' (SMS), or 'messenger'
+                        const rawPhone = (c.phone_number || '').trim();
+                        const isSmsPreferred = /^SMS:/i.test(rawPhone) || /^PHONE:/i.test(rawPhone);
+                        const isMessenger = /^FB:/i.test(rawPhone);
+                        const isWhatsAppPreferred = !isSmsPreferred && !isMessenger && Boolean(cleanPhone);
+
                         return (
                           <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center gap-2">
-                            {/* Equal-width group for WA, SMS, and Mark Delivered */}
                             <div className="flex-1 flex items-center gap-1.5 min-w-0">
-                              {/* 1. WhatsApp Button */}
-                              {cleanPhone ? (
+
+                              {/* 1. WHATSAPP (DEFAULT FOR CUSTOMERS) */}
+                              {isWhatsAppPreferred && (
                                 <a
                                   href={`whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`}
                                   onClick={() => handleMarkDelivered(c.id)}
-                                  title="Send WhatsApp & Mark Delivered"
-                                  className="flex-1 min-w-0 h-10 bg-[#25D366] hover:bg-[#20bd5a] text-white font-black text-xs rounded-xl flex items-center justify-center gap-1 shadow-xs transition-all cursor-pointer"
+                                  title="Send WhatsApp & Complete"
+                                  className="flex-1 h-10 bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da851] text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
                                 >
-                                  <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                                  <span className="truncate">WA</span>
+                                  <MessageSquare className="w-4 h-4 shrink-0" />
+                                  <span className="truncate">WhatsApp &amp; Complete</span>
                                 </a>
-                              ) : null}
+                              )}
 
-                              {/* 2. SMS Button */}
-                              {cleanPhone ? (
+                              {/* 2. SMS (WHEN CUSTOMER PREFERS PHONE/SMS) */}
+                              {isSmsPreferred && cleanPhone && (
                                 <a
                                   href={`sms:${cleanPhone}?&body=${encodeURIComponent(messageText)}`}
                                   onClick={() => handleMarkDelivered(c.id)}
-                                  title="Send SMS & Mark Delivered"
-                                  className="flex-1 min-w-0 h-10 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl flex items-center justify-center gap-1 shadow-xs transition-all cursor-pointer"
+                                  title="Send SMS & Complete"
+                                  className="flex-1 h-10 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
                                 >
-                                  <Phone className="w-3.5 h-3.5 shrink-0" />
-                                  <span className="truncate">SMS</span>
+                                  <Phone className="w-4 h-4 shrink-0" />
+                                  <span className="truncate">SMS &amp; Complete</span>
                                 </a>
-                              ) : null}
+                              )}
 
-                              {/* 3. Silent Mark Delivered Button */}
-                              <button
-                                type="button"
-                                disabled={busyId === c.id}
-                                onClick={() => handleMarkDelivered(c.id)}
-                                className="flex-1 min-w-0 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-[13px] rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                              >
-                                <Check className="w-4 h-4 stroke-[3] shrink-0" />
-                                <span className="truncate">Mark Delivered</span>
-                              </button>
+                              {/* 3. SILENT / NO PHONE NUMBER FALLBACK */}
+                              {(!cleanPhone || isMessenger) && (
+                                <button
+                                  type="button"
+                                  disabled={busyId === c.id}
+                                  onClick={() => handleMarkDelivered(c.id)}
+                                  className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-[13px] rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer min-w-0"
+                                >
+                                  <Check className="w-4 h-4 stroke-[3] shrink-0" />
+                                  <span className="truncate">Mark Delivered</span>
+                                </button>
+                              )}
+
+                              {/* Emergency Silent Checkmark (allows driver to mark complete without sending message) */}
+                              {cleanPhone && (
+                                <button
+                                  type="button"
+                                  disabled={busyId === c.id}
+                                  onClick={() => handleMarkDelivered(c.id)}
+                                  title="Mark delivered silently (without sending message)"
+                                  className="h-10 w-10 flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-colors cursor-pointer shrink-0"
+                                >
+                                  <Check className="w-4 h-4 stroke-[2.5]" />
+                                </button>
+                              )}
                             </div>
 
                             {/* 4. Skip Button */}
@@ -1187,7 +1305,7 @@ export default function DeliveriesClient({
                               type="button"
                               disabled={busyId === c.id}
                               onClick={() => handleLogSkip(c.id)}
-                              className="h-10 px-3 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0"
+                              className="h-10 px-3.5 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0"
                             >
                               Skip
                             </button>

@@ -401,18 +401,22 @@ const parseStoredContact = (
   if (/^FB:/i.test(value)) {
     return { channel: 'messenger', value: value.replace(/^FB:\s*/i, '').trim() };
   }
+  if (/^SMS:/i.test(value) || /^PHONE:/i.test(value)) {
+    return { channel: 'phone', value: value.replace(/^(SMS|PHONE):\s*/i, '').trim() };
+  }
   if (/^WA:/i.test(value)) {
     return { channel: 'whatsapp', value: value.replace(/^WA:\s*/i, '').trim() };
   }
-  return { channel: 'phone', value };
+  // Default raw/standard phone numbers to WhatsApp
+  return { channel: 'whatsapp', value };
 };
 
 const formatContactValue = (channel: ContactChannel, rawValue: string): string => {
   const value = rawValue.trim();
   if (!value) return '';
   if (channel === 'messenger') return `FB: ${value}`;
-  if (channel === 'whatsapp') return `WA: ${value}`;
-  return value;
+  if (channel === 'phone') return `SMS: ${value}`;
+  return `WA: ${value}`;
 };
 
 // Kitchen Dispatch / Packing Order hierarchy:
@@ -1768,7 +1772,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const handleOpenAddForm = () => {
     setFullName('');
     setPhoneNumber('');
-    setContactChannel('phone');
+    setContactChannel('whatsapp');
     setReferredBy('');
     setDeliveryAddress('');
     setRawNotes('');
