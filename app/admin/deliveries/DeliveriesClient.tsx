@@ -503,17 +503,7 @@ export default function DeliveriesClient({
 
   const todayLoggedIds = useMemo(() => activeLogs.map(l => l.customerId), [activeLogs]);
 
-  const completedList = useMemo(
-    () =>
-      activeLogs
-        .flatMap(log => {
-          const customer = customers.find(c => c.id === log.customerId);
-          return customer ? [{ ...log, customer }] : [];
-        })
-        .sort((a, b) => a.customer.full_name.localeCompare(b.customer.full_name)),
-    [customers, activeLogs]
-  );
-
+  // 1. Declare allScheduledToday FIRST so it is initialized before being referenced
   const allScheduledToday = useMemo(() => {
     if (closuresSet.has(selectedDateKey)) return [];
 
@@ -528,6 +518,34 @@ export default function DeliveriesClient({
       return true;
     });
   }, [customers, activeDay, selectedDateKey, skipsMap, closuresSet, todayLoggedIds]);
+
+  // 2. completedList can now safely read allScheduledToday and preserve driving route order
+  const completedList = useMemo(() => {
+    const orderIndexMap = new Map<string, number>();
+
+    // 1. Assign positions according to the driver route sequence
+    customOrderIds.forEach((id, index) => {
+      orderIndexMap.set(id, index);
+    });
+
+    // 2. Fallback positions for any unsequenced stops
+    allScheduledToday.forEach((c, index) => {
+      if (!orderIndexMap.has(c.id)) {
+        orderIndexMap.set(c.id, 1000 + index);
+      }
+    });
+
+    return activeLogs
+      .flatMap(log => {
+        const customer = customers.find(c => c.id === log.customerId);
+        return customer ? [{ ...log, customer }] : [];
+      })
+      .sort((a, b) => {
+        const posA = orderIndexMap.get(a.customer.id) ?? 9999;
+        const posB = orderIndexMap.get(b.customer.id) ?? 9999;
+        return posA - posB;
+      });
+  }, [customers, activeLogs, customOrderIds, allScheduledToday]);
 
   const pendingDispatchList = useMemo(() => {
     const uncompleted = allScheduledToday.filter(c => !todayLoggedIds.includes(c.id));
