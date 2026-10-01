@@ -228,6 +228,47 @@ const formatAddonCount = (count: number, label: string): string =>
 
 const FRIDAY_DOUBLE_PACK_NOTE = '[NOTE: Pack 2 Tiffins on Friday for Saturday meal]';
 
+// Safely extracts side counts by checking curry_config JSON extras first, then delivery_instructions
+const resolveStoredSideCounts = (customer: QuickCustomer): { salad: number; dessert: number } => {
+  let salad = 0;
+  let dessert = 0;
+
+  // 1. Check structured curry_config.extras array (e.g. ["2x Salad", "Dessert"])
+  const structured = parseStructuredCurryConfig(customer.curry_config);
+  if (structured && Array.isArray(structured.extras)) {
+    structured.extras.forEach(extra => {
+      const sMatch = extra.match(/(\d+)\s*x\s*salad/i);
+      if (sMatch) salad = Math.max(salad, parseInt(sMatch[1], 10));
+      else if (/salad/i.test(extra)) salad = Math.max(salad, 1);
+
+      const dMatch = extra.match(/(\d+)\s*x\s*dessert/i);
+      if (dMatch) dessert = Math.max(dessert, parseInt(dMatch[1], 10));
+      else if (/dessert/i.test(extra)) dessert = Math.max(dessert, 1);
+    });
+  }
+
+  // 2. Also check delivery_instructions text (e.g. "+ 2x Salad + Dessert")
+  const inst = customer.delivery_instructions || '';
+  if (inst) {
+    const fromInstSalad = extractCurryCount(inst, 'salad');
+    const fromInstDessert = extractCurryCount(inst, 'dessert');
+    salad = Math.max(salad, fromInstSalad);
+    dessert = Math.max(dessert, fromInstDessert);
+  }
+
+  // 3. Fallback to LG container standard if customer has no explicit entry: 1 salad, 1 dessert
+  const p = normalizePortion(customer.portion_size);
+  if (salad === 0 && (p === PORTION_LG || p === PORTION_HALF_LG)) {
+    // If not explicitly set to 'no salad', keep standard 1
+    if (!/no\s*salad/i.test(inst)) salad = 1;
+  }
+  if (dessert === 0 && (p === PORTION_LG || p === PORTION_HALF_LG)) {
+    if (!/no\s*dessert/i.test(inst)) dessert = 1;
+  }
+
+  return { salad, dessert };
+};
+
 const buildDeliveryInstructions = (
   counts: CurryCounts,
   addons: { salad: number; dessert: number },
@@ -581,10 +622,8 @@ export default function PrepQuickEditSheet({
 
     const buildCurrySync = (): MealConfigPayload => {
       const storedInstructions = (customer.delivery_instructions || '').trim();
-      const addons = {
-        salad: extractCurryCount(storedInstructions, 'salad'),
-        dessert: extractCurryCount(storedInstructions, 'dessert'),
-      };
+      // Uses the new helper to reliably preserve custom counts like 2x Salad
+      const addons = resolveStoredSideCounts(customer);
       const includeFridayNote =
         storedInstructions.includes(FRIDAY_DOUBLE_PACK_NOTE) ||
         String(customer.delivery_schedule || '').toLowerCase().includes('sat');

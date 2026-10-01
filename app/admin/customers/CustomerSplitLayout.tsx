@@ -1857,12 +1857,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     };
 
     // Reads add-on counts from strings like "Salad", "2x Salad", or "2 Salad".
-    const extractAddon = (keyword: string): number => {
-      const xMatch = lower.match(new RegExp(`(\\d+)\\s*x\\s*${keyword}`));
+    const extractAddon = (text: string, keyword: string): number => {
+      const l = text.toLowerCase();
+      const xMatch = l.match(new RegExp(`(\\d+)\\s*x\\s*${keyword}`));
       if (xMatch) return parseInt(xMatch[1], 10);
-      const plainMatch = lower.match(new RegExp(`(\\d+)\\s*${keyword}`));
+      const plainMatch = l.match(new RegExp(`(\\d+)\\s*${keyword}`));
       if (plainMatch) return parseInt(plainMatch[1], 10);
-      return lower.includes(keyword) ? 1 : 0;
+      return l.includes(keyword) ? 1 : 0;
     };
 
     result.dal = extractCount('dal');
@@ -1871,8 +1872,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     result.chicken = extractCount('chicken');
     if (lower.includes('both dal') && result.dal === 0) result.dal = 2;
     if (lower.includes('both sabji') && result.sabji === 0) result.sabji = 2;
-    result.salad = extractAddon('salad');
-    result.dessert = extractAddon('dessert');
+    result.salad = extractAddon(instructions, 'salad');
+    result.dessert = extractAddon(instructions, 'dessert');
 
     return result;
   };
@@ -1976,9 +1977,25 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           : [];
     setPickupDays(effectivePickupDays);
 
-    // Parse existing delivery_instructions — restores ALL side dish state
+    // Parse existing delivery_instructions and curry_config — restores ALL side dish state
     const sideDish = parseSideDishAll(customer.delivery_instructions);
-    const hasAnySideDish = sideDish.dal > 0 || sideDish.sabji > 0 || sideDish.gravy > 0 || sideDish.chicken > 0;
+    const weeklyConfig = parseWeeklyCurryConfig(customer.curry_config);
+
+    // Read salad and dessert from curry_config.extras if present
+    if (weeklyConfig && Array.isArray(weeklyConfig.extras)) {
+      weeklyConfig.extras.forEach(extra => {
+        const sMatch = extra.match(/(\d+)\s*x\s*salad/i);
+        if (sMatch) sideDish.salad = Math.max(sideDish.salad, parseInt(sMatch[1], 10));
+        else if (/salad/i.test(extra)) sideDish.salad = Math.max(sideDish.salad, 1);
+
+        const dMatch = extra.match(/(\d+)\s*x\s*dessert/i);
+        if (dMatch) sideDish.dessert = Math.max(sideDish.dessert, parseInt(dMatch[1], 10));
+        else if (/dessert/i.test(extra)) sideDish.dessert = Math.max(sideDish.dessert, 1);
+      });
+    }
+
+    const hasAnySideDish =
+      sideDish.dal > 0 || sideDish.sabji > 0 || sideDish.gravy > 0 || sideDish.chicken > 0 || sideDish.salad > 0;
     const loadedMealType = customer.meal_type || '';
     if (hasAnySideDish) {
       setDalCount(sideDish.dal);
@@ -2425,30 +2442,36 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       !!selectedCustomer &&
       (selectedCustomer.is_custom_curry === true ||
         (selectedCustomer.curry_config || '').trim() !== '');
-    const curryIsCustom = curryCustomActive;
-    // Non-veg Tue/Thu splits are stored as structured weekly JSON; veg-side deviations are
-    // stored as a `veg_fixed` structured config (same day profile on both groups).
+
+    // Extras array containing exact salad and dessert multipliers (e.g. ["2x Salad", "Dessert"])
     const extrasForConfig = [
       saladCount > 0 ? (saladCount > 1 ? `${saladCount}x Salad` : 'Salad') : null,
       dessertCount > 0 ? (dessertCount > 1 ? `${dessertCount}x Dessert` : 'Dessert') : null,
-    ].filter(
-      (x): x is string => !!x
-    );
-    const curryConfigForSave = nonVegCustomSplit
-      ? JSON.stringify(buildWeeklyConfig())
-      : curryIsCustom && mealType !== 'Non-veg'
-        ? JSON.stringify({
-          pattern_type: 'veg_fixed' as const,
-          mwf: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
-          tth: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
-          extras: extrasForConfig,
-        } as WeeklyCurryConfig)
-        : curryIsCustom
-          ? customCurryPillText
-          : null;
+    ].filter((x): x is string => !!x);
 
-    // ✅ Add this line right here:
-    const finalInstructions = deliveryNotes.trim() || null;
+    // Save structured config whenever curries deviate OR extra sides (like 2x Salad) exist
+    const hasCustomSides = extrasForConfig.length > 0 || curryCustomActive;
+
+    const curryConfigForSave = hasCustomSides
+      ? JSON.stringify(
+          mealType === 'Non-veg'
+            ? buildWeeklyConfig()
+            : ({
+                pattern_type: 'veg_fixed' as const,
+                mwf: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
+                tth: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
+                extras: extrasForConfig,
+              } as WeeklyCurryConfig)
+        )
+      : null;
+
+    // Combine structured meal sides (e.g., "1 Sabji + 1 Chicken + 2x Salad") with driver drop-off notes
+    const driverDropoffNote = deliveryNotes.trim();
+    const finalInstructions = driverDropoffNote
+      ? structuredSideDish
+        ? `${structuredSideDish} [NOTE: ${driverDropoffNote}]`
+        : driverDropoffNote
+      : structuredSideDish || null;
 
     // Per-day pickup flags persist only for active schedule days. Fully-pickup records
     // with no typed address keep the legacy "Kitchen Pickup" marker so older views
@@ -2479,10 +2502,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       is_pickup: finalPickupDays.length > 0,
       pickup_days: finalPickupDays,
       // Structured custom-curry metadata lives in its own columns — never dietary_notes.
-      ...(curryIsCustom || hasStoredCustomCurry
+      ...(hasCustomSides || hasStoredCustomCurry
         ? {
-          is_custom_curry: curryIsCustom,
-          curry_config: curryIsCustom ? curryConfigForSave : null,
+          is_custom_curry: hasCustomSides,
+          curry_config: hasCustomSides ? curryConfigForSave : null,
         }
         : {}),
       ...(discountConfigured || hasStoredDiscount

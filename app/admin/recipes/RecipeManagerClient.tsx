@@ -66,7 +66,7 @@ export default function RecipeManagerClient({
   const [activeTab, setActiveTab] = useState<'all' | RecipeCategory>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [globalScaleOz, setGlobalScaleOz] = useState<number>(0); // 0 = Standard (8/12 oz base)
-  const [showInactive, setShowInactive] = useState<boolean>(false);
+  const [inactiveFilter, setInactiveFilter] = useState<'active' | 'inactive' | 'all'>('active');
 
   // Add / Edit drawer state
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -141,9 +141,12 @@ export default function RecipeManagerClient({
   const visibleRecipes = useMemo(() => {
     let filtered = activeTab === 'all' ? recipes : recipes.filter(r => r.category === activeTab);
 
-    if (!showInactive) {
+    if (inactiveFilter === 'active') {
       filtered = filtered.filter(r => r.is_active !== false);
+    } else if (inactiveFilter === 'inactive') {
+      filtered = filtered.filter(r => r.is_active === false);
     }
+    // 'all' includes both active and inactive
 
     if (searchQuery.trim()) {
       const lowerCaseQuery = searchQuery.toLowerCase().trim();
@@ -177,7 +180,7 @@ export default function RecipeManagerClient({
       // Secondary sort: Alphabetical A-Z within the same category
       return a.name.localeCompare(b.name);
     });
-  }, [recipes, activeTab, searchQuery]);
+  }, [recipes, activeTab, searchQuery, inactiveFilter]);
 
   const openAdd = () => {
     setEditingId(null);
@@ -397,18 +400,42 @@ export default function RecipeManagerClient({
           </div>
 
           <div className="flex items-center gap-3 flex-wrap">
-            {/* Inactive Dishes Visibility Toggle */}
-            <button
-              type="button"
-              onClick={() => setShowInactive(prev => !prev)}
-              className={`px-2.5 py-1 text-xs font-bold rounded-xl border transition-all cursor-pointer ${
-                showInactive
-                  ? 'bg-amber-100 text-amber-900 border-amber-300 shadow-2xs font-black'
-                  : 'bg-gray-50 text-gray-500 border-gray-200 hover:text-gray-800 font-semibold'
-              }`}
-            >
-              {showInactive ? 'Showing Inactive' : 'Show Inactive'}
-            </button>
+            {/* Status Filter: Active / Inactive / All */}
+            <div className="flex items-center bg-gray-100 p-0.5 rounded-xl border border-gray-200 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setInactiveFilter('active')}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                  inactiveFilter === 'active'
+                    ? 'bg-white text-gray-900 shadow-xs font-black'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                Active
+              </button>
+              <button
+                type="button"
+                onClick={() => setInactiveFilter('inactive')}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                  inactiveFilter === 'inactive'
+                    ? 'bg-amber-500 text-white shadow-xs font-black'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                Inactive ({recipes.filter(r => r.is_active === false).length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setInactiveFilter('all')}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                  inactiveFilter === 'all'
+                    ? 'bg-white text-gray-900 shadow-xs font-black'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                All
+              </button>
+            </div>
 
             {/* Global Pot Scaler Switcher */}
             <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl border border-gray-200 text-xs font-bold">
@@ -620,8 +647,18 @@ export default function RecipeManagerClient({
                                         type="button"
                                         onClick={() => {
                                           setActiveMenuId(null);
+                                          const nextActive = recipe.is_active === false;
+
+                                          // 1. Instantly update UI without waiting for network round-trip
+                                          setRecipes(prev =>
+                                            prev.map(r => (r.id === recipe.id ? { ...r, is_active: nextActive } : r))
+                                          );
+
                                           startSubmit(async () => {
-                                            await toggleRecipeActive(recipe.id, recipe.is_active !== false);
+                                            const result = await toggleRecipeActive(recipe.id, recipe.is_active !== false);
+                                            if (!result.success) {
+                                              setBanner(result.message || 'Could not update recipe status.');
+                                            }
                                             await refresh();
                                           });
                                         }}

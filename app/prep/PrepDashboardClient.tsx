@@ -119,6 +119,65 @@ const daysBetweenKeys = (from: string, to: string): number => {
   return Math.round((end.getTime() - start.getTime()) / 86_400_000);
 };
 
+/**
+ * Checks if an active customer has an upcoming skip or pause scheduled within the next 7 days.
+ * Returns a human-friendly range string, e.g. "Mon, Oct 5 → Fri, Oct 9".
+ */
+const getUpcomingPauseNotice = (
+  customerId: string,
+  currentDateKey: string,
+  upcomingSkipsMap?: Map<string, string[]>,
+  customerPauseStart?: string | null,
+  customerPauseEnd?: string | null
+): string | null => {
+  const normCurrent = currentDateKey.slice(0, 10);
+
+  // 1. Check customer profile pause dates (e.g. pause_start_date = '2026-10-05')
+  const pStart = customerPauseStart ? customerPauseStart.slice(0, 10) : null;
+  const pEnd = customerPauseEnd ? customerPauseEnd.slice(0, 10) : null;
+
+  if (pStart && pStart > normCurrent) {
+    const startFormatted = new Date(`${pStart}T12:00:00`).toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+    if (pEnd) {
+      const endFormatted = new Date(`${pEnd}T12:00:00`).toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+      });
+      return `${startFormatted} → ${endFormatted}`;
+    }
+    return `from ${startFormatted}`;
+  }
+
+  // 2. Check skips recorded in customer_daily_overrides
+  const futureDates = upcomingSkipsMap?.get(customerId);
+  if (futureDates && futureDates.length > 0) {
+    const sorted = [...new Set(futureDates)].filter(d => d > normCurrent).sort();
+    if (sorted.length > 0) {
+      const first = new Date(`${sorted[0]}T12:00:00`).toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+      });
+      if (sorted.length === 1) {
+        return first;
+      }
+      const last = new Date(`${sorted[sorted.length - 1]}T12:00:00`).toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+      });
+      return `${first} → ${last}`;
+    }
+  }
+
+  return null;
+};
+
 // Thin adapter over the SHARED cycle calculator (app/utils/subscriptionCycle.ts) so
 // /prep and /admin/customers can never drift apart. `deliverySchedule` decides which
 // weekdays count as delivery days (empty → Mon–Fri) and `closureDates` compensates
@@ -536,8 +595,8 @@ const getCustomInstructionsText = (
 
   const cleanStandardAddons = (str: string) =>
     str
-      .replace(/\s*\+\s*(?<!No\s+)Salad\b/gi, '')
-      .replace(/\s*\+\s*(?<!No\s+)Dessert\b/gi, '')
+      .replace(/\s*\+\s*(?<!\d+x?\s*|No\s+)Salad\b/gi, '')
+      .replace(/\s*\+\s*(?<!\d+x?\s*|No\s+)Dessert\b/gi, '')
       .trim();
 
   if (!raw.startsWith('{')) {
@@ -869,6 +928,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const [schemaReloading, setSchemaReloading] = useState(false);
   const [isLapsedTrayOpen, setIsLapsedTrayOpen] = useState(false);
   const [skipRanges, setSkipRanges] = useState<Record<string, CustomerSkipWindow>>({});
+  const [upcomingSkipsMap, setUpcomingSkipsMap] = useState<Map<string, string[]>>(new Map());
   const [kitchenBaseAddress, setKitchenBaseAddress] = useState<string>(
     'Unit 42, 3270 Singleton Ave, London, ON N6L 0E5'
   );
@@ -1357,7 +1417,16 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
         const { createClient } = await import('@/utils/supabase/client');
         const supabase = createClient();
 
-        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes, skipRangesData, settingsRes] = await Promise.all([
+        // Calculate the lookup window (next 10 calendar days)
+        const curDate = new Date(`${selectedDateKey}T12:00:00`);
+        const futureDateList: string[] = [];
+        for (let i = 1; i <= 10; i++) {
+          const f = new Date(curDate);
+          f.setDate(curDate.getDate() + i);
+          futureDateList.push(toLocalDateKey(f));
+        }
+
+        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes, skipRangesData, settingsRes, upcomingSkipsRes] = await Promise.all([
           getDailyOverrides(selectedDateKey),
           fetchDailyMenu(selectedDateKey),
           getDailyMenuSelection(selectedDateKey),
@@ -1365,6 +1434,11 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
           supabase.from('customer_deliveries').select('customer_id').eq('delivery_date', selectedDateKey),
           getCustomerActiveSkipRanges(selectedDateKey),
           supabase.from('app_settings').select('kitchen_address').eq('id', 'default').maybeSingle(),
+          supabase
+            .from('customer_daily_overrides')
+            .select('customer_id, override_date, is_skipped')
+            .eq('is_skipped', true)
+            .in('override_date', futureDateList),
         ]);
 
         if (skipRangesData) {
@@ -1372,6 +1446,20 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
         } else {
           setSkipRanges({});
         }
+
+        // Parse and store upcoming future skips
+        const uMap = new Map<string, string[]>();
+        if (upcomingSkipsRes?.data && upcomingSkipsRes.data.length > 0) {
+          upcomingSkipsRes.data.forEach((row: any) => {
+            const cid = String(row.customer_id);
+            const dateStr = String(row.override_date || '').slice(0, 10);
+            if (cid && dateStr && row.is_skipped) {
+              if (!uMap.has(cid)) uMap.set(cid, []);
+              uMap.get(cid)!.push(dateStr);
+            }
+          });
+        }
+        setUpcomingSkipsMap(uMap);
 
         if (settingsRes?.data?.kitchen_address) {
           setKitchenBaseAddress(settingsRes.data.kitchen_address);
@@ -2814,6 +2902,27 @@ const manifestCustomers = useMemo(() => {
                               LAST DAY
                             </span>
                           ) : null}
+
+                          {/* Upcoming Pause Notice Pill */}
+                          {!customer.isSkipped && !customer.isExpiredRenewalPending && (() => {
+                            const pauseNotice = getUpcomingPauseNotice(
+                              customer.id,
+                              selectedDateKey,
+                              upcomingSkipsMap,
+                              customer.pause_start_date,
+                              customer.pause_end_date
+                            );
+                            if (!pauseNotice) return null;
+                            return (
+                              <span
+                                title={`Scheduled pause upcoming: ${pauseNotice}`}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200 tracking-tight"
+                              >
+                                <span>⏸️</span>
+                                <span>Pausing {pauseNotice}</span>
+                              </span>
+                            );
+                          })()}
                         </div>
 
                         <div className="text-xs text-gray-500 mt-0.5 truncate">
@@ -3019,7 +3128,7 @@ const manifestCustomers = useMemo(() => {
 
                         {/* CUSTOMER CELL */}
                         <td className="pl-6 pr-3 py-2 font-bold text-[#11142D] text-[13px] align-top">
-                          <div className="flex flex-row items-center gap-2 min-w-0">
+                          <div className="flex flex-row items-center gap-2 min-w-0 flex-wrap">
                             <span className={`truncate ${customer.isSkipped ? 'opacity-50 line-through' : ''}`}>
                               {customer.full_name}
                             </span>
@@ -3059,6 +3168,27 @@ const manifestCustomers = useMemo(() => {
                                 LAST DAY
                               </span>
                             ) : null}
+
+                            {/* Upcoming Pause Notice Pill */}
+                            {!customer.isSkipped && !customer.isExpiredRenewalPending && (() => {
+                              const pauseNotice = getUpcomingPauseNotice(
+                                customer.id,
+                                selectedDateKey,
+                                upcomingSkipsMap,
+                                customer.pause_start_date,
+                                customer.pause_end_date
+                              );
+                              if (!pauseNotice) return null;
+                              return (
+                                <span
+                                  title={`Scheduled pause upcoming: ${pauseNotice}`}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-black bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs whitespace-nowrap shrink-0"
+                                >
+                                  <span>⏸️</span>
+                                  <span>Pausing {pauseNotice}</span>
+                                </span>
+                              );
+                            })()}
 
                             {scheduledDate && (
                               (() => {
