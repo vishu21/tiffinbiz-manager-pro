@@ -233,11 +233,68 @@ const extractSideAddonCount = (text: string, keyword: string): number => {
 
 // The customer's Salad container / Dessert cup quantities for the selected day.
 export const resolveSideAddons = (customer: PrepCustomer): { salad: number; dessert: number } => {
+  const portion = normalizePortionToken(customer.portion_size);
+  const isFullLg = portion === PORTION_LG;
+  const isHalf = isHalfPortion(customer.portion_size);
+
+  // Standard Plan Baseline: Full Large (LG) includes 1 Salad & 1 Dessert by default
+  let salad = isFullLg ? 1 : 0;
+  let dessert = isFullLg ? 1 : 0;
+
+  // 1. Check structured curry_config JSON extras first (takes highest precedence)
+  if (customer.curry_config && customer.curry_config.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(customer.curry_config);
+      if (Array.isArray(parsed.extras)) {
+        parsed.extras.forEach((extra: string) => {
+          const lower = extra.toLowerCase();
+          if (lower.includes('no salad')) salad = 0;
+          else if (lower.includes('no dessert')) dessert = 0;
+          else if (lower.includes('salad')) {
+            const m = lower.match(/(\d+)\s*x?\s*salad/);
+            salad = m ? parseInt(m[1], 10) : 1;
+          } else if (lower.includes('dessert')) {
+            const m = lower.match(/(\d+)\s*x?\s*dessert/);
+            dessert = m ? parseInt(m[1], 10) : 1;
+          }
+        });
+      }
+    } catch {
+      // ignore malformed JSON
+    }
+  }
+
+  // 2. Scan text markers (notes, overrides, custom instructions) for explicit additions or removals
   const text = sideAddonMarkerText(customer);
-  return {
-    salad: extractSideAddonCount(text, 'salad'),
-    dessert: extractSideAddonCount(text, 'dessert'),
-  };
+  const lowerText = ` ${text.toLowerCase()} `;
+
+  if (/\bno\s+salad\b/.test(lowerText)) {
+    salad = 0;
+  } else {
+    const textSaladCount = extractSideAddonCount(text, 'salad');
+    if (textSaladCount > 0) {
+      salad = Math.max(salad, textSaladCount);
+    }
+  }
+
+  if (/\bno\s+dessert\b/.test(lowerText)) {
+    dessert = 0;
+  } else {
+    const textDessertCount = extractSideAddonCount(text, 'dessert');
+    if (textDessertCount > 0) {
+      dessert = Math.max(dessert, textDessertCount);
+    }
+  }
+
+  // Half-portion guard: single containers do not receive default full sides unless explicitly opted in
+  if (isHalf && !customer.curry_config?.includes('Salad') && !lowerText.includes('salad')) {
+    salad = 0;
+  }
+  if (isHalf && !customer.curry_config?.includes('Dessert') && !lowerText.includes('dessert')) {
+    dessert = 0;
+  }
+
+  return { salad, dessert };
 };
 
 // The customer's TRUE side allocation for the selected day. Structured profiles

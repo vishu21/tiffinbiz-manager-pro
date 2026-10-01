@@ -1122,27 +1122,78 @@ export default function DeliveriesClient({
                         </p>
                       )}
 
-                      {/* Bottom Action Row */}
-                      <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={busyId === c.id}
-                          onClick={() => setProofCustomer(c)}
-                          className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                        >
-                          <Check className="w-4 h-4 stroke-[3] shrink-0" />
-                          <span>Mark Delivered</span>
-                        </button>
+                      {/* Bottom Direct Action Row: WA, SMS, Mark Delivered, Skip */}
+                      {(() => {
+                        const isLastDay =
+                          remaining <= 1 ||
+                          (c.cycle_end_date && c.cycle_end_date.slice(0, 10) === selectedDateKey);
 
-                        <button
-                          type="button"
-                          disabled={busyId === c.id}
-                          onClick={() => handleLogSkip(c.id)}
-                          className="h-10 px-3 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
-                        >
-                          Skip
-                        </button>
-                      </div>
+                        const rawTemplate = isLastDay
+                          ? msgTemplates.last_day_message_template
+                          : msgTemplates.delivery_message_template;
+
+                        const messageText = formatDeliveryMessage(rawTemplate, {
+                          customer_name: c.full_name,
+                          address: formatStreetOnlyAddress(c.delivery_address),
+                          remaining_meals: remaining,
+                        });
+
+                        const cleanPhone = cleanPhoneNumberForWhatsApp(c.phone_number);
+
+                        return (
+                          <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center gap-2">
+                            {/* Equal-width group for WA, SMS, and Mark Delivered */}
+                            <div className="flex-1 flex items-center gap-1.5 min-w-0">
+                              {/* 1. WhatsApp Button */}
+                              {cleanPhone ? (
+                                <a
+                                  href={`whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`}
+                                  onClick={() => handleMarkDelivered(c.id)}
+                                  title="Send WhatsApp & Mark Delivered"
+                                  className="flex-1 min-w-0 h-10 bg-[#25D366] hover:bg-[#20bd5a] text-white font-black text-xs rounded-xl flex items-center justify-center gap-1 shadow-xs transition-all cursor-pointer"
+                                >
+                                  <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                                  <span className="truncate">WA</span>
+                                </a>
+                              ) : null}
+
+                              {/* 2. SMS Button */}
+                              {cleanPhone ? (
+                                <a
+                                  href={`sms:${cleanPhone}?&body=${encodeURIComponent(messageText)}`}
+                                  onClick={() => handleMarkDelivered(c.id)}
+                                  title="Send SMS & Mark Delivered"
+                                  className="flex-1 min-w-0 h-10 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-xl flex items-center justify-center gap-1 shadow-xs transition-all cursor-pointer"
+                                >
+                                  <Phone className="w-3.5 h-3.5 shrink-0" />
+                                  <span className="truncate">SMS</span>
+                                </a>
+                              ) : null}
+
+                              {/* 3. Silent Mark Delivered Button */}
+                              <button
+                                type="button"
+                                disabled={busyId === c.id}
+                                onClick={() => handleMarkDelivered(c.id)}
+                                className="flex-1 min-w-0 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-[13px] rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                              >
+                                <Check className="w-4 h-4 stroke-[3] shrink-0" />
+                                <span className="truncate">Mark Delivered</span>
+                              </button>
+                            </div>
+
+                            {/* 4. Skip Button */}
+                            <button
+                              type="button"
+                              disabled={busyId === c.id}
+                              onClick={() => handleLogSkip(c.id)}
+                              className="h-10 px-3 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0"
+                            >
+                              Skip
+                            </button>
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}
@@ -1436,116 +1487,6 @@ export default function DeliveriesClient({
         </div>
       )}
 
-      {/* DELIVERY COMPLETION MODAL */}
-      {proofCustomer && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-2xs">
-          <div className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-200">
-            <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-gray-50/70">
-              <div className="min-w-0">
-                <h3 className="text-sm font-black text-gray-900 truncate capitalize">
-                  Deliver to {proofCustomer.full_name}
-                </h3>
-                <p className="text-[11px] text-gray-500 truncate mt-0.5">
-                  📍 {formatStreetOnlyAddress(proofCustomer.delivery_address)}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setProofCustomer(null)}
-                className="w-8 h-8 rounded-full bg-gray-200/70 text-gray-600 flex items-center justify-center hover:bg-gray-300 transition-colors cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {(() => {
-              const used = proofCustomer.used_credits || 0;
-              const total = proofCustomer.total_tiffin_credits || 0;
-              const remaining = Math.max(0, total - used);
-              const isLastDay =
-                remaining <= 1 ||
-                (proofCustomer.cycle_end_date && proofCustomer.cycle_end_date.slice(0, 10) === selectedDateKey);
-
-              const rawTemplate = isLastDay
-                ? msgTemplates.last_day_message_template
-                : msgTemplates.delivery_message_template;
-
-              const formattedText = formatDeliveryMessage(rawTemplate, {
-                customer_name: proofCustomer.full_name,
-                address: formatStreetOnlyAddress(proofCustomer.delivery_address),
-                remaining_meals: remaining,
-              });
-
-              return (
-                <div className="p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-gray-500 font-semibold">
-                      Select an option to notify customer and mark delivery complete:
-                    </p>
-                    {isLastDay && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase bg-rose-100 text-rose-800 border border-rose-300">
-                        Final Delivery
-                      </span>
-                    )}
-                  </div>
-
-                  {proofCustomer.phone_number ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <a
-                        href={`whatsapp://send?phone=${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}&text=${encodeURIComponent(formattedText)}`}
-                        onClick={() => {
-                          const id = proofCustomer.id;
-                          setProofCustomer(null);
-                          handleMarkDelivered(id);
-                        }}
-                        className="h-12 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white"
-                      >
-                        <MessageSquare className="w-4 h-4" />
-                        <span>WhatsApp &amp; Complete</span>
-                      </a>
-
-                      <a
-                        href={`sms:${cleanPhoneNumberForWhatsApp(proofCustomer.phone_number)}?&body=${encodeURIComponent(formattedText)}`}
-                        onClick={() => {
-                          const id = proofCustomer.id;
-                          setProofCustomer(null);
-                          handleMarkDelivered(id);
-                        }}
-                        className="h-12 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer bg-blue-600 hover:bg-blue-700 text-white"
-                      >
-                        <Phone className="w-4 h-4" />
-                        <span>SMS &amp; Complete</span>
-                      </a>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-medium">
-                      ⚠ No phone number saved for this customer.
-                    </p>
-                  )}
-
-                  <div className="bg-gray-50 p-2.5 rounded-xl border border-gray-200/60 text-[11.5px] text-gray-600 leading-snug">
-                    <span className="font-bold text-gray-400 not-italic uppercase text-[9.5px] block mb-0.5">Template Preview:</span>
-                    <p className="italic">&quot;{formattedText}&quot;</p>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const id = proofCustomer.id;
-                      setProofCustomer(null);
-                      handleMarkDelivered(id);
-                    }}
-                    className="w-full h-11 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer mt-1"
-                  >
-                    <Check className="w-4 h-4 text-emerald-600 stroke-[3]" />
-                    <span>Mark Delivered Without Notifying</span>
-                  </button>
-                </div>
-              );
-            })()}
-          </div>
-        </div>
-      )}
 
     </div>
   );
