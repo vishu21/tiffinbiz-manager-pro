@@ -208,7 +208,6 @@ const formatStreetOnlyAddress = (address: string | null | undefined): string => 
   });
 
   const baseStreet = streetParts.length > 0 ? streetParts.join(', ') : parts[0];
-  // Strip trailing city string if entered without a comma
   return baseStreet.replace(/\s+(london|woodstock|st\.?\s*thomas)$/i, '').trim();
 };
 
@@ -219,6 +218,49 @@ function cleanPhoneNumberForWhatsApp(phone: string | null | undefined): string {
     digits = `1${digits}`;
   }
   return digits;
+}
+
+/**
+ * Safely constructs a valid Google Maps navigation URL for desktop and mobile apps:
+ * 1. Enforces lowercase https://
+ * 2. Deduplicates consecutive matching stops (e.g. multi-box customers at the same address)
+ * 3. Safely encodes waypoints separated by %7C instead of raw |
+ */
+function buildGoogleMapsRouteUrl(
+  origin: string,
+  destination: string,
+  waypoints: string[] = []
+): string {
+  const cleanOrigin = origin.trim();
+  const cleanDestination = destination.trim();
+
+  const uniqueWaypoints: string[] = [];
+  waypoints
+    .map(w => (w || '').trim())
+    .filter(Boolean)
+    .forEach(addr => {
+      const prev = uniqueWaypoints[uniqueWaypoints.length - 1];
+      if (
+        (!prev || prev.toLowerCase() !== addr.toLowerCase()) &&
+        addr.toLowerCase() !== cleanOrigin.toLowerCase() &&
+        addr.toLowerCase() !== cleanDestination.toLowerCase()
+      ) {
+        uniqueWaypoints.push(addr);
+      }
+    });
+
+  const originParam = encodeURIComponent(cleanOrigin);
+  const destParam = encodeURIComponent(cleanDestination);
+
+  if (uniqueWaypoints.length > 0) {
+    const encodedWaypoints = uniqueWaypoints
+      .map(w => encodeURIComponent(w))
+      .join('%7C');
+
+    return `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destParam}&waypoints=${encodedWaypoints}&travelmode=driving`;
+  }
+
+  return `https://www.google.com/maps/dir/?api=1&origin=${originParam}&destination=${destParam}&travelmode=driving`;
 }
 
 export default function DeliveriesClient({
@@ -249,9 +291,13 @@ export default function DeliveriesClient({
   const [msgTemplates, setMsgTemplates] = useState<{
     delivery_message_template: string;
     last_day_message_template: string;
+    friday_message_template: string;
+    friday_double_pack_template: string;
   }>({
     delivery_message_template: 'Hi {customer_name}, your tiffin has been delivered! Enjoy your meal!',
     last_day_message_template: 'Hi {customer_name}, your tiffin has been delivered! Today is your final delivery for this cycle. Please leave your empty tiffin bag out for collection.',
+    friday_message_template: 'Hello {customer_name}, your tiffin has been delivered! Have a wonderful weekend!',
+    friday_double_pack_template: 'Hello {customer_name}, your tiffins have been delivered! Today includes 2 tiffins for Friday and Saturday. Please refrigerate the Saturday meal. Have a great weekend!',
   });
 
   // Kitchen Base Origin State
@@ -289,7 +335,7 @@ export default function DeliveriesClient({
             .eq('is_skipped', true),
           supabase
             .from('app_settings')
-            .select('delivery_message_template, last_day_message_template, kitchen_address, kitchen_lat, kitchen_lng')
+            .select('delivery_message_template, last_day_message_template, friday_message_template, friday_double_pack_template, kitchen_address, kitchen_lat, kitchen_lng')
             .eq('id', 'default')
             .maybeSingle(),
         ]);
@@ -318,6 +364,12 @@ export default function DeliveriesClient({
               last_day_message_template:
                 settingsRes.data.last_day_message_template ||
                 'Hi {customer_name}, your tiffin has been delivered! Today is your final delivery for this cycle. Please leave your empty tiffin bag out for collection.',
+              friday_message_template:
+                settingsRes.data.friday_message_template ||
+                'Hello {customer_name}, your tiffin has been delivered! Have a wonderful weekend!',
+              friday_double_pack_template:
+                settingsRes.data.friday_double_pack_template ||
+                'Hello {customer_name}, your tiffins have been delivered! Today includes 2 tiffins for Friday and Saturday. Please refrigerate the Saturday meal. Have a great weekend!',
             });
             if (settingsRes.data.kitchen_address) {
               setKitchenBase({
@@ -503,7 +555,6 @@ export default function DeliveriesClient({
 
   const todayLoggedIds = useMemo(() => activeLogs.map(l => l.customerId), [activeLogs]);
 
-  // 1. Declare allScheduledToday FIRST so it is initialized before being referenced
   const allScheduledToday = useMemo(() => {
     if (closuresSet.has(selectedDateKey)) return [];
 
@@ -519,16 +570,13 @@ export default function DeliveriesClient({
     });
   }, [customers, activeDay, selectedDateKey, skipsMap, closuresSet, todayLoggedIds]);
 
-  // 2. completedList can now safely read allScheduledToday and preserve driving route order
   const completedList = useMemo(() => {
     const orderIndexMap = new Map<string, number>();
 
-    // 1. Assign positions according to the driver route sequence
     customOrderIds.forEach((id, index) => {
       orderIndexMap.set(id, index);
     });
 
-    // 2. Fallback positions for any unsequenced stops
     allScheduledToday.forEach((c, index) => {
       if (!orderIndexMap.has(c.id)) {
         orderIndexMap.set(c.id, 1000 + index);
@@ -569,7 +617,6 @@ export default function DeliveriesClient({
   }, [allScheduledToday, todayLoggedIds, customOrderIds]);
 
   const routeRuns = useMemo(() => {
-    // Preserve the complete scheduled route order so completed stops don't mutate route legs
     const map = new Map(allScheduledToday.map(c => [c.id, c]));
     const sequencedAll: CustomerRow[] = [];
 
@@ -584,7 +631,6 @@ export default function DeliveriesClient({
     const validStops = orderedStops.filter(c => c.delivery_address && c.delivery_address.length > 3);
     if (validStops.length === 0) return [];
 
-    const kitchenOriginEncoded = encodeURIComponent(sanitizeAddressForUrl(kitchenBase.address));
     const runs = [];
     const maxStopsPerRun = 9;
     const totalRuns = Math.ceil(validStops.length / maxStopsPerRun);
@@ -597,30 +643,23 @@ export default function DeliveriesClient({
       const isFirstRun = i === 0;
       const isLastRun = i === totalRuns - 1;
 
-      // Track how many stops in this specific segment are already delivered/skipped
       const completedInBatch = batch.filter(c => todayLoggedIds.includes(c.id)).length;
       const isRunFinished = completedInBatch === batch.length;
 
-      const origin = isFirstRun
-        ? kitchenOriginEncoded
-        : encodeURIComponent(sanitizeAddressForUrl(validStops[startIdx - 1].delivery_address!));
+      const originAddr = isFirstRun
+        ? sanitizeAddressForUrl(kitchenBase.address)
+        : sanitizeAddressForUrl(validStops[startIdx - 1].delivery_address!);
 
       let url = '';
       if (isLastRun) {
-        const destination = kitchenOriginEncoded;
-        const intermediateWaypoints = batch
-          .map(s => encodeURIComponent(sanitizeAddressForUrl(s.delivery_address!)))
-          .join('|');
-
-        url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&waypoints=${intermediateWaypoints}&travelmode=driving`;
+        const destinationAddr = sanitizeAddressForUrl(kitchenBase.address);
+        const waypointAddresses = batch.map(s => sanitizeAddressForUrl(s.delivery_address!));
+        url = buildGoogleMapsRouteUrl(originAddr, destinationAddr, waypointAddresses);
       } else {
-        const destination = encodeURIComponent(sanitizeAddressForUrl(batch[batch.length - 1].delivery_address!));
+        const destinationAddr = sanitizeAddressForUrl(batch[batch.length - 1].delivery_address!);
         const intermediateStops = batch.slice(0, -1);
-        const waypointsParam = intermediateStops.length > 0
-          ? `&waypoints=${intermediateStops.map(s => encodeURIComponent(sanitizeAddressForUrl(s.delivery_address!))).join('|')}`
-          : '';
-
-        url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}${waypointsParam}&travelmode=driving`;
+        const waypointAddresses = intermediateStops.map(s => sanitizeAddressForUrl(s.delivery_address!));
+        url = buildGoogleMapsRouteUrl(originAddr, destinationAddr, waypointAddresses);
       }
 
       runs.push({
@@ -639,7 +678,6 @@ export default function DeliveriesClient({
     return runs;
   }, [allScheduledToday, customOrderIds, todayLoggedIds, kitchenBase.address]);
 
-  // Find the first unfinished run for the main active navigation button
   const activeRun = useMemo(() => {
     return routeRuns.find(r => !r.isFinished) || routeRuns[routeRuns.length - 1] || null;
   }, [routeRuns]);
@@ -762,7 +800,7 @@ export default function DeliveriesClient({
     }
   };
 
-  const handleUndo = async (customerId: string) => {
+const handleUndo = async (customerId: string) => {
     setBusyId(customerId);
     setErrorMsg('');
 
@@ -963,7 +1001,6 @@ export default function DeliveriesClient({
 
       {/* CENTERED CONTENT COLUMN */}
       <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3">
-        {/* Genuine Errors Only */}
         {errorMsg && (
           <div className="mb-2.5 px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
             <div className="flex items-center gap-2">
@@ -976,7 +1013,6 @@ export default function DeliveriesClient({
           </div>
         )}
 
-        {/* Floating Sync Toast */}
         {saveStatus !== 'idle' && (
           <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 px-3 py-2 rounded-xl bg-[#11142D] text-white text-xs font-semibold shadow-xl border border-white/10 animate-in fade-in slide-in-from-bottom-2 duration-150">
             {saveStatus === 'saving' ? (
@@ -997,7 +1033,7 @@ export default function DeliveriesClient({
         {tab === 'dispatch' && (
           <div className="space-y-2.5">
 
-            {/* TOP CONTROLS: Filter Search + Mini Reorder Button */}
+            {/* TOP CONTROLS */}
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1019,7 +1055,6 @@ export default function DeliveriesClient({
                 )}
               </div>
 
-              {/* Compact Mini Reorder Trigger */}
               <button
                 type="button"
                 onClick={() => setShowOrderSheet(true)}
@@ -1034,7 +1069,6 @@ export default function DeliveriesClient({
             {/* ACTIVE RUN CARD + ALL RUNS DROPDOWN */}
             {activeRun && (
               <div className="relative bg-white rounded-2xl border border-gray-200/90 p-2.5 sm:p-3 shadow-2xs flex items-center justify-between gap-2">
-                {/* 1. Large Primary Action Button for Next/Active Run */}
                 <a
                   href={activeRun.url}
                   target="_blank"
@@ -1056,7 +1090,6 @@ export default function DeliveriesClient({
                   </span>
                 </a>
 
-                {/* 2. "All Runs" Dropdown Trigger */}
                 <div className="relative shrink-0">
                   <button
                     type="button"
@@ -1067,7 +1100,6 @@ export default function DeliveriesClient({
                     <span className="text-[10px] text-gray-400">▼</span>
                   </button>
 
-                  {/* Backdrop & Menu */}
                   {showRunsMenu && (
                     <>
                       <div
@@ -1157,7 +1189,6 @@ export default function DeliveriesClient({
                       key={c.id}
                       className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs p-3.5 transition-all"
                     >
-                      {/* Top Header: Stop Number + Full Name + Call Button */}
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0 flex-wrap">
                           <span className="w-5 h-5 rounded-full bg-gray-100 text-gray-700 text-[11px] font-black flex items-center justify-center shrink-0">
@@ -1191,7 +1222,6 @@ export default function DeliveriesClient({
                         )}
                       </div>
 
-                      {/* Middle Row: Street Address & Attached Navigation Button */}
                       {c.delivery_address ? (
                         <div className="mt-2 bg-gray-50 border border-gray-200/70 rounded-xl p-2.5 space-y-1.5">
                           <div className="flex items-center justify-between gap-2">
@@ -1220,7 +1250,6 @@ export default function DeliveriesClient({
                             )}
                           </div>
 
-                          {/* Delivery Instructions / Buzzer Code Callout Chip (Driver Logistics Only) */}
                           {c.delivery_instructions && !/(sabji|chicken|dal|paneer|roti|salad|dessert)/i.test(c.delivery_instructions) && (
                             <div className="pt-1.5 border-t border-gray-200/60 flex items-start gap-1.5 text-amber-900 bg-amber-50/80 px-2 py-1.5 rounded-lg border border-amber-200/80">
                               <FileText className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
@@ -1237,15 +1266,26 @@ export default function DeliveriesClient({
                         </p>
                       )}
 
-                      {/* Bottom Direct Action Row: Single Smart Dynamic Button + Fallback Icon + Skip */}
+                      {/* Context-Aware Dynamic Notification Trigger */}
                       {(() => {
                         const isLastDay =
                           remaining <= 1 ||
                           (c.cycle_end_date && c.cycle_end_date.slice(0, 10) === selectedDateKey);
 
+                        const isFriday = activeDay === 'Friday';
+                        const isDoublePackFriday =
+                          isFriday &&
+                          (Boolean(c.delivery_instructions?.includes('Pack 2 Tiffins on Friday')) ||
+                           Boolean(c.delivery_schedule?.includes('Saturday')) ||
+                           Boolean(c.delivery_schedule?.includes('Sat')));
+
                         const rawTemplate = isLastDay
                           ? msgTemplates.last_day_message_template
-                          : msgTemplates.delivery_message_template;
+                          : isDoublePackFriday
+                            ? msgTemplates.friday_double_pack_template
+                            : isFriday
+                              ? msgTemplates.friday_message_template
+                              : msgTemplates.delivery_message_template;
 
                         const messageText = formatDeliveryMessage(rawTemplate, {
                           customer_name: c.full_name,
@@ -1255,7 +1295,6 @@ export default function DeliveriesClient({
 
                         const cleanPhone = cleanPhoneNumberForWhatsApp(c.phone_number);
 
-                        // Parse customer preferred channel: 'whatsapp' (default), 'phone' (SMS), or 'messenger'
                         const rawPhone = (c.phone_number || '').trim();
                         const isSmsPreferred = /^SMS:/i.test(rawPhone) || /^PHONE:/i.test(rawPhone);
                         const isMessenger = /^FB:/i.test(rawPhone);
@@ -1264,8 +1303,6 @@ export default function DeliveriesClient({
                         return (
                           <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center gap-2">
                             <div className="flex-1 flex items-center gap-1.5 min-w-0">
-
-                              {/* 1. WHATSAPP (DEFAULT FOR CUSTOMERS) */}
                               {isWhatsAppPreferred && (
                                 <a
                                   href={`whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`}
@@ -1278,7 +1315,6 @@ export default function DeliveriesClient({
                                 </a>
                               )}
 
-                              {/* 2. SMS (WHEN CUSTOMER PREFERS PHONE/SMS) */}
                               {isSmsPreferred && cleanPhone && (
                                 <a
                                   href={`sms:${cleanPhone}?&body=${encodeURIComponent(messageText)}`}
@@ -1291,7 +1327,6 @@ export default function DeliveriesClient({
                                 </a>
                               )}
 
-                              {/* 3. SILENT / NO PHONE NUMBER FALLBACK */}
                               {(!cleanPhone || isMessenger) && (
                                 <button
                                   type="button"
@@ -1304,7 +1339,6 @@ export default function DeliveriesClient({
                                 </button>
                               )}
 
-                              {/* Emergency Silent Checkmark (allows driver to mark complete without sending message) */}
                               {cleanPhone && (
                                 <button
                                   type="button"
@@ -1318,7 +1352,6 @@ export default function DeliveriesClient({
                               )}
                             </div>
 
-                            {/* 4. Skip Button */}
                             <button
                               type="button"
                               disabled={busyId === c.id}
@@ -1622,7 +1655,6 @@ export default function DeliveriesClient({
           </div>
         </div>
       )}
-
 
     </div>
   );
