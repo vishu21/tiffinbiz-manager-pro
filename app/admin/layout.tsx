@@ -19,7 +19,7 @@ export default function AdminLayout({
         <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
 
         {/* Scrollable Main Work Area */}
-        <main className="flex-1 flex flex-col min-w-0 h-full overflow-hidden p-0 m-0">
+        <main className="flex-1 flex flex-col min-w-0 h-full overflow-y-auto overflow-x-hidden bg-[#F8FAFC]">
           {children}
         </main>
       </div>

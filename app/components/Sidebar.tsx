@@ -3,17 +3,27 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Utensils, Users, ChefHat, Truck, CalendarOff, CreditCard, Settings } from 'lucide-react';
+import { 
+  Utensils, 
+  Users, 
+  ChefHat, 
+  Truck, 
+  CalendarOff, 
+  CreditCard, 
+  Settings,
+  MapPin,
+  MessageSquare,
+  Sliders,
+  ChevronDown
+} from 'lucide-react';
 
-// Static navigation — identical on every server and client render pass.
 const navItems = [
   { href: '/admin/customers', label: 'Customers', icon: Users },
   { href: '/admin/recipes', label: 'Recipes', icon: ChefHat },
   { href: '/admin/deliveries', label: 'Deliveries', icon: Truck },
   { href: '/prep', label: 'Kitchen Prep', icon: Utensils },
   { href: '/admin/closures', label: 'Holidays', icon: CalendarOff },
-  { href: '/billing', label: 'Billing', icon: CreditCard },
-  { href: '/admin/settings', label: 'Settings', icon: Settings },
+  { href: '/admin/billing', label: 'Billing', icon: CreditCard },
 ];
 
 interface SidebarProps {
@@ -23,6 +33,8 @@ interface SidebarProps {
 
 export default function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
+  const isSettingsActive = pathname.startsWith('/admin/settings');
+  const [settingsOpen, setSettingsOpen] = React.useState(true);
 
   return (
     <>
@@ -51,7 +63,6 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
         <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
-            // Active state only affects styling classes — href & content stay identical.
             const isActive = pathname.startsWith(item.href);
 
             return (
@@ -63,7 +74,7 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                     ? 'bg-[#5D5FEF] text-white shadow-lg shadow-[#5D5FEF]/20'
                     : 'text-slate-300 hover:text-white hover:bg-white/5'
                 }`}
-                onClick={onClose} // Close sidebar on navigation
+                onClick={onClose}
               >
                 <Icon
                   className={`w-[18px] h-[18px] shrink-0 transition-colors ${
@@ -75,6 +86,78 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
               </Link>
             );
           })}
+
+          {/* Settings Section with Subroutes */}
+          <div className="pt-1">
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(prev => !prev)}
+              className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 group cursor-pointer ${
+                isSettingsActive
+                  ? 'bg-white/10 text-white'
+                  : 'text-slate-300 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <Settings
+                  className={`w-[18px] h-[18px] shrink-0 transition-colors ${
+                    isSettingsActive ? 'text-[#5D5FEF]' : 'text-slate-400 group-hover:text-white'
+                  }`}
+                  strokeWidth={2}
+                />
+                <span className="truncate">Settings</span>
+              </div>
+              <ChevronDown
+                className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
+                  settingsOpen ? 'rotate-180 text-white' : ''
+                }`}
+              />
+            </button>
+
+            {/* Sub-menu links */}
+            {settingsOpen && (
+              <div className="mt-1 ml-4 pl-3 border-l border-white/10 space-y-1">
+                <Link
+                  href="/admin/settings/kitchen"
+                  onClick={onClose}
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                    pathname === '/admin/settings/kitchen'
+                      ? 'bg-[#5D5FEF] text-white shadow-md shadow-[#5D5FEF]/20'
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <MapPin className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Kitchen &amp; Base</span>
+                </Link>
+
+                <Link
+                  href="/admin/settings/messaging"
+                  onClick={onClose}
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                    pathname === '/admin/settings/messaging'
+                      ? 'bg-[#5D5FEF] text-white shadow-md shadow-[#5D5FEF]/20'
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Driver Messaging</span>
+                </Link>
+
+                <Link
+                  href="/admin/settings/rules"
+                  onClick={onClose}
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                    pathname === '/admin/settings/rules'
+                      ? 'bg-[#5D5FEF] text-white shadow-md shadow-[#5D5FEF]/20'
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <Sliders className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Plans &amp; Rules</span>
+                </Link>
+              </div>
+            )}
+          </div>
         </nav>
       </div>
     </>

@@ -5,7 +5,7 @@ import CustomerSplitLayout from './CustomerSplitLayout';
 export default async function CustomersPage() {
   const supabase = await createClient();
 
-  // Apply any due scheduled cancel/pause dates first so every status below is current.
+  // Apply any due scheduled cancel/pause dates first so every status is current.
   await applyScheduledStatusTransitions();
 
   // Pull records right on the edge server
