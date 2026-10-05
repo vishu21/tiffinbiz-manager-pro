@@ -962,3 +962,169 @@ export async function addManualCustomerLog(params: {
     return { success: false, message: err instanceof Error ? err.message : 'Failed to save log' };
   }
 }
+
+export type RecordPaymentPayload = {
+  customerId: string;
+  amount: number;
+  paymentMethod: 'etransfer' | 'cash' | 'card' | 'other';
+  paidAt?: string | null;
+  creditsAdded: number;
+  cycleAction: 'settle_current' | 'renew_next' | 'topup' | 'historical';
+  referenceNote?: string | null;
+  billingCycleStart?: string | null;
+  billingCycleEnd?: string | null;
+  markStatusAs?: 'paid' | 'due' | 'overdue';
+};
+
+export async function recordCustomerPayment(payload: RecordPaymentPayload) {
+  const supabase = await createClient();
+
+  // 1. Insert transaction into ledger with the date received
+  const { data: payment, error: paymentError } = await supabase
+    .from('customer_payments')
+    .insert({
+      customer_id: payload.customerId,
+      amount: payload.amount,
+      payment_method: payload.paymentMethod,
+      payment_status: 'completed',
+      paid_at: payload.paidAt || toDateKey(new Date()),
+      credits_added: payload.creditsAdded,
+      cycle_action: payload.cycleAction,
+      billing_cycle_start: payload.billingCycleStart || null,
+      billing_cycle_end: payload.billingCycleEnd || null,
+      reference_note: payload.referenceNote || null,
+    })
+    .select()
+    .single();
+
+  if (paymentError) throw new Error(paymentError.message);
+
+  // 2. If this is a historical/past cycle payment, do NOT alter the customer's active cycle
+  if (payload.cycleAction === 'historical') {
+    revalidatePath('/admin/customers');
+    revalidatePath('/admin/billing');
+    return { success: true, payment };
+  }
+
+  // 3. Update customer record for active cycle actions
+  const customerUpdates: Record<string, any> = {
+    payment_status: payload.markStatusAs || 'paid',
+  };
+
+  if (payload.cycleAction === 'renew_next') {
+    const { data: cust } = await supabase
+      .from('customers')
+      .select('used_credits, total_tiffin_credits')
+      .eq('id', payload.customerId)
+      .single();
+
+    const used = cust?.used_credits || 0;
+    const total = cust?.total_tiffin_credits || 20;
+    const graceUsed = Math.max(0, used - total);
+
+    customerUpdates.used_credits = graceUsed;
+    customerUpdates.total_tiffin_credits = payload.creditsAdded;
+    if (payload.billingCycleStart) customerUpdates.start_date = payload.billingCycleStart;
+    if (payload.billingCycleEnd) customerUpdates.cycle_end_date = payload.billingCycleEnd;
+  } else if (payload.cycleAction === 'topup') {
+    const { data: cust } = await supabase
+      .from('customers')
+      .select('total_tiffin_credits')
+      .eq('id', payload.customerId)
+      .single();
+
+    customerUpdates.total_tiffin_credits = (cust?.total_tiffin_credits || 0) + payload.creditsAdded;
+  }
+
+  const { error: custError } = await supabase
+    .from('customers')
+    .update(customerUpdates)
+    .eq('id', payload.customerId);
+
+  if (custError) throw new Error(custError.message);
+
+  revalidatePath('/admin/customers');
+  revalidatePath('/admin/billing');
+  return { success: true, payment };
+}
+
+export async function getCustomerPayments(customerId: string) {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('customer_payments')
+    .select('*')
+    .eq('customer_id', customerId)
+    .order('recorded_at', { ascending: false });
+
+  if (error) return [];
+  return data;
+}
+export async function updateCustomerPayment(
+  paymentId: string,
+  payload: {
+    amount: number;
+    paymentMethod: 'etransfer' | 'cash' | 'card' | 'other';
+    creditsAdded?: number;
+    cycleAction?: 'settle_current' | 'renew_next' | 'topup';
+    billingCycleStart?: string | null;
+    billingCycleEnd?: string | null;
+    referenceNote?: string | null;
+  }
+) {
+  const supabase = await createClient();
+
+  const { data: updated, error } = await supabase
+    .from('customer_payments')
+    .update({
+      amount: payload.amount,
+      payment_method: payload.paymentMethod,
+      credits_added: payload.creditsAdded ?? 20,
+      cycle_action: payload.cycleAction ?? 'settle_current',
+      billing_cycle_start: payload.billingCycleStart ?? null,
+      billing_cycle_end: payload.billingCycleEnd ?? null,
+      reference_note: payload.referenceNote ?? null,
+    })
+    .eq('id', paymentId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Update payment error:', error);
+    throw new Error(error.message);
+  }
+
+  revalidatePath('/admin/customers');
+  revalidatePath('/admin/billing');
+  return { success: true, payment: updated };
+}
+
+export async function deleteCustomerPayment(paymentId: string, customerId: string) {
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from('customer_payments')
+    .delete()
+    .eq('id', paymentId);
+
+  if (error) {
+    console.error('Delete payment error:', error);
+    throw new Error(error.message);
+  }
+
+  // Refresh customer payment status check if ledger becomes empty
+  const { data: remaining } = await supabase
+    .from('customer_payments')
+    .select('id')
+    .eq('customer_id', customerId);
+
+  if (!remaining || remaining.length === 0) {
+    await supabase
+      .from('customers')
+      .update({ payment_status: 'due' })
+      .eq('id', customerId);
+  }
+
+  revalidatePath('/admin/customers');
+  revalidatePath('/admin/billing');
+  return { success: true };
+}

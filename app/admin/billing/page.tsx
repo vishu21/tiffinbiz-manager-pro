@@ -1,36 +1,104 @@
-import { Receipt } from 'lucide-react';
+import { createClient } from '@/utils/supabase/server';
+import BillingTableClient from './BillingTableClient';
 
 export const dynamic = 'force-dynamic';
 
-export default function BillingPage() {
+export default async function BillingPage() {
+  const supabase = await createClient();
+
+  const [{ data: customers }, { data: payments }] = await Promise.all([
+    supabase
+      .from('customers')
+      .select('*')
+      .order('full_name', { ascending: true }),
+    supabase
+      .from('customer_payments')
+      .select('*')
+      .order('recorded_at', { ascending: false })
+      .limit(100),
+  ]);
+
+  const customerList = customers || [];
+  const paymentList = payments || [];
+
+  // Summary Metrics
+  const dueCount = customerList.filter(c => {
+    const isPaid = c.payment_status === 'paid';
+    const used = c.used_credits ?? 0;
+    const total = c.total_tiffin_credits ?? 20;
+    return !isPaid && used <= total;
+  }).length;
+
+  const overdueCount = customerList.filter(c => {
+    const isPaid = c.payment_status === 'paid';
+    const used = c.used_credits ?? 0;
+    const total = c.total_tiffin_credits ?? 20;
+    return !isPaid && used > total;
+  }).length;
+
+  const paidCount = customerList.filter(c => c.payment_status === 'paid').length;
+
+  const thisMonthTotal = paymentList
+    .filter(p => {
+      const pDate = new Date(p.recorded_at);
+      const now = new Date();
+      return pDate.getMonth() === now.getMonth() && pDate.getFullYear() === now.getFullYear();
+    })
+    .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
   return (
-    <div className="w-full px-4 sm:px-6 lg:px-8 py-5 sm:py-7 lg:py-8 space-y-6 flex-1 flex flex-col min-h-0">
-      {/* ── UNIFIED STANDARD PAGE HEADER ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200/80 pb-5 shrink-0">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
-              Billing &amp; Payments
-            </h1>
-          </div>
-          <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
-            Track subscriber invoices, cycle renewals, cash collections, and outstanding balances.
-          </p>
+    <div className="w-full px-4 sm:px-6 lg:px-8 py-5 sm:py-7 lg:py-8 space-y-6 flex-1 flex flex-col min-h-0 font-sans antialiased text-[#292D32]">
+      {/* ── HEADER ── */}
+      <div className="border-b border-gray-200/80 pb-4 shrink-0">
+        <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
+          Billing &amp; Payments
+        </h1>
+        <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
+          Track subscriber renewals, log cash and e-Transfers, and collect outstanding balances.
+        </p>
+      </div>
+
+      {/* ── KPI METRIC CARDS ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 shrink-0">
+        <div className="bg-white border border-gray-200/80 rounded-2xl p-4 shadow-2xs">
+          <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block">
+            Collected This Month
+          </span>
+          <span className="text-xl sm:text-2xl font-black text-emerald-600 block mt-1">
+            ${thisMonthTotal.toFixed(2)} CAD
+          </span>
+        </div>
+
+        <div className="bg-white border border-gray-200/80 rounded-2xl p-4 shadow-2xs">
+          <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block">
+            Subscriptions Due
+          </span>
+          <span className="text-xl sm:text-2xl font-black text-amber-600 block mt-1">
+            {dueCount} Active
+          </span>
+        </div>
+
+        <div className="bg-white border border-gray-200/80 rounded-2xl p-4 shadow-2xs">
+          <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block">
+            Overdue Accounts
+          </span>
+          <span className="text-xl sm:text-2xl font-black text-rose-600 block mt-1">
+            {overdueCount} Past Due
+          </span>
+        </div>
+
+        <div className="bg-white border border-gray-200/80 rounded-2xl p-4 shadow-2xs">
+          <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block">
+            Settled / Paid Up
+          </span>
+          <span className="text-xl sm:text-2xl font-black text-indigo-600 block mt-1">
+            {paidCount} Customers
+          </span>
         </div>
       </div>
 
-      {/* ── MAIN CONTENT CARD CONTAINER ── */}
-      <div className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs overflow-hidden flex-1 flex flex-col min-h-0">
-        <div className="flex-1 min-h-0 overflow-y-auto p-6 sm:p-8">
-          <div className="p-12 text-center border-2 border-dashed border-gray-100 rounded-2xl bg-gray-50/40">
-            <Receipt className="w-9 h-9 text-gray-300 mx-auto mb-2" />
-            <p className="text-xs font-bold text-gray-600">Billing Module Ready</p>
-            <p className="text-[11px] text-gray-400 mt-1 max-w-sm mx-auto">
-              Invoices, payment history, and outstanding balance collection will be managed from here.
-            </p>
-          </div>
-        </div>
-      </div>
+      {/* ── INTERACTIVE RECEIVABLES TABLE ── */}
+      <BillingTableClient initialCustomers={customerList} recentPayments={paymentList} />
     </div>
   );
 }

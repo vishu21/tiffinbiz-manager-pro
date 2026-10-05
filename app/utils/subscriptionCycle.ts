@@ -197,3 +197,57 @@ export const resolvePlanTierForCredits = (
   if (credits > 1) return 'weekly';
   return 'trial';
 };
+
+// ============================================================================
+// STANDARD SUBSCRIPTION PRICING ENGINE
+// ============================================================================
+
+export type PricingTier = 'trial' | 'weekly' | 'monthly';
+
+export const BASE_MONTHLY_PRICES: Record<string, Record<string, number>> = {
+  veg: {
+    'RG': 220,
+    'LG': 250,
+    'HALF RG': 140,
+    'HALF LG': 165,
+  },
+  'non-veg': {
+    'RG': 250,
+    'LG': 280,
+    'HALF RG': 155,
+    'HALF LG': 180,
+  },
+};
+
+export function calculateStandardPlanPrice(
+  mealType: string | null | undefined,
+  portionSize: string | null | undefined,
+  planTier: PricingTier = 'monthly',
+  credits: number = 20
+): number {
+  const isNonVeg = (mealType || '').toLowerCase().includes('non');
+  const typeKey = isNonVeg ? 'non-veg' : 'veg';
+
+  const rawPortion = (portionSize || 'RG').trim().toUpperCase();
+  let normalizedPortion = 'RG';
+  if (rawPortion.includes('HALF') && (rawPortion.includes('LG') || rawPortion.includes('LARGE'))) {
+    normalizedPortion = 'HALF LG';
+  } else if (rawPortion.includes('HALF') || rawPortion.includes('SM') || rawPortion.includes('SMALL')) {
+    normalizedPortion = 'HALF RG';
+  } else if (rawPortion.includes('LG') || rawPortion.includes('LARGE')) {
+    normalizedPortion = 'LG';
+  }
+
+  const monthly20Price = BASE_MONTHLY_PRICES[typeKey][normalizedPortion] ?? 220;
+
+  // Scale if Weekly (5 meals), Trial (1 meal), or custom credit count
+  if (planTier === 'weekly' || credits === 5) {
+    return Math.round((monthly20Price / 20) * 5);
+  }
+  if (planTier === 'trial' || credits === 1) {
+    return Math.round(monthly20Price / 20);
+  }
+
+  // Monthly or custom credit adjustment
+  return Math.round((monthly20Price / 20) * credits);
+}
