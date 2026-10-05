@@ -339,34 +339,42 @@ export default function RecipeManagerClient({
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
+    <div className="w-full px-4 sm:px-6 lg:px-8 py-5 sm:py-7 lg:py-8 space-y-6 flex-1 flex flex-col min-h-0">
       <GlobalProgressBar />
-      <div className="max-w-[1400px] mx-auto">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4 mb-5">
+      <div className="w-full flex-1 flex flex-col min-h-0 gap-6">
+        {/* ── UNIFIED STANDARD PAGE HEADER ── */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200/80 pb-5 shrink-0">
           <div>
-            <h1 className="text-[24px] font-bold text-[#11142D]">Recipe Management</h1>
-            <p className="text-[13px] text-gray-500 mt-1">
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">Recipe Management</h1>
+              <span className="inline-flex items-center justify-center px-2.5 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-xs font-bold rounded-full">
+                {recipes.length}
+              </span>
+            </div>
+            <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
               Manage dishes and their raw-ingredient scaling for the 8 oz (RG) and 12 oz (LG) containers.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={openAdd}
-            className="shrink-0 px-4 py-2 bg-[#5D5FEF] hover:bg-[#4D4FDF] text-white text-[12.5px] font-bold rounded-lg shadow-sm transition-colors"
-          >
-            + Add New Dish
-          </button>
+
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={openAdd}
+              className="px-4 py-2 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-xl shadow-2xs transition-colors cursor-pointer"
+            >
+              + Add New Dish
+            </button>
+          </div>
         </div>
 
         {banner && (
-          <div className="mb-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[12.5px] font-semibold">
+          <div className="px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[12.5px] font-semibold">
             <AlertTriangle className="w-4 h-4 text-amber-500" /> {banner}
           </div>
         )}
 
         {successBanner && (
-          <div className="mb-4 px-4 py-2.5 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-bold flex items-center justify-between shadow-xs">
+          <div className="px-4 py-2.5 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-bold flex items-center justify-between shadow-xs">
             <span>✨ {successBanner} — highlighted below</span>
             <button
               type="button"
@@ -378,8 +386,10 @@ export default function RecipeManagerClient({
           </div>
         )}
 
-        {/* Category tabs, Global Pot Scaler & Instant Search Bar */}
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-6 bg-white p-3 rounded-2xl border border-gray-200/80 shadow-2xs">
+        {/* ── MAIN CONTENT CARD CONTAINER ── */}
+        <div className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs overflow-hidden flex-1 flex flex-col min-h-0">
+        {/* Top filter bar: category tabs, Global Pot Scaler & Instant Search */}
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 p-4 sm:p-5 border-b border-gray-100 shrink-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             {TABS.map(tab => {
               const active = activeTab === tab.key;
@@ -497,8 +507,9 @@ export default function RecipeManagerClient({
         </div>
 
         {/* Recipe Catalog Display with Category Dividers */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5">
         {visibleRecipes.length === 0 ? (
-          <div className="bg-white border border-dashed border-[#E0E0E0] rounded-2xl py-16 text-center shadow-2xs">
+          <div className="bg-gray-50/40 border border-dashed border-[#E0E0E0] rounded-2xl py-16 text-center shadow-2xs">
             <Soup className="w-8 h-8 mx-auto text-gray-400 mb-3" />
             <p className="text-[13px] font-bold text-gray-600">
               No dishes found{searchQuery ? ` matching "${searchQuery}"` : activeTab !== 'all' ? ` in ${CATEGORY_LABEL[activeTab]}` : ''}.
@@ -791,6 +802,8 @@ export default function RecipeManagerClient({
             })}
           </div>
         )}
+        </div>
+        </div>
       </div>
 
       {/* Add / Edit Dish drawer */}

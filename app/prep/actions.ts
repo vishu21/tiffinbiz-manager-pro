@@ -362,6 +362,7 @@ function buildMealOverrideSummary(config: {
   pronthi_count?: number | null;
   rice_count?: string | null;
   dietary_notes?: string | null;
+  disliked_dishes?: string[] | null;
 }): string {
   const parts: string[] = [];
   if (config.portion_size) parts.push(`${config.portion_size} portion`);
@@ -374,6 +375,13 @@ function buildMealOverrideSummary(config: {
   if (typeof config.pronthi_count === 'number' && config.pronthi_count > 0) parts.push(`${config.pronthi_count} Pronthi`);
   if (config.rice_count && config.rice_count !== 'None' && config.rice_count !== '—') parts.push(`Rice ${config.rice_count}`);
   if (config.dietary_notes) parts.push(`Note: "${config.dietary_notes}"`);
+  if (config.disliked_dishes !== undefined) {
+    parts.push(
+      config.disliked_dishes && config.disliked_dishes.length > 0
+        ? `No ${config.disliked_dishes.join(' / ')}`
+        : 'Dish exclusions cleared'
+    );
+  }
 
   return parts.length > 0 ? parts.join(' · ') : 'Meal preferences updated';
 }
@@ -1349,6 +1357,18 @@ export async function saveCustomerOverride(
       schemaAvailable: true,
       message: error.message,
     };
+  }
+
+  // Dish exclusions (customers.disliked_dishes) are a master-profile attribute — the
+  // customer_daily_overrides table has no per-day column for them, and the prep engine
+  // only reads them off the merged customer row. Persist them to the master profile for
+  // "Today Only"/"Range" saves too so the veg-side swap reflects on the manifest.
+  if (config.disliked_dishes !== undefined) {
+    try {
+      await updateCustomerMealConfig(customerId, { disliked_dishes: config.disliked_dishes });
+    } catch (dislikeError) {
+      console.warn('[SaveOverride] Could not persist disliked_dishes:', dislikeError);
+    }
   }
 
   const restored = dates.filter(date => previouslySkipped.has(date));

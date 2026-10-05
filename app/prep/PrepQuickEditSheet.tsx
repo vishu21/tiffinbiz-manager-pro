@@ -1,15 +1,29 @@
 'use client';
 
-import React, { useEffect, useState, useTransition } from 'react';
+import React, { useEffect, useMemo, useState, useTransition } from 'react';
 import { Zap, Calendar, RefreshCw, X, AlertTriangle, Info, CalendarOff, Clock, Undo2, Pause, Trash2, Check } from 'lucide-react';
 import type { MealConfigPayload } from '@/app/admin/actions';
 import { parseActiveScheduleDays } from '@/app/utils/customerPickup';
 import {
   renewCustomerSubscription,
   endCustomerSubscription,
+  getAvailableRecipes,
   type RenewCustomerSubscriptionResult,
 } from './actions';
 import { useRouter } from 'next/navigation';
+
+// Preferred common dish exclusions in priority order, surfaced as a compact quick-toggle
+// strip instead of dumping the entire recipe catalog as a wall of pills. These are only
+// ever shown when the dish actually exists in the live catalog (menu_recipes).
+const PREFERRED_EXCLUSIONS = [
+  'Aloo Baingan',
+  'Bhindi',
+  'Kadhi',
+  'Black Channa',
+  'Brown Dal',
+  'Rajma',
+  'Saag'
+];
 
 // Minimal view of a manifest row — only the fields the quick sheet edits/reads.
 type QuickCustomer = {
@@ -27,6 +41,7 @@ type QuickCustomer = {
   delivery_schedule?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
+  disliked_dishes?: string[] | null;
   pause_start_date?: string | null;
   pause_end_date?: string | null;
   start_date?: string | null;
@@ -57,8 +72,19 @@ const normalizePortion = (value: string | null | undefined): string => {
 const isNonVeg = (value: string | null | undefined): boolean =>
   String(value || '').toLowerCase().includes('non');
 
+// Order-independent, case-insensitive equality for two dish-exclusion lists.
+const dishListsEqual = (a: string[], b: string[]): boolean => {
+  if (a.length !== b.length) return false;
+  const seen = new Set(b.map(d => d.trim().toLowerCase()));
+  return a.every(d => seen.has(d.trim().toLowerCase()));
+};
+
 const DEFAULT_ROTI_COUNT = 8;
 const DEFAULT_PRONTHI_COUNT = 0;
+
+// The compact No-Serve Dishes editor pulls its one-tap pills and autocomplete
+// suggestions from the live recipe catalog (menu_recipes via getAvailableRecipes) so
+// the options always mirror what the admin maintains on /admin/recipes.
 
 const resolveDietarySource = (customer: QuickCustomer): string | null | undefined =>
   customer.meal_type || customer.dietary_type;
@@ -426,6 +452,9 @@ type Props = {
   vacationPending?: boolean;
   isExpiredPendingRenewal?: boolean;
   expiredOnDate?: string;
+  // Live recipe catalog (menu_recipes names) used for the No-Serve Dishes pills and
+  // autocomplete. When omitted the sheet loads it itself.
+  catalogRecipes?: string[];
   // Fired right after a successful renewal so the dashboard can optimistically clear
   // the "Renewal Pending" state without waiting for the round-trip refresh.
   onRenewSuccess?: (
@@ -452,6 +481,7 @@ export default function PrepQuickEditSheet({
   isExpiredPendingRenewal = false,
   expiredOnDate,
   onRenewSuccess,
+  catalogRecipes,
 }: Props) {
   const router = useRouter();
   const [visible, setVisible] = useState(false);
@@ -483,6 +513,36 @@ export default function PrepQuickEditSheet({
   );
   const [rice, setRice] = useState<RiceCounts>(() => parseRiceCounts(customer.rice_count));
   const [notes, setNotes] = useState<string>(() => resolveNotes(customer));
+  const [dislikedDishes, setDislikedDishes] = useState<string[]>(() =>
+    Array.isArray(customer.disliked_dishes) ? customer.disliked_dishes : []
+  );
+  const [dislikeInput, setDislikeInput] = useState<string>('');
+  const [isDislikeMenuOpen, setIsDislikeMenuOpen] = useState<boolean>(false);
+  const [fetchedCatalogRecipes, setFetchedCatalogRecipes] = useState<string[]>([]);
+
+  // Prefer the catalog handed down by the dashboard; otherwise load the live recipe
+  // catalog (menu_recipes) directly so the pills/autocomplete are never hardcoded.
+  const catalogRecipeNames =
+    catalogRecipes && catalogRecipes.length > 0 ? catalogRecipes : fetchedCatalogRecipes;
+
+  useEffect(() => {
+    if (catalogRecipes && catalogRecipes.length > 0) return;
+    let isActive = true;
+    getAvailableRecipes()
+      .then(data => {
+        if (!isActive) return;
+        const allNames = [...data.dal.map(r => r.name), ...data.sabji.map(r => r.name)].sort(
+          (a, b) => a.localeCompare(b)
+        );
+        setFetchedCatalogRecipes(allNames);
+      })
+      .catch(err => {
+        console.error('[Prep] Failed to load the dish catalog:', err);
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [catalogRecipes]);
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => setVisible(true));
@@ -495,6 +555,9 @@ export default function PrepQuickEditSheet({
   const currentPronthi = customer.pronthi_count ?? DEFAULT_PRONTHI_COUNT;
   const currentRiceDb = riceToDb(parseRiceCounts(customer.rice_count));
   const currentNotes = resolveNotes(customer).trim();
+  const currentDislikedDishes = Array.isArray(customer.disliked_dishes)
+    ? customer.disliked_dishes
+    : [];
   const storedCurryCounts = getStoredCurryCounts(customer);
   const isHalfTier = isHalfPortionToken(portion);
   const isNonVegDraft = mealType === 'Non-veg';
@@ -597,6 +660,65 @@ export default function PrepQuickEditSheet({
 
   const handleCurryPillChange = (counts: CurryCounts) => setCurry(counts);
 
+  // Adds a dish to the exclusion list (case-insensitive de-dupe). Only catalog dishes
+  // can be added — arbitrary free text is rejected. When the catalog hasn't loaded yet
+  // we fall back to the raw value so the field stays usable.
+  const addDislikedDish = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const canonical =
+      catalogRecipeNames.length > 0
+        ? catalogRecipeNames.find(r => r.toLowerCase() === trimmed.toLowerCase()) ?? null
+        : trimmed;
+    if (!canonical) return;
+    setDislikedDishes(prev =>
+      prev.some(d => d.toLowerCase() === canonical.toLowerCase()) ? prev : [...prev, canonical]
+    );
+    setDislikeInput('');
+    setIsDislikeMenuOpen(false);
+  };
+
+  // Catalog dishes matching the current query, minus the ones already excluded.
+  const filteredCatalogRecipes = useMemo(() => {
+    const query = dislikeInput.trim().toLowerCase();
+    return catalogRecipeNames.filter(
+      name =>
+        !dislikedDishes.some(d => d.toLowerCase() === name.toLowerCase()) &&
+        (query === '' || name.toLowerCase().includes(query))
+    );
+  }, [catalogRecipeNames, dislikeInput, dislikedDishes]);
+
+  // Quick-tap pills: preferred exclusions that actually exist in the catalog, padded with
+  // other catalog recipes (up to 4 total) so the strip is never stale or empty.
+  const quickPills = useMemo(() => {
+    const catalogSet = new Set(catalogRecipeNames.map(r => r.toLowerCase().trim()));
+
+    // 1. First, pick preferred exclusions that actually exist in the catalog.
+    const matched = PREFERRED_EXCLUSIONS.filter(name =>
+      catalogSet.has(name.toLowerCase().trim())
+    );
+
+    // 2. If fewer than 4 matched, pad with any other catalog recipes up to 4 items max.
+    if (matched.length < 4) {
+      for (const recipe of catalogRecipeNames) {
+        if (matched.length >= 4) break;
+        if (!matched.some(m => m.toLowerCase() === recipe.toLowerCase())) {
+          matched.push(recipe);
+        }
+      }
+    }
+
+    return matched.slice(0, 4); // Always cap at 4 pills max.
+  }, [catalogRecipeNames]);
+
+  const toggleDislikedDish = (dish: string) => {
+    setDislikedDishes(prev =>
+      prev.some(d => d.toLowerCase() === dish.toLowerCase())
+        ? prev.filter(d => d.toLowerCase() !== dish.toLowerCase())
+        : [...prev, dish]
+    );
+  };
+
   const handleSave = () => {
     const diffConfig: MealConfigPayload = {};
 
@@ -619,6 +741,9 @@ export default function PrepQuickEditSheet({
     const nextNotes = notes.trim();
     const notesChanged = currentNotes !== nextNotes;
     if (notesChanged) diffConfig.dietary_notes = nextNotes || null;
+
+    const dislikedChanged = !dishListsEqual(currentDislikedDishes, dislikedDishes);
+    if (dislikedChanged) diffConfig.disliked_dishes = dislikedDishes;
 
     const buildCurrySync = (): MealConfigPayload => {
       const storedInstructions = (customer.delivery_instructions || '').trim();
@@ -673,6 +798,9 @@ export default function PrepQuickEditSheet({
       snapshot.is_custom_curry = customer.is_custom_curry ?? null;
       snapshot.curry_config = customer.curry_config ?? null;
     }
+    // Dish exclusions have no per-day storage — only carry them when they changed so a
+    // "Today Only"/"Range" save never re-writes the master profile needlessly.
+    if (dislikedChanged) snapshot.disliked_dishes = dislikedDishes;
 
     const hasDiff = Object.keys(diffConfig).length > 0;
 
@@ -987,7 +1115,7 @@ export default function PrepQuickEditSheet({
           <div
             inert={skipActive}
             aria-hidden={skipActive || undefined}
-            className={`space-y-5 overflow-hidden transition-[max-height,opacity] duration-300 ease-out ${skipActive ? 'max-h-0 opacity-0' : 'max-h-[1600px] opacity-100'
+            className={`space-y-5 overflow-hidden transition-[max-height,opacity] duration-300 ease-out ${skipActive ? 'max-h-0 opacity-0' : 'max-h-[2100px] opacity-100'
               }`}
           >
             {/* Dietary Type */}
@@ -1085,6 +1213,119 @@ export default function PrepQuickEditSheet({
                 </div>
               </div>
             )}
+
+            {/* Dish exclusions (disliked_dishes) — compact chip tag manager */}
+            <div>
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
+                No-Serve Dishes
+                {dislikedDishes.length > 0 && (
+                  <span className="ml-1 text-[10px] text-gray-400 font-normal normal-case">
+                    ({dislikedDishes.length})
+                  </span>
+                )}
+              </label>
+
+              <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                {dislikedDishes.length === 0 ? (
+                  <span className="text-xs text-gray-400 italic">No dishes excluded</span>
+                ) : (
+                  dislikedDishes.map(dish => (
+                    <span
+                      key={dish}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-50 text-amber-900 border border-amber-200"
+                    >
+                      {dish}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDislikedDishes(prev =>
+                            prev.filter(d => d.toLowerCase() !== dish.toLowerCase())
+                          )
+                        }
+                        className="hover:text-rose-600"
+                        title={`Remove ${dish}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))
+                )}
+              </div>
+
+              {/* Most-requested exclusions — capped quick-toggle strip (catalog-only) */}
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {quickPills.map(dish => {
+                  const isActive = dislikedDishes.some(
+                    d => d.toLowerCase() === dish.toLowerCase()
+                  );
+                  return (
+                    <button
+                      key={dish}
+                      type="button"
+                      onClick={() => toggleDislikedDish(dish)}
+                      aria-pressed={isActive}
+                      title={isActive ? `Remove ${dish} from exclusions` : `Exclude ${dish}`}
+                      className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors cursor-pointer ${isActive
+                        ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-xs'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 hover:border-gray-300'
+                        }`}
+                    >
+                      {dish}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div
+                className="relative"
+                onBlur={e => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                    setIsDislikeMenuOpen(false);
+                  }
+                }}
+              >
+                <input
+                  type="text"
+                  value={dislikeInput}
+                  onChange={e => {
+                    setDislikeInput(e.target.value);
+                    setIsDislikeMenuOpen(true);
+                  }}
+                  onFocus={() => setIsDislikeMenuOpen(true)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (!dislikeInput.trim()) return;
+                      addDislikedDish(filteredCatalogRecipes[0] ?? dislikeInput);
+                    } else if (e.key === 'Escape') {
+                      setIsDislikeMenuOpen(false);
+                    }
+                  }}
+                  placeholder="Search recipe to exclude (e.g. Baingan, Dal)..."
+                  className="w-full h-9 text-[13px] px-3 border border-gray-200 rounded-lg outline-none focus:border-[#5D5FEF] text-gray-700"
+                />
+                {isDislikeMenuOpen && filteredCatalogRecipes.length > 0 && (
+                  <ul className="absolute left-0 right-0 mt-1 bg-white border border-[#EEEEEE] rounded-lg shadow-xl max-h-48 overflow-y-auto z-50 text-[12px] divide-y divide-gray-50">
+                    {filteredCatalogRecipes.map(dish => (
+                      <li key={dish}>
+                        <button
+                          type="button"
+                          onMouseDown={e => e.preventDefault()}
+                          onClick={() => addDislikedDish(dish)}
+                          className="w-full text-left px-3 py-2 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer truncate transition-colors font-bold text-gray-600"
+                        >
+                          {dish}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <p className="mt-1.5 text-[11px] text-gray-400 font-medium">
+                Swaps today&apos;s Dal/Sabji automatically when it matches. Saved to the
+                customer profile.
+              </p>
+            </div>
 
             {/* Roti stepper */}
             <div>

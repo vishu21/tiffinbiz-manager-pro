@@ -48,6 +48,7 @@ type CustomerRow = {
   delivery_address?: string | null;
   delivery_instructions?: string | null;
   dietary_notes?: string | null;
+  disliked_dishes?: string[] | null;
   meal_type?: string | null;
   portion_size?: string | null;
   roti_count?: number | null;
@@ -198,7 +199,7 @@ const calculateElapsedDeliveryDays = (
 const formatStreetOnlyAddress = (address: string | null | undefined): string => {
   if (!address) return '';
   const parts = address.split(',').map(p => p.trim()).filter(Boolean);
-  
+
   const streetParts = parts.filter(part => {
     const p = part.toLowerCase();
     const isCity = p === 'london' || p === 'woodstock' || p === 'st. thomas' || p === 'st thomas';
@@ -760,7 +761,7 @@ export default function DeliveriesClient({
 
   if (!isMounted) {
     return (
-      <div className="h-full flex-1 flex items-center justify-center bg-[#FDFDFD]">
+      <div className="h-full flex-1 flex items-center justify-center bg-[#F8FAFC]">
         <div className="text-gray-400 text-sm font-medium">Loading deliveries…</div>
       </div>
     );
@@ -800,7 +801,7 @@ export default function DeliveriesClient({
     }
   };
 
-const handleUndo = async (customerId: string) => {
+  const handleUndo = async (customerId: string) => {
     setBusyId(customerId);
     setErrorMsg('');
 
@@ -833,90 +834,84 @@ const handleUndo = async (customerId: string) => {
     }
   };
 
+  const extractDeliveryNote = (instructions: string | null | undefined): string | null => {
+    if (!instructions) return null;
+    const raw = instructions.trim();
+
+    // 1. Check for structured [NOTE: ...] tag
+    const tagMatch = raw.match(/\[NOTE:\s*(.*?)\]/i);
+    if (tagMatch) return tagMatch[1].trim();
+
+    // 2. Fallback: if it's not purely a food/meal summary line, display it
+    const isPureMealText = /^(?:\d+x?\s*(?:dal|daal|sabji|chicken|gravy|salad|dessert|roti)\s*(?:\+\s*|\s*|$))+/i.test(raw);
+    if (isPureMealText) return null;
+
+    return raw || null;
+  };
+
   const planTier = (tier: string | null) => (tier === 'trial' ? 'Trial' : tier === 'monthly' ? 'Monthly' : 'Weekly');
 
   return (
-    <div className="flex-1 min-h-0 w-full max-w-full overflow-x-hidden overflow-y-auto bg-[#F8FAFC] pb-16 font-sans select-none">
+    <div className="w-full px-4 sm:px-6 lg:px-8 py-5 sm:py-7 lg:py-8 space-y-6 flex-1 flex flex-col min-h-0 font-sans select-none">
 
-      {/* TOP HEADER */}
-      <div className="w-full max-w-full bg-white border-b border-gray-200 px-3 sm:px-6 py-2 sticky top-0 z-30 shadow-2xs print:hidden">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-1.5 md:gap-3 w-full max-w-full min-w-0">
-
-          <div className="flex items-center justify-between gap-2 w-full md:w-auto min-w-0 shrink-0">
-            <div className="flex items-center gap-2 min-w-0 flex-1">
-              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[#5D5FEF] text-white flex items-center justify-center shrink-0">
-                <Truck className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-              </div>
-              <div className="min-w-0 truncate">
-                <h1 className="text-[13.5px] sm:text-[17px] font-black text-[#11142D] tracking-tight leading-tight truncate">
-                  Deliveries · {activeDay}
-                </h1>
-                <p className="text-[10px] sm:text-[11px] text-gray-400 font-semibold truncate">
-                  {totalStopsCount - activeLogs.length} left of {totalStopsCount} stops
-                </p>
-              </div>
+      {/* ── UNIFIED STANDARD PAGE HEADER ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200/80 pb-5 shrink-0">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-[#5D5FEF] text-white flex items-center justify-center shrink-0">
+              <Truck className="w-4 h-4" />
             </div>
+            <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
+              Deliveries
+            </h1>
+            <span className="inline-flex items-center justify-center px-2.5 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-xs font-bold rounded-full">
+              {totalStopsCount}
+            </span>
+          </div>
+          <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
+            {activeDay} · {totalStopsCount - activeLogs.length} left of {totalStopsCount} stops · Route target {formattedTargetDate}
+          </p>
+        </div>
 
-            <div className="flex md:hidden bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
-              <button
-                type="button"
-                onClick={() => setTab('dispatch')}
-                className={`px-2 py-0.5 text-[10.5px] font-bold rounded-md transition-all ${
-                  tab === 'dispatch' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500'
-                }`}
-              >
-                Dispatch ({pendingDispatchList.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab('ledger')}
-                className={`px-2 py-0.5 text-[10.5px] font-bold rounded-md transition-all ${
-                  tab === 'ledger' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500'
-                }`}
-              >
-                Ledger
-              </button>
+        {/* Action Controls Group */}
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          {(isSelectedToday || isSelectedTomorrow) && (
+            <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-gray-50/70 border border-gray-200/80 rounded-lg text-xs font-semibold text-gray-500 shrink-0">
+              {isSelectedToday ? (
+                <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                  Today
+                </span>
+              ) : (
+                <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100">
+                  Tomorrow
+                </span>
+              )}
             </div>
-          </div>
+          )}
 
-          <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-gray-50/70 border border-gray-200/80 rounded-lg text-xs font-semibold text-gray-500 shrink-0">
-            <span>Route target:</span>
-            <strong className="text-gray-900">{formattedTargetDate}</strong>
-            {isSelectedToday ? (
-              <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
-                Today
-              </span>
-            ) : isSelectedTomorrow ? (
-              <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100">
-                Tomorrow
-              </span>
-            ) : null}
-          </div>
+          <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-xl p-0.5 sm:p-1 shadow-2xs min-w-0">
+            <button
+              type="button"
+              onClick={() => changeWeek('prev')}
+              title="Previous Week"
+              className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-colors shrink-0"
+            >
+              ‹
+            </button>
 
-          <div className="flex items-center justify-between md:justify-end gap-1.5 w-full md:w-auto min-w-0">
-            <div className="inline-flex items-center justify-between sm:justify-start bg-gray-50 border border-gray-200 rounded-xl p-0.5 sm:p-1 shadow-2xs w-full md:w-auto min-w-0">
-              <button
-                type="button"
-                onClick={() => changeWeek('prev')}
-                title="Previous Week"
-                className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-colors shrink-0"
-              >
-                ‹
-              </button>
+            <div className="flex items-center justify-around sm:justify-start gap-0.5 px-0.5 flex-1 min-w-0">
+              {weekDays.map((item) => {
+                const isSelected = selectedDateKey === item.dateKey;
+                const isClosed = closuresSet.has(item.dateKey);
+                const isWeekend = item.short === 'Sat' || item.short === 'Sun';
 
-              <div className="flex items-center justify-around sm:justify-start gap-0.5 px-0.5 flex-1 min-w-0">
-                {weekDays.map((item) => {
-                  const isSelected = selectedDateKey === item.dateKey;
-                  const isClosed = closuresSet.has(item.dateKey);
-                  const isWeekend = item.short === 'Sat' || item.short === 'Sun';
-
-                  return (
-                    <button
-                      key={item.dateKey}
-                      type="button"
-                      onClick={() => setSelectedDate(item.dateObj)}
-                      title={isClosed ? 'Kitchen Closed' : undefined}
-                      className={`px-1.5 sm:px-2 py-0.5 sm:py-1 text-[10.5px] sm:text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5 shrink-0
+                return (
+                  <button
+                    key={item.dateKey}
+                    type="button"
+                    onClick={() => setSelectedDate(item.dateObj)}
+                    title={isClosed ? 'Kitchen Closed' : undefined}
+                    className={`px-1.5 sm:px-2 py-0.5 sm:py-1 text-[10.5px] sm:text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5 shrink-0
                         ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
                         ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
                         ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs' : ''}
@@ -924,68 +919,69 @@ const handleUndo = async (customerId: string) => {
                         ${!isSelected && !isClosed && isWeekend ? 'text-gray-400 opacity-40 hover:opacity-80 hover:bg-white' : ''}
                         ${!isSelected && !isClosed && !isWeekend ? 'text-gray-600 hover:bg-white hover:text-gray-900' : ''}
                       `}
-                    >
-                      <span className={isClosed && !isSelected ? 'line-through decoration-amber-600' : ''}>
-                        {item.short}
-                      </span>
-                      <span className="opacity-80 font-normal text-[9.5px] sm:text-[10.5px]">{item.dayNum}</span>
-                      {isClosed && (
-                        <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : 'bg-amber-600'}`} />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => changeWeek('next')}
-                title="Next Week"
-                className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-colors shrink-0"
-              >
-                ›
-              </button>
-
-              <div className="h-3.5 w-px bg-gray-200 mx-0.5 shrink-0" />
-
-              <div className="shrink-0 scale-90 sm:scale-100">
-                <PrepDatePicker
-                  selectedDate={selectedDateKey}
-                  onChange={(newDateStr) => {
-                    const picked = new Date(`${newDateStr}T12:00:00`);
-                    if (!isNaN(picked.getTime())) setSelectedDate(picked);
-                  }}
-                  closures={Array.from(closuresSet)}
-                />
-              </div>
+                  >
+                    <span className={isClosed && !isSelected ? 'line-through decoration-amber-600' : ''}>
+                      {item.short}
+                    </span>
+                    <span className="opacity-80 font-normal text-[9.5px] sm:text-[10.5px]">{item.dayNum}</span>
+                    {isClosed && (
+                      <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : 'bg-amber-600'}`} />
+                    )}
+                  </button>
+                );
+              })}
             </div>
 
-            <div className="hidden md:flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
-              <button
-                type="button"
-                onClick={() => setTab('dispatch')}
-                className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
-                  tab === 'dispatch' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500 hover:text-gray-800'
-                }`}
-              >
-                Dispatch ({pendingDispatchList.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab('ledger')}
-                className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
-                  tab === 'ledger' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500 hover:text-gray-800'
-                }`}
-              >
-                Ledger
-              </button>
+            <button
+              type="button"
+              onClick={() => changeWeek('next')}
+              title="Next Week"
+              className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-colors shrink-0"
+            >
+              ›
+            </button>
+
+            <div className="h-3.5 w-px bg-gray-200 mx-0.5 shrink-0" />
+
+            <div className="shrink-0 scale-90 sm:scale-100">
+              <PrepDatePicker
+                selectedDate={selectedDateKey}
+                onChange={(newDateStr) => {
+                  const picked = new Date(`${newDateStr}T12:00:00`);
+                  if (!isNaN(picked.getTime())) setSelectedDate(picked);
+                }}
+                closures={Array.from(closuresSet)}
+              />
             </div>
           </div>
+
+          <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 shrink-0">
+            <button
+              type="button"
+              onClick={() => setTab('dispatch')}
+              className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${tab === 'dispatch' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500 hover:text-gray-800'
+                }`}
+            >
+              Dispatch ({pendingDispatchList.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('ledger')}
+              className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${tab === 'ledger' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500 hover:text-gray-800'
+                }`}
+            >
+              Ledger
+            </button>
+          </div>
         </div>
+      </div>
+
+      {/* ── MAIN CONTENT CARD CONTAINER ── */}
+      <div className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs overflow-hidden flex-1 flex flex-col min-h-0">
 
         {tab === 'dispatch' && totalStopsCount > 0 && (
-          <div className="mt-1.5 pt-1.5 border-t border-gray-100 w-full">
-            <div className="flex items-center justify-between text-[10.5px] font-bold text-gray-500 mb-0.5">
+          <div className="px-4 sm:px-5 pt-4 pb-3 border-b border-gray-100 shrink-0">
+            <div className="flex items-center justify-between text-[10.5px] font-bold text-gray-500 mb-1">
               <span>Route Progress</span>
               <span className="text-emerald-600">{completedCount} of {totalStopsCount} Delivered ({progressPercent}%)</span>
             </div>
@@ -997,488 +993,489 @@ const handleUndo = async (customerId: string) => {
             </div>
           </div>
         )}
-      </div>
 
-      {/* CENTERED CONTENT COLUMN */}
-      <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3">
-        {errorMsg && (
-          <div className="mb-2.5 px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-              <span>{errorMsg}</span>
-            </div>
-            <button type="button" onClick={() => setErrorMsg('')} className="text-rose-500 hover:text-rose-700">
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-
-        {saveStatus !== 'idle' && (
-          <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 px-3 py-2 rounded-xl bg-[#11142D] text-white text-xs font-semibold shadow-xl border border-white/10 animate-in fade-in slide-in-from-bottom-2 duration-150">
-            {saveStatus === 'saving' ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 text-[#5D5FEF] animate-spin" />
-                <span>Syncing route order...</span>
-              </>
-            ) : (
-              <>
-                <Check className="w-3.5 h-3.5 text-emerald-400 stroke-[3]" />
-                <span className="text-slate-200">Route synced</span>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* TAB 1: DAILY DISPATCH DRIVER QUEUE */}
-        {tab === 'dispatch' && (
-          <div className="space-y-2.5">
-
-            {/* TOP CONTROLS */}
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  placeholder="Filter stop by name or street..."
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-7 py-2 bg-white border border-gray-200 rounded-xl text-xs font-medium text-gray-800 placeholder-gray-400 outline-none focus:border-[#5D5FEF] shadow-2xs"
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
+        {/* SCROLLABLE CONTENT */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5">
+          {errorMsg && (
+            <div className="mb-2.5 px-3 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{errorMsg}</span>
               </div>
-
-              <button
-                type="button"
-                onClick={() => setShowOrderSheet(true)}
-                title={`Reorder route sequence (${pendingDispatchList.length} stops)`}
-                className="h-9 px-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer shrink-0"
-              >
-                <GripVertical className="w-3.5 h-3.5 text-gray-400" />
-                <span className="text-[11px] font-mono text-gray-600 font-bold">{pendingDispatchList.length}</span>
+              <button type="button" onClick={() => setErrorMsg('')} className="text-rose-500 hover:text-rose-700">
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
+          )}
 
-            {/* ACTIVE RUN CARD + ALL RUNS DROPDOWN */}
-            {activeRun && (
-              <div className="relative bg-white rounded-2xl border border-gray-200/90 p-2.5 sm:p-3 shadow-2xs flex items-center justify-between gap-2">
-                <a
-                  href={activeRun.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`flex-1 h-11 px-3.5 rounded-xl text-xs sm:text-[13px] font-black shadow-xs transition-all flex items-center justify-between gap-2 min-w-0 cursor-pointer ${
-                    activeRun.isFinished
-                      ? 'bg-slate-800 hover:bg-slate-900 text-white'
-                      : 'bg-[#5D5FEF] hover:bg-[#4D4FD9] active:bg-[#3D3FB9] text-white'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Navigation className="w-4 h-4 shrink-0" />
-                    <span className="truncate">
-                      {activeRun.isFinished ? `Revisit ${activeRun.shortLabel}` : `Navigate ${activeRun.label}`}
-                    </span>
-                  </div>
-                  <span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded-md bg-white/20 whitespace-nowrap shrink-0">
-                    {activeRun.completedCount}/{activeRun.totalCount} done
-                  </span>
-                </a>
+          {saveStatus !== 'idle' && (
+            <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 px-3 py-2 rounded-xl bg-[#11142D] text-white text-xs font-semibold shadow-xl border border-white/10 animate-in fade-in slide-in-from-bottom-2 duration-150">
+              {saveStatus === 'saving' ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 text-[#5D5FEF] animate-spin" />
+                  <span>Syncing route order...</span>
+                </>
+              ) : (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-400 stroke-[3]" />
+                  <span className="text-slate-200">Route synced</span>
+                </>
+              )}
+            </div>
+          )}
 
-                <div className="relative shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setShowRunsMenu(prev => !prev)}
-                    className="h-11 px-3 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
-                  >
-                    <span>Runs ({routeRuns.length})</span>
-                    <span className="text-[10px] text-gray-400">▼</span>
-                  </button>
+          {/* TAB 1: DAILY DISPATCH DRIVER QUEUE */}
+          {tab === 'dispatch' && (
+            <div className="space-y-2.5">
 
-                  {showRunsMenu && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-30"
-                        onClick={() => setShowRunsMenu(false)}
-                      />
-                      <div className="absolute right-0 top-12 z-40 w-72 bg-white border border-gray-200 rounded-2xl shadow-xl p-2 space-y-1 animate-in fade-in zoom-in-95 duration-100">
-                        <div className="px-2.5 py-1.5 border-b border-gray-100 flex items-center justify-between">
-                          <span className="text-[10.5px] font-black uppercase text-gray-400 tracking-wider">
-                            All Route Segments
-                          </span>
-                          <span className="text-[10px] font-bold text-gray-500">
-                            {routeRuns.filter(r => r.isFinished).length}/{routeRuns.length} completed
-                          </span>
-                        </div>
-
-                        <div className="max-h-60 overflow-y-auto divide-y divide-gray-50">
-                          {routeRuns.map(run => (
-                            <a
-                              key={run.id}
-                              href={run.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={() => setShowRunsMenu(false)}
-                              className={`p-2.5 rounded-xl flex items-center justify-between gap-2 transition-colors cursor-pointer ${
-                                run.id === activeRun.id && !run.isFinished
-                                  ? 'bg-indigo-50/80 border border-indigo-200'
-                                  : 'hover:bg-gray-50'
-                              }`}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-xs font-bold text-gray-900 truncate">
-                                    {run.label}
-                                  </span>
-                                  {run.isFinished && (
-                                    <span className="text-[9.5px] font-black px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
-                                      Done
-                                    </span>
-                                  )}
-                                </div>
-                                <span className="text-[11px] text-gray-400 block font-medium">
-                                  {run.completedCount} of {run.totalCount} stops logged
-                                </span>
-                              </div>
-
-                              <div className="shrink-0 text-right">
-                                <span className="text-xs font-bold text-[#5D5FEF] hover:underline">
-                                  Open →
-                                </span>
-                              </div>
-                            </a>
-                          ))}
-                        </div>
-                      </div>
-                    </>
+              {/* TOP CONTROLS */}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Filter stop by name or street..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="w-full pl-8 pr-7 py-2 bg-white border border-gray-200 rounded-xl text-xs font-medium text-gray-800 placeholder-gray-400 outline-none focus:border-[#5D5FEF] shadow-2xs"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
                   )}
                 </div>
-              </div>
-            )}
 
-            {/* DELIVERY CARDS */}
-            {filteredDispatchList.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center shadow-xs">
-                <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
-                <h3 className="text-base font-black text-gray-900">
-                  {searchQuery ? 'No matching deliveries' : 'All Deliveries Completed!'}
-                </h3>
-                <p className="text-xs text-gray-500 mt-1 max-w-sm mx-auto">
-                  {searchQuery
-                    ? `No scheduled customer matches "${searchQuery}".`
-                    : 'All scheduled tiffins for today have been marked delivered or skipped.'}
-                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowOrderSheet(true)}
+                  title={`Reorder route sequence (${pendingDispatchList.length} stops)`}
+                  className="h-9 px-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer shrink-0"
+                >
+                  <GripVertical className="w-3.5 h-3.5 text-gray-400" />
+                  <span className="text-[11px] font-mono text-gray-600 font-bold">{pendingDispatchList.length}</span>
+                </button>
               </div>
-            ) : (
-              <div className="space-y-2.5">
-                {filteredDispatchList.map((c, index) => {
-                  const used = c.used_credits || 0;
-                  const total = c.total_tiffin_credits || 0;
-                  const remaining = Math.max(0, total - used);
-                  const googleMapsUrl = c.delivery_address
-                    ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(c.delivery_address)}`
-                    : null;
 
-                  return (
-                    <div
-                      key={c.id}
-                      className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs p-3.5 transition-all"
+              {/* ACTIVE RUN CARD + ALL RUNS DROPDOWN */}
+              {activeRun && (
+                <div className="relative bg-white rounded-2xl border border-gray-200/90 p-2.5 sm:p-3 shadow-2xs flex items-center justify-between gap-2">
+                  <a
+                    href={activeRun.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`flex-1 h-11 px-3.5 rounded-xl text-xs sm:text-[13px] font-black shadow-xs transition-all flex items-center justify-between gap-2 min-w-0 cursor-pointer ${activeRun.isFinished
+                        ? 'bg-slate-800 hover:bg-slate-900 text-white'
+                        : 'bg-[#5D5FEF] hover:bg-[#4D4FD9] active:bg-[#3D3FB9] text-white'
+                      }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Navigation className="w-4 h-4 shrink-0" />
+                      <span className="truncate">
+                        {activeRun.isFinished ? `Revisit ${activeRun.shortLabel}` : `Navigate ${activeRun.label}`}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded-md bg-white/20 whitespace-nowrap shrink-0">
+                      {activeRun.completedCount}/{activeRun.totalCount} done
+                    </span>
+                  </a>
+
+                  <div className="relative shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setShowRunsMenu(prev => !prev)}
+                      className="h-11 px-3 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                          <span className="w-5 h-5 rounded-full bg-gray-100 text-gray-700 text-[11px] font-black flex items-center justify-center shrink-0">
-                            {index + 1}
-                          </span>
-                          <span className="text-[15px] font-black text-[#11142D] capitalize truncate">
-                            {c.full_name}
-                          </span>
+                      <span>Runs ({routeRuns.length})</span>
+                      <span className="text-[10px] text-gray-400">▼</span>
+                    </button>
 
-                          {(c.used_credits || 0) === 0 && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-black bg-blue-100 text-blue-800 border border-blue-300 tracking-wide uppercase whitespace-nowrap shrink-0">
-                              NEW CUSTOMER
+                    {showRunsMenu && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-30"
+                          onClick={() => setShowRunsMenu(false)}
+                        />
+                        <div className="absolute right-0 top-12 z-40 w-72 bg-white border border-gray-200 rounded-2xl shadow-xl p-2 space-y-1 animate-in fade-in zoom-in-95 duration-100">
+                          <div className="px-2.5 py-1.5 border-b border-gray-100 flex items-center justify-between">
+                            <span className="text-[10.5px] font-black uppercase text-gray-400 tracking-wider">
+                              All Route Segments
                             </span>
-                          )}
-
-                          {c.start_date && selectedDateKey < c.start_date.slice(0, 10) && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 tracking-wide uppercase whitespace-nowrap shrink-0">
-                              RENEWED
+                            <span className="text-[10px] font-bold text-gray-500">
+                              {routeRuns.filter(r => r.isFinished).length}/{routeRuns.length} completed
                             </span>
-                          )}
-                        </div>
+                          </div>
 
-                        {c.phone_number && (
-                          <a
-                            href={`tel:${c.phone_number}`}
-                            title="Call customer"
-                            className="h-7 w-7 rounded-lg bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors shrink-0"
-                          >
-                            <Phone className="w-3.5 h-3.5 text-gray-600" />
-                          </a>
-                        )}
-                      </div>
-
-                      {c.delivery_address ? (
-                        <div className="mt-2 bg-gray-50 border border-gray-200/70 rounded-xl p-2.5 space-y-1.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <span
-                                className="text-[13.5px] font-black text-gray-900 block leading-tight break-words"
-                                title={c.delivery_address}
-                              >
-                                📍 {formatStreetOnlyAddress(c.delivery_address)}
-                              </span>
-                              <span className="text-[11px] font-bold text-gray-500 block mt-0.5">
-                                {used}/{total} delivered · <strong className="text-emerald-700">{remaining} left</strong>
-                              </span>
-                            </div>
-
-                            {googleMapsUrl && (
+                          <div className="max-h-60 overflow-y-auto divide-y divide-gray-50">
+                            {routeRuns.map(run => (
                               <a
-                                href={googleMapsUrl}
+                                key={run.id}
+                                href={run.url}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="h-8 px-2.5 rounded-lg bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors shrink-0"
+                                onClick={() => setShowRunsMenu(false)}
+                                className={`p-2.5 rounded-xl flex items-center justify-between gap-2 transition-colors cursor-pointer ${run.id === activeRun.id && !run.isFinished
+                                    ? 'bg-indigo-50/80 border border-indigo-200'
+                                    : 'hover:bg-gray-50'
+                                  }`}
                               >
-                                <Navigation className="w-3 h-3" />
-                                <span>Map</span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs font-bold text-gray-900 truncate">
+                                      {run.label}
+                                    </span>
+                                    {run.isFinished && (
+                                      <span className="text-[9.5px] font-black px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
+                                        Done
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[11px] text-gray-400 block font-medium">
+                                    {run.completedCount} of {run.totalCount} stops logged
+                                  </span>
+                                </div>
+
+                                <div className="shrink-0 text-right">
+                                  <span className="text-xs font-bold text-[#5D5FEF] hover:underline">
+                                    Open →
+                                  </span>
+                                </div>
                               </a>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* DELIVERY CARDS */}
+              {filteredDispatchList.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center shadow-xs">
+                  <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
+                  <h3 className="text-base font-black text-gray-900">
+                    {searchQuery ? 'No matching deliveries' : 'All Deliveries Completed!'}
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-1 max-w-sm mx-auto">
+                    {searchQuery
+                      ? `No scheduled customer matches "${searchQuery}".`
+                      : 'All scheduled tiffins for today have been marked delivered or skipped.'}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {filteredDispatchList.map((c, index) => {
+                    const used = c.used_credits || 0;
+                    const total = c.total_tiffin_credits || 0;
+                    const remaining = Math.max(0, total - used);
+                    const googleMapsUrl = c.delivery_address
+                      ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(c.delivery_address)}`
+                      : null;
+
+                    return (
+                      <div
+                        key={c.id}
+                        className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs p-3.5 transition-all"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            <span className="w-5 h-5 rounded-full bg-gray-100 text-gray-700 text-[11px] font-black flex items-center justify-center shrink-0">
+                              {index + 1}
+                            </span>
+                            <span className="text-[15px] font-black text-[#11142D] capitalize truncate">
+                              {c.full_name}
+                            </span>
+
+                            {(c.used_credits || 0) === 0 && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-black bg-blue-100 text-blue-800 border border-blue-300 tracking-wide uppercase whitespace-nowrap shrink-0">
+                                NEW CUSTOMER
+                              </span>
+                            )}
+
+                            {c.start_date && selectedDateKey < c.start_date.slice(0, 10) && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 tracking-wide uppercase whitespace-nowrap shrink-0">
+                                RENEWED
+                              </span>
                             )}
                           </div>
 
-                          {c.delivery_instructions && !/(sabji|chicken|dal|paneer|roti|salad|dessert)/i.test(c.delivery_instructions) && (
-                            <div className="pt-1.5 border-t border-gray-200/60 flex items-start gap-1.5 text-amber-900 bg-amber-50/80 px-2 py-1.5 rounded-lg border border-amber-200/80">
-                              <FileText className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
-                              <span className="text-[11px] font-semibold leading-snug break-words">
-                                <strong className="text-amber-800 font-bold uppercase text-[9.5px] tracking-wide mr-1">Drop-off:</strong>
-                                {c.delivery_instructions}
-                              </span>
-                            </div>
+                          {c.phone_number && (
+                            <a
+                              href={`tel:${c.phone_number}`}
+                              title="Call customer"
+                              className="h-7 w-7 rounded-lg bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors shrink-0"
+                            >
+                              <Phone className="w-3.5 h-3.5 text-gray-600" />
+                            </a>
                           )}
                         </div>
-                      ) : (
-                        <p className="mt-2 text-xs font-semibold text-amber-700 bg-amber-50 p-2 rounded-lg border border-amber-200">
-                          ⚠️ No address configured for this stop.
-                        </p>
-                      )}
 
-                      {/* Context-Aware Dynamic Notification Trigger */}
-                      {(() => {
-                        const isLastDay =
-                          remaining <= 1 ||
-                          (c.cycle_end_date && c.cycle_end_date.slice(0, 10) === selectedDateKey);
+                        {c.delivery_address ? (
+                          <div className="mt-2 bg-gray-50 border border-gray-200/70 rounded-xl p-2.5 space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <span
+                                  className="text-[13.5px] font-black text-gray-900 block leading-tight break-words"
+                                  title={c.delivery_address}
+                                >
+                                  📍 {formatStreetOnlyAddress(c.delivery_address)}
+                                </span>
+                                <span className="text-[11px] font-bold text-gray-500 block mt-0.5">
+                                  {used}/{total} delivered · <strong className="text-emerald-700">{remaining} left</strong>
+                                </span>
+                              </div>
 
-                        const isFriday = activeDay === 'Friday';
-                        const isDoublePackFriday =
-                          isFriday &&
-                          (Boolean(c.delivery_instructions?.includes('Pack 2 Tiffins on Friday')) ||
-                           Boolean(c.delivery_schedule?.includes('Saturday')) ||
-                           Boolean(c.delivery_schedule?.includes('Sat')));
-
-                        const rawTemplate = isLastDay
-                          ? msgTemplates.last_day_message_template
-                          : isDoublePackFriday
-                            ? msgTemplates.friday_double_pack_template
-                            : isFriday
-                              ? msgTemplates.friday_message_template
-                              : msgTemplates.delivery_message_template;
-
-                        const messageText = formatDeliveryMessage(rawTemplate, {
-                          customer_name: c.full_name,
-                          address: formatStreetOnlyAddress(c.delivery_address),
-                          remaining_meals: remaining,
-                        });
-
-                        const cleanPhone = cleanPhoneNumberForWhatsApp(c.phone_number);
-
-                        const rawPhone = (c.phone_number || '').trim();
-                        const isSmsPreferred = /^SMS:/i.test(rawPhone) || /^PHONE:/i.test(rawPhone);
-                        const isMessenger = /^FB:/i.test(rawPhone);
-                        const isWhatsAppPreferred = !isSmsPreferred && !isMessenger && Boolean(cleanPhone);
-
-                        return (
-                          <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center gap-2">
-                            <div className="flex-1 flex items-center gap-1.5 min-w-0">
-                              {isWhatsAppPreferred && (
+                              {googleMapsUrl && (
                                 <a
-                                  href={`whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`}
-                                  onClick={() => handleMarkDelivered(c.id)}
-                                  title="Send WhatsApp & Complete"
-                                  className="flex-1 h-10 bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da851] text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
+                                  href={googleMapsUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="h-8 px-2.5 rounded-lg bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors shrink-0"
                                 >
-                                  <MessageSquare className="w-4 h-4 shrink-0" />
-                                  <span className="truncate">WhatsApp &amp; Complete</span>
+                                  <Navigation className="w-3 h-3" />
+                                  <span>Map</span>
                                 </a>
-                              )}
-
-                              {isSmsPreferred && cleanPhone && (
-                                <a
-                                  href={`sms:${cleanPhone}?&body=${encodeURIComponent(messageText)}`}
-                                  onClick={() => handleMarkDelivered(c.id)}
-                                  title="Send SMS & Complete"
-                                  className="flex-1 h-10 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
-                                >
-                                  <Phone className="w-4 h-4 shrink-0" />
-                                  <span className="truncate">SMS &amp; Complete</span>
-                                </a>
-                              )}
-
-                              {(!cleanPhone || isMessenger) && (
-                                <button
-                                  type="button"
-                                  disabled={busyId === c.id}
-                                  onClick={() => handleMarkDelivered(c.id)}
-                                  className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-[13px] rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer min-w-0"
-                                >
-                                  <Check className="w-4 h-4 stroke-[3] shrink-0" />
-                                  <span className="truncate">Mark Delivered</span>
-                                </button>
-                              )}
-
-                              {cleanPhone && (
-                                <button
-                                  type="button"
-                                  disabled={busyId === c.id}
-                                  onClick={() => handleMarkDelivered(c.id)}
-                                  title="Mark delivered silently (without sending message)"
-                                  className="h-10 w-10 flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-colors cursor-pointer shrink-0"
-                                >
-                                  <Check className="w-4 h-4 stroke-[2.5]" />
-                                </button>
                               )}
                             </div>
 
-                            <button
-                              type="button"
-                              disabled={busyId === c.id}
-                              onClick={() => handleLogSkip(c.id)}
-                              className="h-10 px-3.5 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0"
-                            >
-                              Skip
-                            </button>
+                            {(() => {
+                              const note = extractDeliveryNote(c.delivery_instructions);
+                              if (!note) return null;
+
+                              return (
+                                <div className="pt-1.5 border-t border-gray-200/60 flex items-start gap-1.5 text-amber-900 bg-amber-50/80 px-2 py-1.5 rounded-lg border border-amber-200/80">
+                                  <FileText className="w-3.5 h-3.5 text-amber-700 shrink-0 mt-0.5" />
+                                  <span className="text-[11px] font-semibold leading-snug break-words">
+                                    <strong className="text-amber-800 font-bold uppercase text-[9.5px] tracking-wide mr-1">Drop-off:</strong>
+                                    {note}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </div>
-                        );
-                      })()}
+                        ) : (
+                          <p className="mt-2 text-xs font-semibold text-amber-700 bg-amber-50 p-2 rounded-lg border border-amber-200">
+                            ⚠️ No address configured for this stop.
+                          </p>
+                        )}
+
+                        {/* Context-Aware Dynamic Notification Trigger */}
+                        {(() => {
+                          const isLastDay =
+                            remaining <= 1 ||
+                            (c.cycle_end_date && c.cycle_end_date.slice(0, 10) === selectedDateKey);
+
+                          const isFriday = activeDay === 'Friday';
+                          const isDoublePackFriday =
+                            isFriday &&
+                            (Boolean(c.delivery_instructions?.includes('Pack 2 Tiffins on Friday')) ||
+                              Boolean(c.delivery_schedule?.includes('Saturday')) ||
+                              Boolean(c.delivery_schedule?.includes('Sat')));
+
+                          const rawTemplate = isLastDay
+                            ? msgTemplates.last_day_message_template
+                            : isDoublePackFriday
+                              ? msgTemplates.friday_double_pack_template
+                              : isFriday
+                                ? msgTemplates.friday_message_template
+                                : msgTemplates.delivery_message_template;
+
+                          const messageText = formatDeliveryMessage(rawTemplate, {
+                            customer_name: c.full_name,
+                            address: formatStreetOnlyAddress(c.delivery_address),
+                            remaining_meals: remaining,
+                          });
+
+                          const cleanPhone = cleanPhoneNumberForWhatsApp(c.phone_number);
+
+                          const rawPhone = (c.phone_number || '').trim();
+                          const isSmsPreferred = /^SMS:/i.test(rawPhone) || /^PHONE:/i.test(rawPhone);
+                          const isMessenger = /^FB:/i.test(rawPhone);
+                          const isWhatsAppPreferred = !isSmsPreferred && !isMessenger && Boolean(cleanPhone);
+
+                          return (
+                            <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center gap-2">
+                              <div className="flex-1 flex items-center gap-1.5 min-w-0">
+                                {isWhatsAppPreferred && (
+                                  <a
+                                    href={`whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`}
+                                    onClick={() => handleMarkDelivered(c.id)}
+                                    title="Send WhatsApp & Complete"
+                                    className="flex-1 h-10 bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da851] text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
+                                  >
+                                    <MessageSquare className="w-4 h-4 shrink-0" />
+                                    <span className="truncate">WhatsApp &amp; Complete</span>
+                                  </a>
+                                )}
+
+                                {isSmsPreferred && cleanPhone && (
+                                  <a
+                                    href={`sms:${cleanPhone}?&body=${encodeURIComponent(messageText)}`}
+                                    onClick={() => handleMarkDelivered(c.id)}
+                                    title="Send SMS & Complete"
+                                    className="flex-1 h-10 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
+                                  >
+                                    <Phone className="w-4 h-4 shrink-0" />
+                                    <span className="truncate">SMS &amp; Complete</span>
+                                  </a>
+                                )}
+
+                                {(!cleanPhone || isMessenger) && (
+                                  <button
+                                    type="button"
+                                    disabled={busyId === c.id}
+                                    onClick={() => handleMarkDelivered(c.id)}
+                                    className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-[13px] rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer min-w-0"
+                                  >
+                                    <Check className="w-4 h-4 stroke-[3] shrink-0" />
+                                    <span className="truncate">Mark Delivered</span>
+                                  </button>
+                                )}
+
+                                {cleanPhone && (
+                                  <button
+                                    type="button"
+                                    disabled={busyId === c.id}
+                                    onClick={() => handleMarkDelivered(c.id)}
+                                    title="Mark delivered silently (without sending message)"
+                                    className="h-10 w-10 flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-colors cursor-pointer shrink-0"
+                                  >
+                                    <Check className="w-4 h-4 stroke-[2.5]" />
+                                  </button>
+                                )}
+                              </div>
+
+                              <button
+                                type="button"
+                                disabled={busyId === c.id}
+                                onClick={() => handleLogSkip(c.id)}
+                                className="h-10 px-3.5 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0"
+                              >
+                                Skip
+                              </button>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* COMPLETED ACCORDION */}
+              {completedList.length > 0 && (
+                <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-2xs mt-4">
+                  <div className="flex items-center justify-between pb-2 border-b border-gray-100 mb-2">
+                    <div className="flex items-center gap-1.5 text-xs font-black uppercase text-gray-700 tracking-wide">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      <span>Completed Today ({completedList.length})</span>
+                    </div>
+                    <span className="text-[11px] text-gray-400">Tap undo if logged in error</span>
+                  </div>
+
+                  <div className="divide-y divide-gray-100">
+                    {completedList.map(({ customerId, event, customer: c }) => (
+                      <div key={customerId} className="py-2 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="text-xs font-bold text-gray-900 block truncate capitalize">
+                            {c.full_name}
+                          </span>
+                          <span className={`text-[10px] font-black uppercase ${event === 'delivered' ? 'text-emerald-600' : 'text-amber-600'
+                            }`}>
+                            ✓ {event === 'delivered' ? 'Delivered' : 'Skipped'}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={busyId === customerId}
+                          onClick={() => handleUndo(customerId)}
+                          className="px-2.5 py-1 text-xs font-bold text-gray-500 hover:text-rose-600 bg-gray-50 hover:bg-rose-50 border border-gray-200 rounded-lg transition-colors cursor-pointer"
+                        >
+                          {busyId === customerId ? 'Undoing…' : 'Undo'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+
+          {/* TAB 2: SUBSCRIPTION LEDGER */}
+          {tab === 'ledger' && (
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-2xs overflow-hidden">
+              <div className="px-4 sm:px-6 py-3 border-b border-gray-100 flex items-center justify-between">
+                <h2 className="text-xs font-black text-gray-700 uppercase tracking-wide">
+                  Subscription Ledger ({ledgerList.length})
+                </h2>
+                <span className="text-[11px] text-gray-400">Cycle renewals</span>
+              </div>
+
+              {renewedAt && (
+                <div className="px-4 py-2 bg-emerald-50 border-b border-emerald-100 text-emerald-700 text-xs font-bold">
+                  Plan renewed for {customers.find(c => c.id === renewedAt.id)?.full_name ?? 'customer'}.
+                </div>
+              )}
+
+              <div className="divide-y divide-gray-100">
+                {ledgerList.map(c => {
+                  const used = c.used_credits || 0;
+                  const total = c.total_tiffin_credits || 0;
+                  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+                  const status = (c.subscription_status || 'active').toLowerCase();
+
+                  return (
+                    <div key={c.id} className="p-3.5 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-gray-900 capitalize truncate">{c.full_name}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border ${tierBadge[c.plan_tier || 'weekly']}`}>
+                            {planTier(c.plan_tier)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 mt-1.5 max-w-xs">
+                          <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                            <div className="h-full rounded-full bg-[#5D5FEF]" style={{ width: `${pct}%` }} />
+                          </div>
+                          <span className="text-xs font-mono font-bold text-gray-600 shrink-0">
+                            {used}/{total} delivered
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
+                        {status === 'expired' ? (
+                          <button
+                            type="button"
+                            disabled={busyId === c.id}
+                            onClick={() => handleRenewPlan(c.id)}
+                            className="px-3 py-1.5 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg shadow-2xs cursor-pointer"
+                          >
+                            {busyId === c.id ? 'Renewing…' : 'Renew Plan'}
+                          </button>
+                        ) : (
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${status === 'paused' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            }`}>
+                            {status}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
               </div>
-            )}
-
-            {/* COMPLETED ACCORDION */}
-            {completedList.length > 0 && (
-              <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-2xs mt-4">
-                <div className="flex items-center justify-between pb-2 border-b border-gray-100 mb-2">
-                  <div className="flex items-center gap-1.5 text-xs font-black uppercase text-gray-700 tracking-wide">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    <span>Completed Today ({completedList.length})</span>
-                  </div>
-                  <span className="text-[11px] text-gray-400">Tap undo if logged in error</span>
-                </div>
-
-                <div className="divide-y divide-gray-100">
-                  {completedList.map(({ customerId, event, customer: c }) => (
-                    <div key={customerId} className="py-2 flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <span className="text-xs font-bold text-gray-900 block truncate capitalize">
-                          {c.full_name}
-                        </span>
-                        <span className={`text-[10px] font-black uppercase ${
-                          event === 'delivered' ? 'text-emerald-600' : 'text-amber-600'
-                        }`}>
-                          ✓ {event === 'delivered' ? 'Delivered' : 'Skipped'}
-                        </span>
-                      </div>
-
-                      <button
-                        type="button"
-                        disabled={busyId === customerId}
-                        onClick={() => handleUndo(customerId)}
-                        className="px-2.5 py-1 text-xs font-bold text-gray-500 hover:text-rose-600 bg-gray-50 hover:bg-rose-50 border border-gray-200 rounded-lg transition-colors cursor-pointer"
-                      >
-                        {busyId === customerId ? 'Undoing…' : 'Undo'}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-          </div>
-        )}
-
-        {/* TAB 2: SUBSCRIPTION LEDGER */}
-        {tab === 'ledger' && (
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-2xs overflow-hidden">
-            <div className="px-4 sm:px-6 py-3 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="text-xs font-black text-gray-700 uppercase tracking-wide">
-                Subscription Ledger ({ledgerList.length})
-              </h2>
-              <span className="text-[11px] text-gray-400">Cycle renewals</span>
             </div>
+          )}
 
-            {renewedAt && (
-              <div className="px-4 py-2 bg-emerald-50 border-b border-emerald-100 text-emerald-700 text-xs font-bold">
-                Plan renewed for {customers.find(c => c.id === renewedAt.id)?.full_name ?? 'customer'}.
-              </div>
-            )}
-
-            <div className="divide-y divide-gray-100">
-              {ledgerList.map(c => {
-                const used = c.used_credits || 0;
-                const total = c.total_tiffin_credits || 0;
-                const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
-                const status = (c.subscription_status || 'active').toLowerCase();
-
-                return (
-                  <div key={c.id} className="p-3.5 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-gray-900 capitalize truncate">{c.full_name}</span>
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase border ${tierBadge[c.plan_tier || 'weekly']}`}>
-                          {planTier(c.plan_tier)}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2 mt-1.5 max-w-xs">
-                        <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden">
-                          <div className="h-full rounded-full bg-[#5D5FEF]" style={{ width: `${pct}%` }} />
-                        </div>
-                        <span className="text-xs font-mono font-bold text-gray-600 shrink-0">
-                          {used}/{total} delivered
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between sm:justify-end gap-2 shrink-0">
-                      {status === 'expired' ? (
-                        <button
-                          type="button"
-                          disabled={busyId === c.id}
-                          onClick={() => handleRenewPlan(c.id)}
-                          className="px-3 py-1.5 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg shadow-2xs cursor-pointer"
-                        >
-                          {busyId === c.id ? 'Renewing…' : 'Renew Plan'}
-                        </button>
-                      ) : (
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${
-                          status === 'paused' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                        }`}>
-                          {status}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
+        </div>
       </div>
 
       {/* REORDER MODAL SHEET */}
@@ -1569,13 +1566,12 @@ const handleUndo = async (customerId: string) => {
                     onDragStart={() => handleDragStart(i)}
                     onDragOver={(e) => handleDragOver(e, i)}
                     onDrop={() => handleDrop(i)}
-                    className={`px-3 py-2.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${
-                      isDragging
+                    className={`px-3 py-2.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${isDragging
                         ? 'opacity-40 bg-gray-50 border-dashed border-indigo-400 scale-[0.98]'
                         : isDragOver
                           ? 'border-indigo-600 bg-indigo-50/70 border-2'
                           : 'bg-white border-gray-200/80 hover:border-gray-300'
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <div

@@ -2,7 +2,7 @@ import { Sliders } from 'lucide-react';
 
 export default function RulesSettingsPage() {
   return (
-    <div className="bg-white rounded-2xl border border-gray-200 p-8 space-y-4 shadow-2xs">
+    <div className="bg-white rounded-2xl border border-gray-200/90 p-6 sm:p-8 space-y-4 shadow-2xs">
       <div>
         <h3 className="text-sm font-black text-gray-900 uppercase tracking-wide">
           Subscription &amp; Logistics Rules

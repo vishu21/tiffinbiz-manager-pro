@@ -380,7 +380,7 @@ export default function ClosuresClient({
     const endDisplay = formatDisplayDate(endDate || startDate);
 
     return (
-        <div className="flex flex-col h-screen bg-[#FDFDFD] overflow-hidden font-sans antialiased text-[#292D32]">
+        <div className="w-full px-4 sm:px-6 lg:px-8 py-5 sm:py-7 lg:py-8 space-y-6 flex-1 flex flex-col min-h-0 font-sans antialiased text-[#292D32]">
             {/* IN-APP TOAST */}
             {toast && (
                 <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-3 duration-200">
@@ -409,35 +409,40 @@ export default function ClosuresClient({
                 </div>
             )}
 
-            {/* HEADER */}
-            <div className="px-8 py-4 border-b border-[#EEEEEE] flex items-center justify-between bg-white shrink-0">
+            {/* ── UNIFIED STANDARD PAGE HEADER ── */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200/80 pb-5 shrink-0">
                 <div>
-                    <h1 className="text-[22px] font-black text-[#11142D] tracking-tight flex items-center gap-2.5">
+                    <div className="flex items-center gap-2.5">
                         <div className="w-8 h-8 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
-                            <CalendarOff className="w-4.5 h-4.5 text-amber-600" strokeWidth={2.2} />
+                            <CalendarOff className="w-4 h-4 text-amber-600" strokeWidth={2.2} />
                         </div>
-                        <span>Kitchen Holidays &amp; Closures</span>
-                    </h1>
-                    <p className="text-xs text-gray-500 mt-0.5">
+                        <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
+                            Kitchen Holidays &amp; Closures
+                        </h1>
+                        <span className="inline-flex items-center justify-center px-2.5 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-xs font-bold rounded-full">
+                            {initialClosures.length}
+                        </span>
+                    </div>
+                    <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
                         Schedule operational shutdowns, protect customers from double-compensation, and manage credits.
                     </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
                     <button
                         onClick={() => setActiveTab('closures')}
-                        className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'closures'
-                            ? 'bg-[#5D5FEF] text-white shadow-xs'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${activeTab === 'closures'
+                            ? 'bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white border-[#5D5FEF] shadow-2xs'
+                            : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-200 shadow-2xs'
                             }`}
                     >
                         Scheduled Closures ({initialClosures.length} days / {groupedClosures.length} events)
                     </button>
                     <button
                         onClick={() => setActiveTab('ledger')}
-                        className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'ledger'
-                            ? 'bg-[#5D5FEF] text-white shadow-xs'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${activeTab === 'ledger'
+                            ? 'bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white border-[#5D5FEF] shadow-2xs'
+                            : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-200 shadow-2xs'
                             }`}
                     >
                         Credit Audit Ledger
@@ -445,9 +450,10 @@ export default function ClosuresClient({
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-8 max-w-7xl mx-auto w-full space-y-6">
+            {/* ── MAIN CONTENT CARD CONTAINER ── */}
+            <div className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs overflow-hidden flex-1 flex flex-col min-h-0">
                 {/* SCHEDULE CLOSURE CARD */}
-                <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
+                <div className="p-4 sm:p-5 border-b border-gray-100 shrink-0">
                     <h2 className="text-xs font-black uppercase text-gray-400 tracking-wider mb-4">
                         Schedule New Closure
                     </h2>
@@ -610,6 +616,8 @@ export default function ClosuresClient({
                     </div>
                 </div>
 
+                {/* SCROLLABLE TAB CONTENT */}
+                <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-6">
                 {/* TAB 1: MONTH-GROUPED SCHEDULED CLOSURES */}
                 {activeTab === 'closures' && (
                     <div className="space-y-6">
@@ -756,12 +764,12 @@ export default function ClosuresClient({
                 {activeTab === 'ledger' && (
                     <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
                         <table className="w-full text-left text-[13px] border-collapse">
-                            <thead>
-                                <tr className="bg-[#FCFCFD] border-b border-gray-200 text-[11px] font-bold text-gray-400 uppercase tracking-wider">
-                                    <th className="py-3 px-5">Customer</th>
-                                    <th className="py-3 px-5">Adjustment</th>
-                                    <th className="py-3 px-5">Reason</th>
-                                    <th className="py-3 px-5">Timestamp</th>
+                            <thead className="sticky top-0 z-20 bg-white shadow-xs">
+                                <tr className="text-[#A2A4B0] font-bold border-b border-gray-200 uppercase text-[10.5px] tracking-wider h-11 bg-white">
+                                    <th className="sticky top-0 z-20 bg-white py-3 px-5">Customer</th>
+                                    <th className="sticky top-0 z-20 bg-white py-3 px-5">Adjustment</th>
+                                    <th className="sticky top-0 z-20 bg-white py-3 px-5">Reason</th>
+                                    <th className="sticky top-0 z-20 bg-white py-3 px-5">Timestamp</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
@@ -805,6 +813,8 @@ export default function ClosuresClient({
                         </table>
                     </div>
                 )}
+
+                </div>
             </div>
 
             {/* PREVIEW & CONFIRMATION MODAL */}

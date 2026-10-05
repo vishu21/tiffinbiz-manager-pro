@@ -84,8 +84,7 @@ const isCustomerSkipOn = (date: Date, customerSkips?: Set<string> | null): boole
 export type CycleTargetInput = {
   startDate: string | null | undefined;
   totalMeals: number | null | undefined;
-  // Optional: defaults to the canonical Mon–Fri plan.
-  deliveryDays?: Set<number> | null;
+  deliveryDays?: Set<number> | number[] | null;
   closureDates?: ClosureSource;
   customerSkips?: Set<string> | null;
 };
@@ -112,10 +111,13 @@ export const calculateCycleTargetLastDay = (
   const date = new Date(`${normalized}T00:00:00`);
   if (Number.isNaN(date.getTime())) return null;
 
-  const deliveryDays =
-    input.deliveryDays && input.deliveryDays.size > 0
-      ? input.deliveryDays
-      : new Set(DEFAULT_DELIVERY_DAY_NUMBERS);
+  const rawDays = input.deliveryDays;
+  const deliveryDays: Set<number> =
+    rawDays instanceof Set && rawDays.size > 0
+      ? rawDays
+      : Array.isArray(rawDays) && rawDays.length > 0
+        ? new Set(rawDays)
+        : new Set(DEFAULT_DELIVERY_DAY_NUMBERS);
 
   const isDeliveryDay = (d: Date): boolean => deliveryDays.has(d.getDay());
 

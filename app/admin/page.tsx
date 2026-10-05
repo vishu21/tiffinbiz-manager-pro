@@ -16,14 +16,22 @@ export default async function AdminDashboard() {
   const totalAll = (customers || []).length;
 
   return (
-    <div className="w-full px-6 lg:px-8 py-6 sm:py-8 space-y-6">
-      <div className="border-b border-gray-200/80 pb-5">
-        <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
-          Admin Overview
-        </h1>
-        <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
-          System performance, subscriber metrics, and active meal plans.
-        </p>
+    <div className="w-full px-4 sm:px-6 lg:px-8 py-5 sm:py-7 lg:py-8 space-y-6 flex-1 flex flex-col min-h-0">
+      {/* ── UNIFIED STANDARD PAGE HEADER ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200/80 pb-5 shrink-0">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
+              Admin Overview
+            </h1>
+            <span className="inline-flex items-center justify-center px-2.5 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-xs font-bold rounded-full">
+              {totalAll}
+            </span>
+          </div>
+          <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
+            System performance, subscriber metrics, and active meal plans.
+          </p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-5">

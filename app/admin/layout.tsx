@@ -12,7 +12,7 @@ export default function AdminLayout({
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#F9FBFC]">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#F8FAFC]">
       <MobileHeader onMenuClick={() => setIsSidebarOpen(true)} />
       <div className="flex flex-1 overflow-hidden">
         {/* Fixed Sidebar */}

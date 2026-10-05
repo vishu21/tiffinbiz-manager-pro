@@ -2,7 +2,7 @@
 // See app/admin/loading.tsx for why this shell is needed on dynamic routes.
 export default function Loading() {
   return (
-    <div className="p-6 space-y-5 animate-pulse" aria-busy="true" aria-label="Loading…">
+    <div className="w-full px-4 sm:px-6 lg:px-8 py-5 sm:py-7 lg:py-8 space-y-6 flex-1 flex flex-col min-h-0 animate-pulse" aria-busy="true" aria-label="Loading…">
       {/* Page heading */}
       <div className="h-7 w-64 rounded-md bg-gray-200" />
 

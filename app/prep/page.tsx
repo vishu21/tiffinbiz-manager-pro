@@ -32,9 +32,5 @@ export default async function PrepPage() {
     );
   }
 
-  return (
-    <main>
-      <PrepDashboardClient initialCustomers={customers || []} />
-    </main>
-  );
+  return <PrepDashboardClient initialCustomers={customers || []} />;
 }

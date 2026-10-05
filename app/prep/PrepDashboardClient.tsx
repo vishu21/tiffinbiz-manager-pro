@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useCallback, useRef, useTransition } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef, useTransition, useSyncExternalStore } from 'react';
 import { Printer, CalendarOff, AlertTriangle, UtensilsCrossed, Settings2, Scale, Soup, Flame, Leaf, MapPin, Truck, Pause, Undo2, Check, Ban, Search, Folder, FileText, Package, Wheat, Zap, Loader2 } from 'lucide-react';
 import { startGlobalProgress, stopGlobalProgress } from '@/app/components/ui/GlobalProgressBar';
 import {
@@ -34,8 +34,10 @@ import type { MealConfigPayload } from '@/app/admin/actions';
 import PrepQuickEditSheet, { type QuickEditSaveRequest } from './PrepQuickEditSheet';
 import { isPickupOnDay, parseActiveScheduleDays } from '@/app/utils/customerPickup';
 import { computeCycleEndDate, resolveDeliveryDayNumbers } from '@/app/utils/subscriptionCycle';
-import { computePrepMetrics, resolveSideAddons } from './prepCalculations';
+import { computePrepMetrics, resolveSideAddons, getDishDislikeAlert } from './prepCalculations';
 import DriverDispatchModal from './components/DriverDispatchModal';
+
+const noopSubscribe = () => () => {};
 
 type Customer = {
   id: string;
@@ -72,6 +74,7 @@ type Customer = {
   discount_note?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
+  disliked_dishes?: string[] | null;
   isSkipped?: boolean;
   created_at: string;
   plan_tier?: string | null;
@@ -119,10 +122,6 @@ const daysBetweenKeys = (from: string, to: string): number => {
   return Math.round((end.getTime() - start.getTime()) / 86_400_000);
 };
 
-/**
- * Checks if an active customer has an upcoming skip or pause scheduled within the next 7 days.
- * Returns a human-friendly range string, e.g. "Mon, Oct 5 → Fri, Oct 9".
- */
 const getUpcomingPauseNotice = (
   customerId: string,
   currentDateKey: string,
@@ -132,7 +131,6 @@ const getUpcomingPauseNotice = (
 ): string | null => {
   const normCurrent = currentDateKey.slice(0, 10);
 
-  // 1. Check customer profile pause dates (e.g. pause_start_date = '2026-10-05')
   const pStart = customerPauseStart ? customerPauseStart.slice(0, 10) : null;
   const pEnd = customerPauseEnd ? customerPauseEnd.slice(0, 10) : null;
 
@@ -153,7 +151,6 @@ const getUpcomingPauseNotice = (
     return `from ${startFormatted}`;
   }
 
-  // 2. Check skips recorded in customer_daily_overrides
   const futureDates = upcomingSkipsMap?.get(customerId);
   if (futureDates && futureDates.length > 0) {
     const sorted = [...new Set(futureDates)].filter(d => d > normCurrent).sort();
@@ -178,10 +175,6 @@ const getUpcomingPauseNotice = (
   return null;
 };
 
-// Thin adapter over the SHARED cycle calculator (app/utils/subscriptionCycle.ts) so
-// /prep and /admin/customers can never drift apart. `deliverySchedule` decides which
-// weekdays count as delivery days (empty → Mon–Fri) and `closureDates` compensates
-// kitchen holidays. Signature kept identical for existing call sites.
 const calculateTargetLastDay = (
   startDateStr: string | null | undefined,
   totalMeals: number | null | undefined,
@@ -244,30 +237,20 @@ const getDeliveryScheduleStatus = (
   const subStatus = (customer.subscription_status || 'active').toLowerCase();
   if (subStatus === 'cancelled') return false;
 
-  // 1. Future Start Date check:
-  // If the customer has an existing delivery log today, OR if they are an existing customer
-  // whose account was created on or before today, do NOT exclude them just because their renewed
-  // cycle starts tomorrow!
   const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
   if (!hasDeliveryLog && startDate && dateKey < startDate) {
     const createdDate = customer.created_at ? customer.created_at.slice(0, 10) : null;
-    // Only exclude genuine brand-new future subscribers who have not started service yet
     if (!createdDate || createdDate > dateKey) {
       return false;
     }
   }
 
-  // 2. Pause Window Evaluation
   if (subStatus === 'paused') {
     const pauseStart = customer.pause_start_date ? customer.pause_start_date.slice(0, 10) : null;
     const pauseEnd = customer.pause_end_date ? customer.pause_end_date.slice(0, 10) : null;
 
-    // Indefinite pause with no end date -> always excluded
     if (!pauseEnd) return false;
-
-    // If an end date exists and the prep date is before resume day, keep paused
     if (dateKey < pauseEnd) return false;
-    // On or after pauseEnd, the customer resumes delivery!
   }
 
   const schedule = customer.delivery_schedule || '';
@@ -892,6 +875,12 @@ const buildAlertSummary = (input: {
 type QuickSaveRequest = QuickEditSaveRequest;
 
 export default function PrepDashboardClient({ initialCustomers }: { initialCustomers: Customer[] }) {
+  const isMounted = useSyncExternalStore(
+    noopSubscribe,
+    () => true,
+    () => false
+  );
+
   const [selectedDate, setSelectedDate] = useState<Date>(() =>
     resolveNextActiveDeliveryDate(initialCustomers)
   );
@@ -914,6 +903,14 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const [menuSelectionError, setMenuSelectionError] = useState<string | null>(null);
   const [isMenuSelectionSaving, setIsMenuSelectionSaving] = useState(false);
 
+  const catalogRecipeNames = useMemo(
+    () =>
+      [...availableRecipes.dal.map(r => r.name), ...availableRecipes.sabji.map(r => r.name)].sort(
+        (a, b) => a.localeCompare(b)
+      ),
+    [availableRecipes]
+  );
+
   const [quickEditCustomer, setQuickEditCustomer] = useState<Customer | null>(null);
   const [quickEditResetToken, setQuickEditResetToken] = useState(0);
   const [isQuickSaving, startQuickSaveTransition] = useTransition();
@@ -934,7 +931,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   );
   const router = useRouter();
 
-const selectedDateKey = toLocalDateKey(selectedDate);
+  const selectedDateKey = toLocalDateKey(selectedDate);
   const dateStr = selectedDateKey;
 
   const todayDateKey = useMemo(() => toLocalDateKey(new Date()), []);
@@ -943,7 +940,7 @@ const selectedDateKey = toLocalDateKey(selectedDate);
   const [closuresMap, setClosuresMap] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
-    let isMounted = true;
+    let isMountedLocal = true;
     (async () => {
       try {
         const { createClient } = await import('@/utils/supabase/client');
@@ -952,7 +949,7 @@ const selectedDateKey = toLocalDateKey(selectedDate);
           .from('kitchen_closures')
           .select('id, closure_date, reason');
 
-        if (isMounted && data) {
+        if (isMountedLocal && data) {
           const map = new Map<string, string>();
           data.forEach(c => map.set(c.closure_date, c.reason));
           setClosuresMap(map);
@@ -963,7 +960,7 @@ const selectedDateKey = toLocalDateKey(selectedDate);
     })();
 
     return () => {
-      isMounted = false;
+      isMountedLocal = false;
     };
   }, []);
 
@@ -1103,6 +1100,13 @@ const selectedDateKey = toLocalDateKey(selectedDate);
       });
     }
 
+    if (config.disliked_dishes !== undefined) {
+      setLocalEdits(prev => ({
+        ...prev,
+        [target.id]: { ...(prev[target.id] || {}), disliked_dishes: config.disliked_dishes },
+      }));
+    }
+
     startQuickSaveTransition(async () => {
       try {
         const result = await saveCustomerOverride({
@@ -1129,6 +1133,16 @@ const selectedDateKey = toLocalDateKey(selectedDate);
             if (previousRow) day[target.id] = previousRow;
             else delete day[target.id];
             return { ...prev, [selectedDateKey]: day };
+          });
+        }
+        if (config.disliked_dishes !== undefined) {
+          setLocalEdits(prev => {
+            const next = { ...prev };
+            const merged = { ...(next[target.id] || {}) };
+            delete merged.disliked_dishes;
+            if (Object.keys(merged).length > 0) next[target.id] = merged;
+            else delete next[target.id];
+            return next;
           });
         }
         setQuickEditCustomer(target);
@@ -1299,9 +1313,6 @@ const selectedDateKey = toLocalDateKey(selectedDate);
     });
   };
 
-  // Renewal success (from PrepQuickEditSheet): promote the customer to a fresh ACTIVE
-  // cycle locally so the "Renewal Pending" badge, the amber row and the lapsed tray
-  // clear immediately — before the router.refresh() round-trip lands.
   const handleRenewSuccess = (
     customerId: string,
     creditsToAdd: number,
@@ -1325,7 +1336,6 @@ const selectedDateKey = toLocalDateKey(selectedDate);
       ...prev,
       [customerId]: {
         ...(prev[customerId] || {}),
-        // Keep their current active start date so they don't vanish from today's manifest!
         start_date: existingCust?.start_date && existingCust.start_date <= selectedDateKey ? existingCust.start_date : nextStart,
         total_tiffin_credits: nextCredits,
         used_credits: details.usedCredits ?? 0,
@@ -1403,8 +1413,9 @@ const selectedDateKey = toLocalDateKey(selectedDate);
       }
     });
   };
-const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set());
-  // Unified loader: overrides, menu text, recipe IDs, and delivery logs load together in 1 network roundtrip
+
+  const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     let cancelled = false;
     setIsDateSwitching(true);
@@ -1417,7 +1428,6 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
         const { createClient } = await import('@/utils/supabase/client');
         const supabase = createClient();
 
-        // Calculate the lookup window (next 10 calendar days)
         const curDate = new Date(`${selectedDateKey}T12:00:00`);
         const futureDateList: string[] = [];
         for (let i = 1; i <= 10; i++) {
@@ -1447,7 +1457,6 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
           setSkipRanges({});
         }
 
-        // Parse and store upcoming future skips
         const uMap = new Map<string, string[]>();
         if (upcomingSkipsRes?.data && upcomingSkipsRes.data.length > 0) {
           upcomingSkipsRes.data.forEach((row: any) => {
@@ -1473,14 +1482,12 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
           setDeliveryLoggedIds(new Set());
         }
 
-        // 1. If an existing snapshot exists, use it directly
         if (snapshotData && snapshotData.length > 0) {
           setHistoricalSnapshot(snapshotData);
         } else {
           setHistoricalSnapshot(null);
         }
 
-        // 2. Overrides: applies skips and deviations before numbers re-render
         if (overrideRes.schemaAvailable) {
           applyOverrideRows(selectedDateKey, overrideRes.rows);
           setPersistenceWarning(null);
@@ -1488,7 +1495,6 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
           setPersistenceWarning(formatOverrideUnavailableWarning(overrideRes.message));
         }
 
-        // 2. Menu text
         if (menuData) {
           setVeg1(menuData.veg_option_1);
           setVeg2(menuData.veg_option_2);
@@ -1499,7 +1505,6 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
           setNonVeg('Chicken Curry');
         }
 
-        // 3. Selection IDs
         setSelectedDalId(selectionData.dalId || '');
         setSelectedSabjiId(selectionData.sabjiId || '');
       } catch (err) {
@@ -1594,8 +1599,6 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
     })();
   }, []);
 
-  
-
   const persistMenuSelection = async (dalId: string, sabjiId: string) => {
     setMenuSelectionError(null);
     setIsMenuSelectionSaving(true);
@@ -1669,8 +1672,7 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
     });
   }, [currentWeekMonday]);
 
- const changeWeek = (direction: 'prev' | 'next') => {
-    // Jump directly to Monday of the target week
+  const changeWeek = (direction: 'prev' | 'next') => {
     const targetMonday = new Date(currentWeekMonday);
     targetMonday.setDate(currentWeekMonday.getDate() + (direction === 'next' ? 7 : -7));
     targetMonday.setHours(12, 0, 0, 0);
@@ -1682,7 +1684,7 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
   }, [activeDay]);
 
   const isVegDay = !isChickenDay;
-// Pre-aggregate customer skip dates across all loaded overrides for cycle projection
+
   const customerSkipsMap = useMemo(() => {
     const map = new Map<string, Set<string>>();
     Object.entries(overridesByDate).forEach(([dayKey, customerRows]) => {
@@ -1695,6 +1697,7 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
     });
     return map;
   }, [overridesByDate]);
+
   const mergedCustomers = useMemo(() => {
     return initialCustomers.map(customer => {
       const edit = localEdits[customer.id];
@@ -1736,8 +1739,6 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
         : null;
       const effectiveEnd = explicitEnd || computedEnd || '';
 
-      // If customer has a log on this date but their renewed start_date is in the future,
-      // treat them as an active fulfilled delivery for this past day, not lapsed/pending.
       const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
       const isPastCycleRecord = hasLog && startDate && selectedDateKey < startDate;
 
@@ -1785,8 +1786,7 @@ const [deliveryLoggedIds, setDeliveryLoggedIds] = useState<Set<string>>(new Set(
 
   const activeCustomers = activeCookingCustomers;
 
-const manifestCustomers = useMemo(() => {
-    // When visiting a past date that has a locked snapshot, rehydrate the frozen records
+  const manifestCustomers = useMemo(() => {
     if (historicalSnapshot && historicalSnapshot.length > 0) {
       return historicalSnapshot.map(s => ({
         id: s.customer_id,
@@ -1813,7 +1813,6 @@ const manifestCustomers = useMemo(() => {
     });
   }, [historicalSnapshot, visibleManifestCustomers]);
 
-  // Tracks multiple tiffins assigned to the same customer on the same delivery day
   const customerMultiBoxIndex = useMemo(() => {
     const totalCounts = new Map<string, number>();
     const indices = new Map<string, { current: number; total: number }>();
@@ -1838,11 +1837,6 @@ const manifestCustomers = useMemo(() => {
     return indices;
   }, [manifestCustomers]);
 
-  const metrics = useMemo(
-    () => computePrepMetrics(activeCookingCustomers, isChickenDay),
-    [activeCookingCustomers, isChickenDay],
-  );
-
   const selectedDalRecipe = useMemo(
     () => batchRecipes.find(r => r.id === selectedDalId) ?? null,
     [batchRecipes, selectedDalId],
@@ -1850,6 +1844,14 @@ const manifestCustomers = useMemo(() => {
   const selectedSabjiRecipe = useMemo(
     () => batchRecipes.find(r => r.id === selectedSabjiId) ?? null,
     [batchRecipes, selectedSabjiId],
+  );
+
+  const printDalName = selectedDalRecipe?.name || (veg1 || '').trim() || '—';
+  const printSabjiName = selectedSabjiRecipe?.name || (veg2 || '').trim() || '—';
+
+  const metrics = useMemo(
+    () => computePrepMetrics(activeCookingCustomers, isChickenDay, { dalName: printDalName, sabjiName: printSabjiName }),
+    [activeCookingCustomers, isChickenDay, printDalName, printSabjiName],
   );
 
   const formatOz = (oz: number): string => `${oz.toFixed(1)} oz`;
@@ -1874,11 +1876,8 @@ const manifestCustomers = useMemo(() => {
   const dalBatchRows = buildBatchRows(selectedDalRecipe, metrics.dalPackRG, metrics.dalPackLG);
   const sabjiBatchRows = buildBatchRows(selectedSabjiRecipe, metrics.sabjiPackRG, metrics.sabjiPackLG);
 
-  const printDalName = selectedDalRecipe?.name || (veg1 || '').trim() || '—';
-  const printSabjiName = selectedSabjiRecipe?.name || (veg2 || '').trim() || '—';
   const printChickenName = isChickenDay ? (nonVeg || '').trim() || 'Chicken Curry' : null;
 
-  // Automatic snapshot on load: freezes any past delivery day if not already locked
   useEffect(() => {
     if (isDateSwitching || isMenuLoading || !isPastDate) return;
     if (historicalSnapshot && historicalSnapshot.length > 0) return;
@@ -1946,17 +1945,24 @@ const manifestCustomers = useMemo(() => {
   const dalBreakdownLines = formatBatchBreakdownLines(dalBatchRows);
 
   return (
-    <div className="flex flex-col h-screen w-full max-w-full overflow-x-hidden bg-[#F9FBFC] font-sans text-[#292D32] print:h-auto print:overflow-visible print:bg-white">
+    <div className="flex flex-col flex-1 min-h-0 w-full max-w-full overflow-x-hidden bg-[#F8FAFC] font-sans text-[#292D32] print:h-auto print:overflow-visible print:bg-white">
 
-      {/* UNIFIED RESPONSIVE HEADER */}
-      <div className="px-3 sm:px-6 py-2.5 bg-white border-b border-[#EEEEEE] flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0 print:hidden">
+      {/* ── UNIFIED STANDARD PAGE HEADER ── */}
+      <div className="px-4 sm:px-6 lg:px-8 pt-5 sm:pt-7 lg:pt-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200/80 pb-5 shrink-0 print:hidden">
         {/* Left: Title + Operational Metrics Group + Mobile Print */}
         <div className="flex flex-wrap items-center justify-between md:justify-start gap-2.5 shrink-0 w-full md:w-auto">
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-[16px] sm:text-[17px] font-black text-[#11142D] tracking-tight">
-              Kitchen Prep &amp; Packaging
-            </h1>
-            <div className="h-5 w-px bg-gray-200 hidden sm:block" />
+          <div>
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
+                Kitchen Prep &amp; Packaging
+              </h1>
+              <span className="inline-flex items-center justify-center px-2.5 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-xs font-bold rounded-full">
+                {metrics.totalMeals} orders
+              </span>
+            </div>
+            <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
+              Aggregated cooking, packing &amp; dispatch manifest for {formattedTargetDate}.
+            </p>
           </div>
 
           <div className="flex items-center gap-2 flex-1 md:flex-initial justify-between md:justify-start">
@@ -2001,7 +2007,7 @@ const manifestCustomers = useMemo(() => {
               )}
             </div>
 
-            {/* Mobile-Only Print Button: Sits right in your highlighted red space */}
+            {/* Mobile-Only Print Button */}
             <button
               type="button"
               onClick={() => window.print()}
@@ -2014,15 +2020,15 @@ const manifestCustomers = useMemo(() => {
           </div>
         </div>
 
-        {/* Center: Target Prep Date Context */}
+        {/* Center: Target Prep Date Context (Gated by isMounted to eliminate hydration mismatch) */}
         <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-gray-50/70 border border-gray-200/80 rounded-lg text-xs font-semibold text-gray-500">
           <span>Prep target:</span>
           <strong className="text-gray-900">{formattedTargetDate}</strong>
-          {isPreppingToday ? (
+          {isMounted && isPreppingToday ? (
             <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
               Today
             </span>
-          ) : isPreppingTomorrow ? (
+          ) : isMounted && isPreppingTomorrow ? (
             <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100">
               Tomorrow
             </span>
@@ -2113,7 +2119,7 @@ const manifestCustomers = useMemo(() => {
       </div>
 
       {/* DASHBOARD GRID WORKSPACE */}
-      <div className={`relative flex-1 overflow-y-auto p-3 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 print:flex-none print:h-auto print:overflow-visible print:p-3 transition-opacity duration-150 ${
+      <div className={`relative flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 print:flex-none print:h-auto print:overflow-visible print:p-3 transition-opacity duration-150 ${
         isDateSwitching ? 'opacity-30 pointer-events-none select-none' : 'opacity-100'
       }`}>
         {isDateSwitching && (
@@ -2359,6 +2365,10 @@ const manifestCustomers = useMemo(() => {
                       isNonVeg: (customer.meal_type || '').toLowerCase().includes('non'),
                       isChickenDay,
                     });
+                    const dishAlert = getDishDislikeAlert(customer, printDalName, printSabjiName);
+                    const combinedAlert = dishAlert
+                      ? [dishAlert, alertText].filter(Boolean).join(' · ')
+                      : alertText;
                     const street = isPickupOnDay(customer, activeDay)
                       ? 'PU'
                       : formatShortAddress(customer.delivery_address) || '—';
@@ -2396,8 +2406,8 @@ const manifestCustomers = useMemo(() => {
                         <td className="text-center font-bold">{rotiText}</td>
                         <td className="text-center font-bold">{riceText}</td>
                         <td className="text-left font-black uppercase break-words">
-                          {alertText
-                            ? alertText.replace(/[\u{1F300}-\u{1FAFF}|\u{2600}-\u{27BF}]/gu, '').replace(/\s{2,}/g, ' ').trim()
+                          {combinedAlert
+                            ? combinedAlert.replace(/[\u{1F300}-\u{1FAFF}|\u{2600}-\u{27BF}]/gu, '').replace(/\s{2,}/g, ' ').trim()
                             : '—'}
                         </td>
                       </tr>
@@ -2500,7 +2510,7 @@ const manifestCustomers = useMemo(() => {
                   </div>
                 </div>
 
-                {/* 2. Rice Boxes - Matches Dal & Sabji Format (RG first, then LG) */}
+                {/* 2. Rice Boxes */}
                 <div className="pt-3 border-t border-gray-100">
                   <div className="flex items-center justify-between">
                     <span className="text-[10.5px] font-black uppercase text-blue-600 tracking-wider">
@@ -2539,6 +2549,22 @@ const manifestCustomers = useMemo(() => {
                   <span className="text-[10.5px] font-semibold text-gray-400 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded">
                     {metrics.dalPackRG + metrics.dalPackLG + metrics.sabjiPackRG + metrics.sabjiPackLG} containers
                   </span>
+                  {(metrics.dishSwapToDal + metrics.dishSwapToSabji) > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10.5px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded"
+                      title={`${metrics.dishSwapToDal} customer(s) Sabji→Dal, ${metrics.dishSwapToSabji} customer(s) Dal→Sabji (excluded dishes)`}
+                    >
+                      ⚡ {metrics.dishSwapToDal + metrics.dishSwapToSabji} dish swap{(metrics.dishSwapToDal + metrics.dishSwapToSabji) === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {metrics.dishSwapUnresolved > 0 && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10.5px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded"
+                      title="Customer dislikes BOTH of today's Dal and Sabji — kitchen override required."
+                    >
+                      ⚠️ {metrics.dishSwapUnresolved} override needed
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <a
@@ -2766,7 +2792,7 @@ const manifestCustomers = useMemo(() => {
           </div>
 
           {/* ========================================================= */}
-          {/* 1. MOBILE CARD VIEW (< md screens, zero sideways swiping) */}
+          {/* 1. MOBILE CARD VIEW (< md screens)                        */}
           {/* ========================================================= */}
           <div className="md:hidden divide-y divide-gray-100 print:hidden">
             {activeCustomers.length === 0 && manifestCustomers.length === 0 ? (
@@ -2795,7 +2821,6 @@ const manifestCustomers = useMemo(() => {
                   }
                 }
 
-                // Rely on explicit database cycle_end_date first; only walk dates if missing
                 const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
                 const custSkips = customerSkipsMap.get(customer.id);
                 const computedEnd = !explicitEnd && customer.start_date
@@ -2809,7 +2834,6 @@ const manifestCustomers = useMemo(() => {
                   : null;
                 const effectiveTargetEnd = explicitEnd || computedEnd;
 
-                // LAST DAY triggers strictly on the single true final day, provided today is delivered
                 const isLastDay =
                   !customer.isSkipped &&
                   !customer.isExpiredRenewalPending &&
@@ -2853,6 +2877,9 @@ const manifestCustomers = useMemo(() => {
                   ? sideAddons.salad === 1 && sideAddons.dessert === 1
                   : sideAddons.salad === 0 && sideAddons.dessert === 0;
                 const sidesBadge = isDefaultSides ? null : formatSidesBadge(sideAddons.salad, sideAddons.dessert);
+                const dishAlert = customer.isSkipped
+                  ? null
+                  : getDishDislikeAlert(customer, printDalName, printSabjiName);
 
                 const hasRoti = typeof customer.roti_count === 'number' && customer.roti_count > 0;
                 const hasPronthi = typeof customer.pronthi_count === 'number' && customer.pronthi_count > 0;
@@ -2873,7 +2900,6 @@ const manifestCustomers = useMemo(() => {
                         : 'bg-white'
                       }`}
                   >
-                    {/* Top Row: Customer Name + Diet & Portion Badges */}
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5 flex-wrap">
@@ -2881,14 +2907,12 @@ const manifestCustomers = useMemo(() => {
                             {customer.full_name}
                           </span>
 
-                          {/* Multiple Tiffin Index */}
                           {customerMultiBoxIndex.has(customer.id) && (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap">
                               Box {customerMultiBoxIndex.get(customer.id)!.current} of {customerMultiBoxIndex.get(customer.id)!.total}
                             </span>
                           )}
 
-                          {/* 1. If customer was on their last day today but already renewed starting tomorrow */}
                           {customer.start_date && selectedDateKey < customer.start_date.slice(0, 10) ? (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 whitespace-nowrap">
                               ✓ RENEWED (Starts {formatShortDate(customer.start_date)})
@@ -2903,7 +2927,6 @@ const manifestCustomers = useMemo(() => {
                             </span>
                           ) : null}
 
-                          {/* Upcoming Pause Notice Pill */}
                           {!customer.isSkipped && !customer.isExpiredRenewalPending && (() => {
                             const pauseNotice = getUpcomingPauseNotice(
                               customer.id,
@@ -2947,7 +2970,6 @@ const manifestCustomers = useMemo(() => {
                       </div>
                     </div>
 
-                    {/* Middle Row: Packing Specs (Breads, Rice, Sides) */}
                     {!customer.isSkipped && (breadParts.length > 0 || hasRiceToPack(customer.rice_count) || (sidesBadge && !sideText)) && (
                       <div className="flex items-center gap-2 flex-wrap text-xs bg-gray-50 border border-gray-200/70 rounded-lg px-2.5 py-1.5 font-medium">
                         {breadParts.length > 0 && (
@@ -2978,12 +3000,11 @@ const manifestCustomers = useMemo(() => {
                       </div>
                     )}
 
-                    {/* Bottom Row: Kitchen Overrides & Notes */}
                     {customer.isSkipped ? (
                       <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
                         <div className="inline-flex items-center gap-1.5 text-[10.5px] font-bold text-amber-900 bg-amber-100/90 border border-amber-300 px-2 py-0.5 rounded flex-wrap">
-                          <Ban className="w-3 h-3 text-amber-700 shrink-0" />
-                          <span className="font-black uppercase">SKIPPED</span>
+                          <Ban className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2.5} />
+                          <span className="font-black uppercase tracking-wider">SKIPPED</span>
                           {skipRanges[customer.id] && skipRanges[customer.id].count > 1 ? (
                             <>
                               <span className="text-amber-400">·</span>
@@ -3014,17 +3035,22 @@ const manifestCustomers = useMemo(() => {
                         </button>
                       </div>
                     ) : (
-                      (todayOverrideLabel || customInstruction || sideText || noteText) && (
+                      (todayOverrideLabel || customInstruction || sideText || noteText || dishAlert) && (
                         <div className="flex flex-col gap-1 text-[11px] pt-0.5">
+                          {dishAlert && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md w-fit font-black bg-amber-100 text-amber-900 border border-amber-300 shadow-sm">
+                              {dishAlert}
+                            </span>
+                          )}
                           {todayOverrideLabel && (
                             <span className="inline-flex items-center gap-1 text-amber-900 font-bold bg-amber-100/90 border border-amber-300 px-2 py-0.5 rounded w-fit">
-                              <Zap className="w-3 h-3 text-amber-600 fill-amber-600" />
+                              <Zap className="w-3.5 h-3.5 text-amber-600 fill-amber-600" />
                               {todayOverrideLabel}
                             </span>
                           )}
                           {customInstruction && (
                             <span className="inline-flex items-center gap-1 text-amber-800 font-semibold bg-amber-50 border border-amber-200 px-2 py-0.5 rounded w-fit">
-                              <Zap className="w-3 h-3 text-amber-500" />
+                              <Zap className="w-3.5 h-3.5 text-amber-500" />
                               {customInstruction}
                             </span>
                           )}
@@ -3048,7 +3074,7 @@ const manifestCustomers = useMemo(() => {
           </div>
 
           {/* ========================================================= */}
-          {/* 2. DESKTOP VIEW ONLY (Zero Print Bleed)                  */}
+          {/* 2. DESKTOP VIEW ONLY                                      */}
           {/* ========================================================= */}
           <div className="hidden md:block w-full overflow-x-auto print:hidden">
             <table className="w-full min-w-full text-left text-[13px] border-collapse">
@@ -3091,7 +3117,6 @@ const manifestCustomers = useMemo(() => {
                       }
                     }
 
-                    // Rely on explicit database cycle_end_date first; only walk dates if missing
                     const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
                     const custSkips = customerSkipsMap.get(customer.id);
                     const computedEnd = !explicitEnd && customer.start_date
@@ -3133,14 +3158,12 @@ const manifestCustomers = useMemo(() => {
                               {customer.full_name}
                             </span>
 
-                            {/* Multiple Tiffin Index */}
                             {customerMultiBoxIndex.has(customer.id) && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap shrink-0">
                                 Box {customerMultiBoxIndex.get(customer.id)!.current} of {customerMultiBoxIndex.get(customer.id)!.total}
                               </span>
                             )}
 
-                            {/* 1. If customer was on their last day today but already renewed starting tomorrow */}
                             {customer.start_date && selectedDateKey < customer.start_date.slice(0, 10) ? (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 whitespace-nowrap shrink-0">
                                 ✓ RENEWED (Starts {formatShortDate(customer.start_date)})
@@ -3169,7 +3192,6 @@ const manifestCustomers = useMemo(() => {
                               </span>
                             ) : null}
 
-                            {/* Upcoming Pause Notice Pill */}
                             {!customer.isSkipped && !customer.isExpiredRenewalPending && (() => {
                               const pauseNotice = getUpcomingPauseNotice(
                                 customer.id,
@@ -3402,18 +3424,31 @@ const manifestCustomers = useMemo(() => {
                               ? '—'
                               : formatSidesBadge(sideAddons.salad, sideAddons.dessert);
 
+                            const dishAlert = customer.isSkipped
+                              ? null
+                              : getDishDislikeAlert(customer, printDalName, printSabjiName);
+
                             if (
                               !sideText &&
                               !customLabel &&
                               !noteText &&
                               !todayOverrideLabel &&
-                              sidesBadge === '—'
+                              sidesBadge === '—' &&
+                              !dishAlert
                             ) {
                               return <span className="text-gray-300">—</span>;
                             }
 
                             return (
                               <div className="flex flex-col items-start gap-1 min-w-0 max-w-full print:max-w-none">
+                                {dishAlert && (
+                                  <span
+                                    className="max-w-full truncate inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-black leading-none shadow-sm bg-amber-100 text-amber-900 border border-amber-300 print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
+                                    title={dishAlert}
+                                  >
+                                    <span className="truncate">{dishAlert}</span>
+                                  </span>
+                                )}
                                 {todayOverrideLabel && (
                                   <span
                                     className="max-w-full truncate inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-300 rounded-md text-[10.5px] font-black leading-none shadow-sm print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
@@ -3454,7 +3489,7 @@ const manifestCustomers = useMemo(() => {
                                     className="max-w-full truncate inline-flex items-center gap-1 px-2 py-0.5 bg-yellow-50 text-yellow-800 border border-yellow-200 rounded-md text-[10.5px] font-medium leading-none print:whitespace-normal print:overflow-visible print:bg-transparent print:border-0 print:rounded-none print:shadow-none print:px-0 print:py-0"
                                     title={noteText}
                                   >
-                                    <AlertTriangle className="w-3 h-3 text-yellow-600 shrink-0" strokeWidth={2} />
+                                    <AlertTriangle className="w-3.5 h-3.5 text-yellow-600 shrink-0" strokeWidth={2} />
                                     <span className="truncate">{noteText}</span>
                                   </span>
                                 )}
@@ -3560,6 +3595,7 @@ const manifestCustomers = useMemo(() => {
           isExpiredPendingRenewal={quickEditCustomer.isExpiredRenewalPending}
           expiredOnDate={quickEditCustomer.expiredOnDate}
           onRenewSuccess={handleRenewSuccess}
+          catalogRecipes={catalogRecipeNames}
         />
       )}
 

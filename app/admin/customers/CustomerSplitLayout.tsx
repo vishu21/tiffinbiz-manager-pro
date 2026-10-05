@@ -4,13 +4,27 @@ import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExte
 import { useRouter } from 'next/navigation';
 import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Check, Undo2, History, Clock } from 'lucide-react';
 import { createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation, getCustomerActivityLogs, addManualCustomerLog, type CustomerActivityLog } from '@/app/admin/actions';
+import { getAvailableRecipes } from '@/app/prep/actions';
 import {
   isLegacyPickupCustomer,
   normalizePickupDays,
   parseActiveScheduleDays,
   pickupDaysForCustomer,
 } from '@/app/utils/customerPickup';
-import { calculateCycleTargetLastDay } from '@/app/utils/subscriptionCycle';
+import { calculateCycleTargetLastDay, resolveDeliveryDayNumbers } from '@/app/utils/subscriptionCycle';
+
+// Preferred common dish exclusions in priority order, surfaced as a compact quick-toggle
+// strip instead of dumping the entire recipe catalog as a wall of pills. These are only
+// ever shown when the dish actually exists in the live catalog (menu_recipes).
+const PREFERRED_EXCLUSIONS = [
+  'Aloo Baingan',
+  'Bhindi',
+  'Kadhi',
+  'Black Channa',
+  'Brown Dal',
+  'Rajma',
+  'Saag'
+];
 
 const noopSubscribe = () => () => { };
 
@@ -30,6 +44,10 @@ const SCHEDULE_DAYS = [
 ];
 
 const REFERRAL_QUICK_PILLS = ['Instagram', 'WhatsApp', 'Flyer', 'Word of mouth'];
+
+// The Excluded / Disliked Dishes manager pulls its one-tap pills and autocomplete
+// suggestions from the live recipe catalog (menu_recipes via getAvailableRecipes) so
+// the options always mirror what the admin maintains on /admin/recipes.
 
 const toLocalDateKey = (date: Date): string => {
   const y = date.getFullYear();
@@ -54,10 +72,19 @@ const calculateTargetLastDay = (
   totalMeals: number | null | undefined,
   closureDates?: Set<string> | Map<string, string> | string[],
   customerSkips?: Set<string>,
+  deliveryDays?: Set<number> | number[],
 ): TargetLastDayResult | null => {
+  const daySet =
+    deliveryDays instanceof Set
+      ? deliveryDays
+      : Array.isArray(deliveryDays) && deliveryDays.length > 0
+        ? new Set(deliveryDays)
+        : undefined;
+
   const result = calculateCycleTargetLastDay({
     startDate: startDateStr,
     totalMeals,
+    deliveryDays: daySet,
     closureDates,
     customerSkips,
   });
@@ -164,6 +191,7 @@ type Customer = {
   discount_note?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
+  disliked_dishes?: string[] | null;
   created_at: string;
 };
 
@@ -883,6 +911,93 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [saladCount, setSaladCount] = useState(0);
   const [dessertCount, setDessertCount] = useState(0);
   const [specialInstructions, setSpecialInstructions] = useState('');
+  const [dislikedDishes, setDislikedDishes] = useState<string[]>([]);
+  const [dislikeInput, setDislikeInput] = useState('');
+  const [catalogRecipes, setCatalogRecipes] = useState<string[]>([]);
+  const [isDislikeMenuOpen, setIsDislikeMenuOpen] = useState(false);
+  const dislikeContainerRef = useRef<HTMLDivElement>(null);
+
+  // Load the live recipe catalog once so the quick-tap pills and the autocomplete
+  // dropdown stay in sync with whatever the admin maintains on /admin/recipes.
+  useEffect(() => {
+    let isActive = true;
+    getAvailableRecipes()
+      .then(data => {
+        if (!isActive) return;
+        const allNames = [...data.dal.map(r => r.name), ...data.sabji.map(r => r.name)].sort(
+          (a, b) => a.localeCompare(b)
+        );
+        setCatalogRecipes(allNames);
+      })
+      .catch(err => {
+        console.error('[Customers] Failed to load the dish catalog:', err);
+      });
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  // Resolves a typed value to its canonical catalog name (case-insensitive) or null
+  // when the operator typed something that isn't part of the recipe catalog.
+  const resolveCatalogDish = (value: string): string | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    return catalogRecipes.find(r => r.toLowerCase() === trimmed.toLowerCase()) ?? null;
+  };
+
+  // Adds a dish to the customer's exclusion list (case-insensitive de-dupe). Only
+  // catalog dishes can be added — arbitrary free text is rejected. When the catalog
+  // hasn't loaded yet we fall back to the raw value so the field stays usable.
+  const addDislikedDish = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const canonical = catalogRecipes.length > 0 ? resolveCatalogDish(trimmed) : trimmed;
+    if (!canonical) return;
+    setDislikedDishes(prev =>
+      prev.some(d => d.toLowerCase() === canonical.toLowerCase()) ? prev : [...prev, canonical]
+    );
+    setDislikeInput('');
+    setIsDislikeMenuOpen(false);
+  };
+
+  // Removes a dish from the customer's exclusion list (case-insensitive).
+  const removeDislikedDish = (dish: string) => {
+    setDislikedDishes(prev => prev.filter(d => d.toLowerCase() !== dish.toLowerCase()));
+  };
+
+  // Catalog dishes matching the current query, minus the ones already excluded.
+  const filteredCatalogRecipes = useMemo(() => {
+    const query = dislikeInput.trim().toLowerCase();
+    return catalogRecipes.filter(
+      name =>
+        !dislikedDishes.some(d => d.toLowerCase() === name.toLowerCase()) &&
+        (query === '' || name.toLowerCase().includes(query))
+    );
+  }, [catalogRecipes, dislikeInput, dislikedDishes]);
+
+  // Quick-tap pills: preferred exclusions that actually exist in the catalog, padded with
+  // other catalog recipes (up to 4 total) so the strip is never stale or empty.
+  const quickPills = useMemo(() => {
+    const catalogSet = new Set(catalogRecipes.map(r => r.toLowerCase().trim()));
+
+    // 1. First, pick preferred exclusions that actually exist in the catalog.
+    const matched = PREFERRED_EXCLUSIONS.filter(name =>
+      catalogSet.has(name.toLowerCase().trim())
+    );
+
+    // 2. If fewer than 4 matched, pad with any other catalog recipes up to 4 items max.
+    if (matched.length < 4) {
+      for (const recipe of catalogRecipes) {
+        if (matched.length >= 4) break;
+        if (!matched.some(m => m.toLowerCase() === recipe.toLowerCase())) {
+          matched.push(recipe);
+        }
+      }
+    }
+
+    return matched.slice(0, 4); // Always cap at 4 pills max.
+  }, [catalogRecipes]);
+
 
   const [mwfSideMode, setMwfSideMode] = useState<
     'default' | 'dal-chicken' | 'double-chicken' | 'double-gravy' | 'custom'
@@ -1036,9 +1151,32 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     return selectedCustomer ? skipsMap.get(selectedCustomer.id) : undefined;
   }, [selectedCustomer, skipsMap]);
 
+  const activeDeliveryDays = useMemo(() => {
+    const dayMap: Record<string, number> = {
+      sun: 0, sunday: 0,
+      mon: 1, monday: 1,
+      tue: 2, tuesday: 2,
+      wed: 3, wednesday: 3,
+      thu: 4, thursday: 4,
+      fri: 5, friday: 5,
+      sat: 6, saturday: 6,
+    };
+    const days = selectedDays
+      .map(d => dayMap[String(d).toLowerCase().trim()])
+      .filter((d): d is number => typeof d === 'number');
+
+    return new Set(days.length > 0 ? days : [1, 2, 3, 4, 5]);
+  }, [selectedDays]);
+
   const computedEndResult = useMemo(() => {
-    return calculateTargetLastDay(startDate, totalTiffinCredits, closuresSet, currentCustomerSkips);
-  }, [startDate, totalTiffinCredits, closuresSet, currentCustomerSkips]);
+    return calculateTargetLastDay(
+      startDate,
+      totalTiffinCredits,
+      closuresSet,
+      currentCustomerSkips,
+      activeDeliveryDays
+    );
+  }, [startDate, totalTiffinCredits, closuresSet, currentCustomerSkips, activeDeliveryDays]);
 
   const computedEndDate = computedEndResult?.dateKey || null;
 
@@ -1129,6 +1267,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       }
       if (referralContainerRef.current && !referralContainerRef.current.contains(target)) {
         setIsReferralMenuOpen(false);
+      }
+      if (dislikeContainerRef.current && !dislikeContainerRef.current.contains(target)) {
+        setIsDislikeMenuOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -1576,6 +1717,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setPickupDays([]);
     setSideNotes('');
     setSpecialInstructions('');
+    setDislikedDishes([]);
+    setDislikeInput('');
+    setIsDislikeMenuOpen(false);
     setDeliveryNotes('');
     setDiscountType('none');
     setDiscountValue('');
@@ -1802,11 +1946,22 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     }
     if (customer.delivery_instructions) setSideNotes(customer.delivery_instructions);
 
-    const rawDeliveryNotes = customer.delivery_instructions || '';
-    const isLegacyMealText = /(sabji|chicken|dal|paneer|roti|salad|dessert)/i.test(rawDeliveryNotes);
-    setDeliveryNotes(isLegacyMealText ? '' : rawDeliveryNotes);
+    // Extract pure drop-off note from [NOTE: ...] tag or raw text
+    const rawDeliveryInstructions = (customer.delivery_instructions || '').trim();
+    const noteTagMatch = rawDeliveryInstructions.match(/\[NOTE:\s*(.*?)\]/i);
+
+    if (noteTagMatch) {
+      setDeliveryNotes(noteTagMatch[1].trim());
+    } else {
+      const isPureMealText = /^(?:\d+x?\s*(?:dal|daal|sabji|chicken|gravy|salad|dessert|roti)\s*(?:\+\s*|\s*|$))+/i.test(
+        rawDeliveryInstructions
+      );
+      setDeliveryNotes(isPureMealText ? '' : rawDeliveryInstructions);
+    }
 
     setSpecialInstructions(customer.dietary_notes || '');
+    setDislikedDishes(Array.isArray(customer.disliked_dishes) ? customer.disliked_dishes : []);
+    setDislikeInput('');
 
     setDiscountType(
       customer.discount_type === 'flat' || customer.discount_type === 'percent'
@@ -1905,22 +2060,22 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
     const curryConfigForSave = hasCustomSides
       ? JSON.stringify(
-          mealType === 'Non-veg'
-            ? buildWeeklyConfig()
-            : ({
-                pattern_type: 'veg_fixed' as const,
-                mwf: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
-                tth: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
-                extras: extrasForConfig,
-              } as WeeklyCurryConfig)
-        )
+        mealType === 'Non-veg'
+          ? buildWeeklyConfig()
+          : ({
+            pattern_type: 'veg_fixed' as const,
+            mwf: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
+            tth: { dal: dalCount, chicken: chickenCount, sabji: sabjiCount, gravy: gravyCount || 0 },
+            extras: extrasForConfig,
+          } as WeeklyCurryConfig)
+      )
       : null;
 
     const driverDropoffNote = deliveryNotes.trim();
     const finalInstructions = driverDropoffNote
       ? structuredSideDish
         ? `${structuredSideDish} [NOTE: ${driverDropoffNote}]`
-        : driverDropoffNote
+        : `[NOTE: ${driverDropoffNote}]`
       : structuredSideDish || null;
 
     const finalPickupDays = selectedDays.filter(d => pickupDays.includes(d));
@@ -1934,6 +2089,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       referred_by: referredBy.trim() || null,
       delivery_address: finalAddress,
       dietary_notes: specialInstructions.trim() || null,
+      disliked_dishes: dislikedDishes,
       meal_type: mealType || 'Veg',
       portion_size: finalPortion,
       plan_tier: planTier,
@@ -2435,29 +2591,29 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   );
 
   return (
-    <div className="w-full px-6 lg:px-8 py-6 sm:py-8 space-y-6 flex-1 flex flex-col min-h-0 font-sans antialiased text-[#292D32]">
-      {/* ── UNIFIED STANDARD PAGE HEADER ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200/80 pb-5 shrink-0">
+    <div className="w-full px-3.5 sm:px-6 lg:px-8 py-3 sm:py-7 lg:py-8 space-y-3 sm:space-y-6 flex-1 flex flex-col md:min-h-0 md:h-full font-sans antialiased text-[#292D32]">
+      {/* ── UNIFIED COMPACT HEADER ── */}
+      <div className="flex items-center justify-between gap-2 border-b border-gray-200/80 pb-2.5 sm:pb-5 shrink-0">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">Customers</h1>
-            <span className="inline-flex items-center justify-center px-2.5 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-xs font-bold rounded-full">
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg sm:text-2xl font-black text-[#11142D] tracking-tight">Customers</h1>
+            <span className="inline-flex items-center justify-center px-2 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-[11px] sm:text-xs font-bold rounded-full">
               {filteredCustomers.length}
             </span>
           </div>
-          <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
+          <p className="text-xs text-gray-500 font-medium mt-0.5 hidden md:block">
             Manage subscriber delivery schedules, meal plans, portion customisations, and cycle renewals.
           </p>
         </div>
 
         {/* Global Action CTA Button Group */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             type="button"
             onClick={handleSync}
             disabled={isSyncing}
             title="Sync with latest database records and closures"
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+            className="h-8 sm:h-9 px-2.5 sm:px-3.5 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 shadow-2xs transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
           >
             <svg
               className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-[#5D5FEF]' : ''}`}
@@ -2470,7 +2626,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             >
               <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
             </svg>
-            <span>Sync</span>
+            <span className="hidden sm:inline">Sync</span>
           </button>
 
           <button
@@ -2478,35 +2634,35 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             aria-pressed={kitchenMode}
             onClick={toggleKitchenMode}
             title="Kitchen Dispatch / Packing Order: Non-Veg first → Large → Regular → Small → A–Z"
-            className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl border transition-colors cursor-pointer shadow-2xs ${
-              kitchenMode
-                ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
-                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-            }`}
+            className={`h-8 sm:h-9 px-2.5 sm:px-3.5 text-xs font-bold rounded-xl border transition-colors cursor-pointer shadow-2xs flex items-center gap-1.5 ${kitchenMode
+              ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
+              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+              }`}
           >
             <UtensilsCrossed className="w-3.5 h-3.5" />
-            <span>Kitchen Order</span>
+            <span className="hidden sm:inline">Kitchen Order</span>
           </button>
 
           <button
             type="button"
             onClick={handleOpenAddForm}
-            className="flex items-center gap-1.5 px-4 py-2 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-xl shadow-2xs transition-colors cursor-pointer"
+            className="h-8 sm:h-9 px-3 sm:px-4 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-xl shadow-2xs transition-colors cursor-pointer flex items-center gap-1"
           >
-            <span>+ Add Customer</span>
+            <span>+ Add</span>
+            <span className="hidden sm:inline">Customer</span>
           </button>
         </div>
       </div>
 
       {/* ── MAIN CONTENT CARD CONTAINER ── */}
-      <div className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs overflow-hidden flex-1 flex flex-col min-h-0">
-        
+      <div className="bg-white rounded-2xl border border-gray-200/90 shadow-2xs flex-1 flex flex-col md:min-h-0 md:overflow-hidden">
+
         {/* Top Control Strip: Search & Filters */}
-        <div className="p-4 sm:p-5 border-b border-gray-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3.5 bg-white shrink-0">
+        <div className="p-2.5 sm:p-5 border-b border-gray-100 flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 sm:gap-3.5 bg-white shrink-0">
           {/* Search Input */}
           <div className="w-full lg:max-w-md relative">
-            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none z-10">
-              <svg className="w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none z-10">
+              <svg className="w-3.5 h-3.5 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                 <circle cx="11" cy="11" r="8" />
                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
@@ -2516,41 +2672,42 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               placeholder="Search customer, address, or phone..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full text-xs font-semibold pl-10 pr-8 py-2.5 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] focus:bg-white text-gray-900 placeholder-gray-400 transition-all"
+              className="w-full text-xs font-semibold pl-9 pr-7 py-2 sm:py-2.5 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] focus:bg-white text-gray-900 placeholder-gray-400 transition-all"
             />
             {searchTerm && (
               <button
                 type="button"
                 onClick={() => setSearchTerm('')}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center text-gray-400 hover:text-gray-600 cursor-pointer"
+                className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-gray-400 hover:text-gray-600 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          {/* Meal Filters & Status Filters */}
-          <div className="flex flex-wrap items-center justify-between lg:justify-end gap-3">
+          {/* Horizontally Scrollable Filters on Mobile */}
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none flex-nowrap pb-0.5 sm:pb-0">
             {/* Meal Type Pills */}
-            <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-xl border border-gray-200/80">
+            <div className="flex items-center gap-0.5 bg-gray-50 p-0.5 sm:p-1 rounded-xl border border-gray-200/80 shrink-0">
               {(['all', 'veg', 'non-veg'] as const).map(tab => (
                 <button
                   key={tab}
                   type="button"
                   onClick={() => setActiveTab(tab)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    activeTab === tab
-                      ? 'bg-white text-[#5D5FEF] shadow-2xs'
-                      : 'text-gray-500 hover:text-gray-900'
-                  }`}
+                  className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${activeTab === tab
+                    ? 'bg-white text-[#5D5FEF] shadow-2xs'
+                    : 'text-gray-500 hover:text-gray-900'
+                    }`}
                 >
-                  {tab === 'all' ? 'All' : tab === 'veg' ? 'Vegetarian' : 'Non-Veg'}
+                  {tab === 'all' ? 'All' : tab === 'veg' ? 'Veg' : 'Non-Veg'}
                 </button>
               ))}
             </div>
 
+            <div className="h-4 w-px bg-gray-200 shrink-0" />
+
             {/* Status Pills */}
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1 shrink-0">
               {(['all', 'active', 'paused', 'cancelled'] as const).map(status => {
                 const statusCounts: Record<string, number> = {
                   all: customersForDisplay.length,
@@ -2563,17 +2720,16 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     key={status}
                     type="button"
                     onClick={() => setStatusFilter(status)}
-                    className={`px-3 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all border cursor-pointer ${
-                      statusFilter === status
-                        ? status === 'active'
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                          : status === 'paused'
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-xl text-[10.5px] sm:text-[11px] font-black uppercase tracking-wider transition-all border cursor-pointer whitespace-nowrap ${statusFilter === status
+                      ? status === 'active'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : status === 'paused'
                           ? 'bg-amber-50 text-amber-700 border-amber-200'
                           : status === 'cancelled'
-                          ? 'bg-rose-50 text-rose-700 border-rose-200'
-                          : 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
-                        : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
-                    }`}
+                            ? 'bg-rose-50 text-rose-700 border-rose-200'
+                            : 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
+                      : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                      }`}
                   >
                     {status} ({statusCounts[status]})
                   </button>
@@ -2583,9 +2739,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           </div>
         </div>
 
-        {/* SUMMARY METRICS BAR */}
+        {/* SUMMARY METRICS BAR — Shown on tablet & desktop only */}
         {statusFilter !== 'cancelled' && sortedCustomers.length > 0 && (
-          <div className="px-4 sm:px-6 py-2.5 bg-gray-50/70 border-b border-gray-200 shrink-0">
+          <div className="hidden md:block px-6 py-2.5 bg-gray-50/70 border-b border-gray-200 shrink-0">
             <div className="flex flex-wrap items-center gap-2.5 text-xs">
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs">
                 <span className="font-bold">{totalVeg} Veg</span>
@@ -2614,8 +2770,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           </div>
         )}
 
-        {/* MOBILE CARD FEED (< md) */}
-        <div className="md:hidden flex-1 min-h-0 overflow-y-auto divide-y divide-gray-100">
+        {/* MOBILE CARD FEED (< md) — Natural thumb-scrollable feed with clearance */}
+        <div className="md:hidden divide-y divide-gray-100 pb-24">
           {sortedCustomers.length === 0 ? (
             <div className="p-8 text-center text-gray-400 font-medium text-sm">
               No customers found matching search.
@@ -2651,9 +2807,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           {customer.full_name}
                         </span>
                         <span
-                          className={`inline-block w-2 h-2 rounded-full shrink-0 ${
-                            subStatus === 'cancelled' ? 'bg-red-500' : subStatus === 'paused' ? 'bg-amber-400' : 'bg-green-500'
-                          }`}
+                          className={`inline-block w-2 h-2 rounded-full shrink-0 ${subStatus === 'cancelled' ? 'bg-red-500' : subStatus === 'paused' ? 'bg-amber-400' : 'bg-green-500'
+                            }`}
                         />
                         {customer.plan_tier && (
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-50 text-indigo-700 border border-indigo-100">
@@ -2674,9 +2829,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     </div>
 
                     <div className="flex items-center gap-1 shrink-0">
-                      <span className={`px-2 py-0.5 rounded text-[10.5px] font-black uppercase border ${
-                        isNonVeg ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      }`}>
+                      <span className={`px-2 py-0.5 rounded text-[10.5px] font-black uppercase border ${isNonVeg ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        }`}>
                         {isNonVeg ? 'NV' : 'Veg'}
                       </span>
                       <span className="px-2 py-0.5 rounded text-[10.5px] font-bold bg-gray-100 text-gray-700 border border-gray-200">
@@ -2710,21 +2864,40 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     )}
                   </div>
 
-                  <div className="flex items-center justify-between text-[11px] text-gray-500 pt-0.5">
-                    <span>
-                      Progress: <strong className="text-gray-800">{used}/{total}</strong> delivered
-                    </span>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleEditCustomer(customer);
-                      }}
-                      className="text-[#5D5FEF] font-bold px-2 py-0.5 rounded hover:bg-[#F4F4FE]"
-                    >
-                      Edit →
-                    </button>
-                  </div>
+                  {(() => {
+                    const custDeliveryDays = resolveDeliveryDayNumbers(customer.delivery_schedule);
+                    const calculated = customer.start_date
+                      ? calculateTargetLastDay(customer.start_date, total, closuresSet, custSkips, custDeliveryDays)
+                      : null;
+                    const computedEnd = calculated?.dateKey || customer.cycle_end_date?.slice(0, 10);
+                    const startFmt = customer.start_date ? formatShortDate(customer.start_date) : null;
+                    const endFmt = computedEnd ? formatShortDate(computedEnd) : null;
+
+                    return (
+                      <div className="flex items-center justify-between text-[11px] text-gray-500 pt-0.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span>
+                            Progress: <strong className="text-gray-800">{used}/{total}</strong> delivered
+                          </span>
+                          {startFmt && (
+                            <span className="text-[10.5px] font-semibold text-gray-400">
+                              • {startFmt} → {endFmt || '—'}
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditCustomer(customer);
+                          }}
+                          className="text-[#5D5FEF] font-bold px-2 py-0.5 rounded hover:bg-[#F4F4FE] shrink-0"
+                        >
+                          Edit →
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })
@@ -2830,9 +3003,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   return (
                                     <span
                                       title={statusLabel}
-                                      className={`inline-block w-2 h-2 rounded-full shrink-0 ${
-                                        isCancelled ? 'bg-red-500' : isPaused ? 'bg-amber-400' : isUpcoming ? 'bg-blue-500' : 'bg-green-500'
-                                      }`}
+                                      className={`inline-block w-2 h-2 rounded-full shrink-0 ${isCancelled ? 'bg-red-500' : isPaused ? 'bg-amber-400' : isUpcoming ? 'bg-blue-500' : 'bg-green-500'
+                                        }`}
                                     />
                                   );
                                 })()}
@@ -2961,8 +3133,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   : 'text-gray-500';
 
                               const startDateFormatted = customer.start_date ? formatShortDate(customer.start_date) : null;
+                              const custDeliveryDays = resolveDeliveryDayNumbers(customer.delivery_schedule);
+
                               const calculated = customer.start_date
-                                ? calculateTargetLastDay(customer.start_date, total, closuresSet, custSkips)
+                                ? calculateTargetLastDay(customer.start_date, total, closuresSet, custSkips, custDeliveryDays)
                                 : null;
                               const computedEnd = calculated?.dateKey || customer.cycle_end_date?.slice(0, 10);
                               const endDateFormatted = computedEnd ? formatShortDate(computedEnd) : null;
@@ -3591,7 +3765,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       <p className="text-xs text-gray-500 mt-1.5">
                         {selectedDays?.length
                           ? `${selectedDays.map((d) => d.substring(0, 3)).join(', ')}${pickupDayCount > 0 ? ` • ${pickupDayCount} Pickup day${pickupDayCount === 1 ? '' : 's'}` : ''
-                            }`
+                          }`
                           : 'No delivery days selected'}
                       </p>
                     </div>
@@ -3675,8 +3849,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">
                             End Date
                           </label>
-                          <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">
-                            AUTO (Mon-Fri)
+                          <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 uppercase">
+                            AUTO ({selectedDays.map(d => d.slice(0, 3)).join(', ')})
                           </span>
                         </div>
                         <div className="w-full h-12 px-3 border border-gray-200 rounded-xl bg-gray-50/80 flex items-center justify-between text-sm font-bold text-gray-800">
@@ -3985,7 +4159,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                               onClick={() => item.set(Math.max(0, item.count - 1))}
                                               disabled={item.count === 0}
                                               className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
-                                              >−</button>
+                                            >−</button>
                                             <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
                                             <button
                                               type="button"
@@ -4052,916 +4226,1013 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                       ? 'bg-blue-50 border-blue-500 text-blue-700'
                                       : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
                                       }`}
-                                >1 {item.label}</button>
-                              ))}
-                            </div>
-                          )}
+                                  >1 {item.label}</button>
+                                ))}
+                              </div>
+                            )}
 
-                          {customCurryPillText && (
-                            <div className="mt-1 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
-                              ⚡ {customCurryPillText}
-                            </div>
-                          )}
-                          {customHalfNote && (
-                            <div className="mt-3 px-3.5 py-2 bg-amber-50/90 border border-amber-200 rounded-lg flex items-center gap-1.5 text-xs font-semibold text-amber-800">
-                              <span className="text-amber-500">⚡</span>
-                              <span>{customHalfNote}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                        Sides
-                      </label>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Salad</label>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setSaladCount(Math.max(0, saladCount - 1))}
-                              disabled={saladCount === 0}
-                              className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
-                            >−</button>
-                            <input
-                              type="number"
-                              min={0}
-                              value={saladCount}
-                              onChange={(e) => setSaladCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
-                              className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setSaladCount(saladCount + 1)}
-                              className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
-                            >+</button>
-                          </div>
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Dessert</label>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => setDessertCount(Math.max(0, dessertCount - 1))}
-                              disabled={dessertCount === 0}
-                              className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
-                            >−</button>
-                            <input
-                              type="number"
-                              min={0}
-                              value={dessertCount}
-                              onChange={(e) => setDessertCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
-                              className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setDessertCount(dessertCount + 1)}
-                              className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
-                            >+</button>
+                            {customCurryPillText && (
+                              <div className="mt-1 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
+                                ⚡ {customCurryPillText}
+                              </div>
+                            )}
+                            {customHalfNote && (
+                              <div className="mt-3 px-3.5 py-2 bg-amber-50/90 border border-amber-200 rounded-lg flex items-center gap-1.5 text-xs font-semibold text-amber-800">
+                                <span className="text-amber-500">⚡</span>
+                                <span>{customHalfNote}</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
-                      {extraAddonNote && (
-                        <div className="mt-2 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
-                          ⚡ {extraAddonNote}
-                        </div>
-                      )}
-                    </div>
 
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Rice Portion</label>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        {[
-                          { key: 'rg', label: 'Regular', val: riceRg, set: setRiceRg },
-                          { key: 'lg', label: 'Large', val: riceLg, set: setRiceLg },
-                          { key: 'xl', label: 'XL', val: riceXl, set: setRiceXl },
-                        ].map(rice => (
-                          <div key={rice.key} className="bg-white border border-gray-100 rounded-lg p-3 w-full flex flex-col items-center justify-center gap-3">
-                            <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{rice.label}</span>
-                            <div className="flex items-center gap-2">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                          Sides
+                        </label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Salad</label>
+                            <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
-                                onClick={() => rice.set(Math.max(0, rice.val - 1))}
-                                className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
+                                onClick={() => setSaladCount(Math.max(0, saladCount - 1))}
+                                disabled={saladCount === 0}
+                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
                               >−</button>
-                              <span className="w-8 text-center font-semibold text-sm text-gray-700">{rice.val}</span>
+                              <input
+                                type="number"
+                                min={0}
+                                value={saladCount}
+                                onChange={(e) => setSaladCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
+                                className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
                               <button
                                 type="button"
-                                onClick={() => rice.set(rice.val + 1)}
-                                className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
+                                onClick={() => setSaladCount(saladCount + 1)}
+                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
                               >+</button>
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Special Instructions</label>
-                      <textarea
-                        rows={2}
-                        value={specialInstructions}
-                        onChange={(e) => setSpecialInstructions(e.target.value)}
-                        placeholder="e.g. Less spicy, No onions, Extra napkins..."
-                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none resize-none focus:border-blue-500 text-gray-700 font-sans leading-relaxed"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Discount</label>
-                      <div className="flex gap-2">
-                        {([
-                          { key: 'none', label: 'No Discount' },
-                          { key: 'flat', label: '$ Flat' },
-                          { key: 'percent', label: '% Off' },
-                        ] as const).map(opt => (
-                          <button
-                            key={opt.key}
-                            type="button"
-                            onClick={() => setDiscountType(opt.key)}
-                            className={`flex-1 h-9 px-3 rounded-lg text-xs font-semibold border transition-all ${discountType === opt.key
-                              ? 'bg-blue-50 border-blue-500 text-blue-700'
-                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                              }`}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-
-                      {discountType !== 'none' && (
-                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
                           <div>
-                            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                              {discountType === 'flat' ? 'Discount Amount ($)' : 'Discount Percentage (%)'}
-                            </label>
-                            <input
-                              type="number"
-                              min={0}
-                              step={discountType === 'percent' ? '1' : '0.01'}
-                              value={discountValue}
-                              onChange={(e) => setDiscountValue(e.target.value)}
-                              placeholder={discountType === 'flat' ? 'e.g. 2.50' : 'e.g. 10'}
-                              className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                              Promo / Reason
-                            </label>
-                            <input
-                              type="text"
-                              value={discountNote}
-                              onChange={(e) => setDiscountNote(e.target.value)}
-                              placeholder="e.g. First order promo, referral..."
-                              className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
-                            />
+                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Dessert</label>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setDessertCount(Math.max(0, dessertCount - 1))}
+                                disabled={dessertCount === 0}
+                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
+                              >−</button>
+                              <input
+                                type="number"
+                                min={0}
+                                value={dessertCount}
+                                onChange={(e) => setDessertCount(e.target.value ? Math.max(0, parseInt(e.target.value, 10) || 0) : 0)}
+                                className="w-12 h-8 text-center px-0 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm font-semibold text-gray-700 shrink-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setDessertCount(dessertCount + 1)}
+                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                              >+</button>
+                            </div>
                           </div>
                         </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
+                        {extraAddonNote && (
+                          <div className="mt-2 p-2.5 bg-orange-50 border border-orange-200 text-orange-600 text-xs font-semibold rounded-md flex items-center gap-2">
+                            ⚡ {extraAddonNote}
+                          </div>
+                        )}
+                      </div>
 
-              {activeDrawerTab === 'history' && (
-                <div className="bg-white border border-gray-100 rounded-xl overflow-hidden p-5 space-y-4" data-section="edit-history">
-                  <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-                    <div>
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-gray-700">
-                        Customer Audit Trail
-                      </h3>
-                      <p className="text-[11px] text-gray-400 mt-0.5">
-                        Automated trigger records and manual staff notes.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
-                        {activityLogs.length} events
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setIsAddingLog(prev => !prev)}
-                        className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] rounded-lg transition-colors cursor-pointer"
-                      >
-                        {isAddingLog ? 'Cancel' : '+ Add Log'}
-                      </button>
-                    </div>
-                  </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Rice Portion</label>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {[
+                            { key: 'rg', label: 'Regular', val: riceRg, set: setRiceRg },
+                            { key: 'lg', label: 'Large', val: riceLg, set: setRiceLg },
+                            { key: 'xl', label: 'XL', val: riceXl, set: setRiceXl },
+                          ].map(rice => (
+                            <div key={rice.key} className="bg-white border border-gray-100 rounded-lg p-3 w-full flex flex-col items-center justify-center gap-3">
+                              <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{rice.label}</span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => rice.set(Math.max(0, rice.val - 1))}
+                                  className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
+                                >−</button>
+                                <span className="w-8 text-center font-semibold text-sm text-gray-700">{rice.val}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => rice.set(rice.val + 1)}
+                                  className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
+                                >+</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
 
-                  {isAddingLog && (
-                    <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5">
-                          {(['NOTE', 'BILLING', 'OVERRIDE'] as const).map(tag => (
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                          Excluded / Disliked Dishes
+                          {dislikedDishes.length > 0 && (
+                            <span className="ml-1 text-[10px] text-gray-400 font-normal normal-case">
+                              ({dislikedDishes.length})
+                            </span>
+                          )}
+                        </label>
+                        <p className="text-[11px] text-gray-400 mb-2">
+                          Substitutes the alternate dish automatically when on today&apos;s prep menu.
+                        </p>
+
+                        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                          {dislikedDishes.length === 0 ? (
+                            <span className="text-xs text-gray-400 italic">No dishes excluded</span>
+                          ) : (
+                            dislikedDishes.map(dish => (
+                              <span
+                                key={dish}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-50 text-amber-900 border border-amber-200"
+                              >
+                                {dish}
+                                <button
+                                  type="button"
+                                  onClick={() => removeDislikedDish(dish)}
+                                  className="hover:text-rose-600"
+                                  title={`Remove ${dish}`}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))
+                          )}
+                        </div>
+
+                        {/* Most-requested exclusions — capped quick-toggle strip (catalog-only) */}
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {quickPills.map(dish => {
+                            const isActive = dislikedDishes.some(
+                              d => d.toLowerCase() === dish.toLowerCase()
+                            );
+                            return (
+                              <button
+                                key={dish}
+                                type="button"
+                                onClick={() =>
+                                  isActive ? removeDislikedDish(dish) : addDislikedDish(dish)
+                                }
+                                aria-pressed={isActive}
+                                title={isActive ? `Remove ${dish} from exclusions` : `Exclude ${dish}`}
+                                className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors cursor-pointer ${isActive
+                                  ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-xs'
+                                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 hover:border-gray-300'
+                                  }`}
+                              >
+                                {dish}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div ref={dislikeContainerRef} className="relative">
+                          <input
+                            type="text"
+                            value={dislikeInput}
+                            onChange={(e) => {
+                              setDislikeInput(e.target.value);
+                              setIsDislikeMenuOpen(true);
+                            }}
+                            onFocus={() => setIsDislikeMenuOpen(true)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (!dislikeInput.trim()) return;
+                                addDislikedDish(filteredCatalogRecipes[0] ?? dislikeInput);
+                              } else if (e.key === 'Escape') {
+                                setIsDislikeMenuOpen(false);
+                              }
+                            }}
+                            placeholder="Search recipe to exclude (e.g. Baingan, Dal)..."
+                            className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-gray-700"
+                          />
+                          {isDislikeMenuOpen && filteredCatalogRecipes.length > 0 && (
+                            <ul className="absolute left-0 right-0 mt-1 bg-white border border-[#EEEEEE] rounded-lg shadow-xl max-h-48 overflow-y-auto z-50 text-[12px] divide-y divide-gray-50">
+                              {filteredCatalogRecipes.map(dish => (
+                                <li
+                                  key={dish}
+                                  onClick={() => addDislikedDish(dish)}
+                                  className="px-3 py-2 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer truncate transition-colors font-medium text-gray-600"
+                                >
+                                  {dish}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Special Instructions</label>
+                        <textarea
+                          rows={2}
+                          value={specialInstructions}
+                          onChange={(e) => setSpecialInstructions(e.target.value)}
+                          placeholder="e.g. Less spicy, No onions, Extra napkins..."
+                          className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none resize-none focus:border-blue-500 text-gray-700 font-sans leading-relaxed"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Discount</label>
+                        <div className="flex gap-2">
+                          {([
+                            { key: 'none', label: 'No Discount' },
+                            { key: 'flat', label: '$ Flat' },
+                            { key: 'percent', label: '% Off' },
+                          ] as const).map(opt => (
                             <button
-                              key={tag}
+                              key={opt.key}
                               type="button"
-                              onClick={() => setNewLogType(tag)}
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
-                                newLogType === tag
-                                  ? 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
-                                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-100'
-                              }`}
+                              onClick={() => setDiscountType(opt.key)}
+                              className={`flex-1 h-9 px-3 rounded-lg text-xs font-semibold border transition-all ${discountType === opt.key
+                                ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                                }`}
                             >
-                              {tag}
+                              {opt.label}
                             </button>
                           ))}
                         </div>
 
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[11px] font-semibold text-gray-400">Date:</span>
-                          <input
-                            type="date"
-                            value={newLogDate}
-                            onChange={e => setNewLogDate(e.target.value)}
-                            className="text-xs px-2 py-1 bg-white border border-gray-200 rounded-lg outline-none font-semibold text-gray-700"
-                          />
-                        </div>
-                      </div>
-
-                      <textarea
-                        rows={2}
-                        value={newLogSummary}
-                        onChange={e => setNewLogSummary(e.target.value)}
-                        placeholder="e.g. Customer requested upgrade to LG starting next week; confirmed via WhatsApp."
-                        className="w-full text-xs p-2.5 bg-white border border-gray-200 rounded-lg outline-none focus:border-[#5D5FEF] resize-none text-gray-800 placeholder-gray-400"
-                      />
-
-                      <div className="flex justify-end items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsAddingLog(false);
-                            setNewLogSummary('');
-                          }}
-                          className="px-3 py-1 text-xs text-gray-500 font-semibold hover:bg-gray-200/60 rounded-lg transition-colors cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isSavingLog || !newLogSummary.trim()}
-                          onClick={handleCreateManualLog}
-                          className="px-3.5 py-1 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg disabled:opacity-50 transition-colors shadow-2xs cursor-pointer"
-                        >
-                          {isSavingLog ? 'Saving…' : 'Save Entry'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {isLoadingLogs ? (
-                    <div className="py-12 text-center text-xs text-gray-400 font-medium">
-                      Loading change history…
-                    </div>
-                  ) : activityLogs.length === 0 ? (
-                    <div className="py-12 text-center text-xs text-gray-400 italic">
-                      No logged changes recorded for this customer yet.
-                    </div>
-                  ) : (
-                    <div className="relative pl-6 space-y-4 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-gray-100">
-                      {activityLogs.map((log) => {
-                        const badgeColor =
-                          log.action_type === 'BILLING'
-                            ? 'text-emerald-700 bg-emerald-50'
-                            : log.action_type === 'OVERRIDE'
-                            ? 'text-amber-800 bg-amber-50'
-                            : 'text-indigo-700 bg-indigo-50';
-
-                        return (
-                          <div key={log.id} className="relative group">
-                            <div className="absolute -left-[20px] top-1.5 w-2 h-2 rounded-full bg-indigo-600 ring-4 ring-white" />
-                            <div className="bg-gray-50/80 border border-gray-100 rounded-xl p-3 hover:bg-white hover:shadow-xs transition-all">
-                              <div className="flex items-center justify-between gap-2 mb-1">
-                                <span className={`text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded ${badgeColor}`}>
-                                  {log.action_type}
-                                </span>
-                                <div className="flex items-center gap-1 text-[10.5px] font-semibold text-gray-400">
-                                  <Clock className="w-3 h-3" />
-                                  <span>
-                                    {new Date(log.created_at).toLocaleString('en-US', {
-                                      month: 'short',
-                                      day: 'numeric',
-                                      year: 'numeric',
-                                      hour: 'numeric',
-                                      minute: '2-digit',
-                                    })}
-                                  </span>
-                                </div>
-                              </div>
-                              <p className="text-[12.5px] font-bold text-gray-800 leading-snug">
-                                {log.summary}
-                              </p>
+                        {discountType !== 'none' && (
+                          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
+                                {discountType === 'flat' ? 'Discount Amount ($)' : 'Discount Percentage (%)'}
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                step={discountType === 'percent' ? '1' : '0.01'}
+                                value={discountValue}
+                                onChange={(e) => setDiscountValue(e.target.value)}
+                                placeholder={discountType === 'flat' ? 'e.g. 2.50' : 'e.g. 10'}
+                                className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
+                                Promo / Reason
+                              </label>
+                              <input
+                                type="text"
+                                value={discountNote}
+                                onChange={(e) => setDiscountNote(e.target.value)}
+                                placeholder="e.g. First order promo, referral..."
+                                className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
+                              />
                             </div>
                           </div>
-                        );
-                      })}
+                        )}
+                      </div>
                     </div>
-                  )}
-                </div>
-              )}
+                  </div>
+                )}
 
-              {selectedCustomer && !isAddingNew && (
-                <div className="space-y-2 pt-2">
-                  {((selectedCustomer.subscription_status || 'active') === 'paused' || (selectedCustomer.subscription_status || 'active') === 'cancelled') && (
-                    <div className={`px-3 py-2 rounded-lg border text-[11px] font-medium ${(selectedCustomer.subscription_status || 'active') === 'cancelled'
-                      ? 'bg-red-50 border-red-200 text-red-600'
-                      : 'bg-amber-50 border-amber-200 text-amber-600'
-                      }`}>
-                      {(selectedCustomer.subscription_status || 'active') === 'paused' && selectedCustomer.pause_start_date && (
-                        <span>Paused: {selectedCustomer.pause_start_date}{selectedCustomer.pause_end_date ? ` → ${selectedCustomer.pause_end_date}` : ' → Indefinite'}</span>
-                      )}
-                      {(selectedCustomer.subscription_status || 'active') === 'cancelled' && selectedCustomer.cancellation_reason && (
-                        <span>Reason: {selectedCustomer.cancellation_reason}</span>
-                      )}
-                    </div>
-                  )}
-
-                  {(() => {
-                    const sc = selectedCustomer;
-                    const scheduledDate = sc.scheduled_cancel_date;
-                    const hasScheduled =
-                      sc.scheduled_status === 'cancelled' || !!scheduledDate;
-                    if (!hasScheduled) return null;
-                    const isScheduledPause = sc.scheduled_status === 'paused';
-                    return (
-                      <div className="rounded-lg border border-amber-300 bg-amber-50 text-amber-800 p-3 space-y-1.5">
-                        <p className="text-[11.5px] font-semibold leading-snug flex items-center gap-1">
-                          <AlertTriangle className="w-3.5 h-3.5 text-amber-500" /> {isScheduledPause ? 'Pause' : 'Cancellation'} scheduled after{' '}
-                          <strong>{scheduledDate ? formatShortLastDay(scheduledDate) : '—'}</strong> — their last tiffin day.
+                {activeDrawerTab === 'history' && (
+                  <div className="bg-white border border-gray-100 rounded-xl overflow-hidden p-5 space-y-4" data-section="edit-history">
+                    <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                      <div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-700">
+                          Customer Audit Trail
+                        </h3>
+                        <p className="text-[11px] text-gray-400 mt-0.5">
+                          Automated trigger records and manual staff notes.
                         </p>
-                        <p className="text-[11px] text-amber-700 leading-snug">
-                          Customer will automatically transition to {isScheduledPause ? 'Paused' : 'Cancelled'} the next day.
-                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-full">
+                          {activityLogs.length} events
+                        </span>
                         <button
                           type="button"
-                          disabled={isPending}
-                          onClick={() => startTransition(async () => {
-                            try {
-                              await clearScheduledCancellation(sc.id);
-                              setSelectedCustomer({
-                                ...sc,
-                                scheduled_cancel_date: null,
-                                scheduled_status: null,
-                                cancellation_reason: null,
-                              });
-                              showToast(`${sc.full_name} — scheduled ${isScheduledPause ? 'pause' : 'cancellation'} cleared`);
-                            } catch (err) {
-                              showToast(err instanceof Error ? err.message : 'Failed to clear the scheduled cancellation', 'error');
-                            }
-                          })}
-                          className="w-full mt-0.5 px-3 py-2 bg-white text-amber-800 border border-amber-400 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
+                          onClick={() => setIsAddingLog(prev => !prev)}
+                          className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] rounded-lg transition-colors cursor-pointer"
                         >
-                          {isPending ? 'Clearing…' : <span className="flex items-center justify-center gap-1"><Undo2 className="w-3.5 h-3.5" /> Undo Cancellation & Keep Active</span>}
+                          {isAddingLog ? 'Cancel' : '+ Add Log'}
                         </button>
                       </div>
-                    );
-                  })()}
+                    </div>
 
-                  {!(selectedCustomer.scheduled_status === 'cancelled' || selectedCustomer.scheduled_cancel_date) ? (
-                    <div className="grid grid-cols-2 gap-2">
-                      {(selectedCustomer.subscription_status || 'active') === 'active' && (
-                        <>
+                    {isAddingLog && (
+                      <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5">
+                            {(['NOTE', 'BILLING', 'OVERRIDE'] as const).map(tag => (
+                              <button
+                                key={tag}
+                                type="button"
+                                onClick={() => setNewLogType(tag)}
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${newLogType === tag
+                                  ? 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
+                                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-100'
+                                  }`}
+                              >
+                                {tag}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] font-semibold text-gray-400">Date:</span>
+                            <input
+                              type="date"
+                              value={newLogDate}
+                              onChange={e => setNewLogDate(e.target.value)}
+                              className="text-xs px-2 py-1 bg-white border border-gray-200 rounded-lg outline-none font-semibold text-gray-700"
+                            />
+                          </div>
+                        </div>
+
+                        <textarea
+                          rows={2}
+                          value={newLogSummary}
+                          onChange={e => setNewLogSummary(e.target.value)}
+                          placeholder="e.g. Customer requested upgrade to LG starting next week; confirmed via WhatsApp."
+                          className="w-full text-xs p-2.5 bg-white border border-gray-200 rounded-lg outline-none focus:border-[#5D5FEF] resize-none text-gray-800 placeholder-gray-400"
+                        />
+
+                        <div className="flex justify-end items-center gap-2">
                           <button
                             type="button"
                             onClick={() => {
-                              setPauseStartDate(toLocalDateKey(new Date()));
-                              setPauseEndDate('');
-                              setIsIndefinitePause(false);
-                              setShowPauseModal(true);
+                              setIsAddingLog(false);
+                              setNewLogSummary('');
                             }}
-                            className="h-10 px-3 flex items-center justify-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-xs font-bold hover:bg-amber-100 transition-colors"
+                            className="px-3 py-1 text-xs text-gray-500 font-semibold hover:bg-gray-200/60 rounded-lg transition-colors cursor-pointer"
                           >
-                            <Pause className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
-                            <span>Pause Service</span>
+                            Cancel
                           </button>
-
                           <button
                             type="button"
-                            onClick={() => {
-                              setCancelReason('');
-                              setCancelDate(toLocalDateKey(new Date()));
-                              setShowCancelModal(true);
-                            }}
-                            className="h-10 px-3 flex items-center justify-center gap-1.5 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold hover:bg-red-100 transition-colors"
+                            disabled={isSavingLog || !newLogSummary.trim()}
+                            onClick={handleCreateManualLog}
+                            className="px-3.5 py-1 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg disabled:opacity-50 transition-colors shadow-2xs cursor-pointer"
                           >
-                            <Ban className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
-                            <span>Cancel Service</span>
+                            {isSavingLog ? 'Saving…' : 'Save Entry'}
                           </button>
-                        </>
-                      )}
-                      {(selectedCustomer.subscription_status || 'active') === 'paused' && (
-                        <>
+                        </div>
+                      </div>
+                    )}
+
+                    {isLoadingLogs ? (
+                      <div className="py-12 text-center text-xs text-gray-400 font-medium">
+                        Loading change history…
+                      </div>
+                    ) : activityLogs.length === 0 ? (
+                      <div className="py-12 text-center text-xs text-gray-400 italic">
+                        No logged changes recorded for this customer yet.
+                      </div>
+                    ) : (
+                      <div className="relative pl-6 space-y-4 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-gray-100">
+                        {activityLogs.map((log) => {
+                          const badgeColor =
+                            log.action_type === 'BILLING'
+                              ? 'text-emerald-700 bg-emerald-50'
+                              : log.action_type === 'OVERRIDE'
+                                ? 'text-amber-800 bg-amber-50'
+                                : 'text-indigo-700 bg-indigo-50';
+
+                          return (
+                            <div key={log.id} className="relative group">
+                              <div className="absolute -left-[20px] top-1.5 w-2 h-2 rounded-full bg-indigo-600 ring-4 ring-white" />
+                              <div className="bg-gray-50/80 border border-gray-100 rounded-xl p-3 hover:bg-white hover:shadow-xs transition-all">
+                                <div className="flex items-center justify-between gap-2 mb-1">
+                                  <span className={`text-[10px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded ${badgeColor}`}>
+                                    {log.action_type}
+                                  </span>
+                                  <div className="flex items-center gap-1 text-[10.5px] font-semibold text-gray-400">
+                                    <Clock className="w-3 h-3" />
+                                    <span>
+                                      {new Date(log.created_at).toLocaleString('en-US', {
+                                        month: 'short',
+                                        day: 'numeric',
+                                        year: 'numeric',
+                                        hour: 'numeric',
+                                        minute: '2-digit',
+                                      })}
+                                    </span>
+                                  </div>
+                                </div>
+                                <p className="text-[12.5px] font-bold text-gray-800 leading-snug">
+                                  {log.summary}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {selectedCustomer && !isAddingNew && (
+                  <div className="space-y-2 pt-2">
+                    {((selectedCustomer.subscription_status || 'active') === 'paused' || (selectedCustomer.subscription_status || 'active') === 'cancelled') && (
+                      <div className={`px-3 py-2 rounded-lg border text-[11px] font-medium ${(selectedCustomer.subscription_status || 'active') === 'cancelled'
+                        ? 'bg-red-50 border-red-200 text-red-600'
+                        : 'bg-amber-50 border-amber-200 text-amber-600'
+                        }`}>
+                        {(selectedCustomer.subscription_status || 'active') === 'paused' && selectedCustomer.pause_start_date && (
+                          <span>Paused: {selectedCustomer.pause_start_date}{selectedCustomer.pause_end_date ? ` → ${selectedCustomer.pause_end_date}` : ' → Indefinite'}</span>
+                        )}
+                        {(selectedCustomer.subscription_status || 'active') === 'cancelled' && selectedCustomer.cancellation_reason && (
+                          <span>Reason: {selectedCustomer.cancellation_reason}</span>
+                        )}
+                      </div>
+                    )}
+
+                    {(() => {
+                      const sc = selectedCustomer;
+                      const scheduledDate = sc.scheduled_cancel_date;
+                      const hasScheduled =
+                        sc.scheduled_status === 'cancelled' || !!scheduledDate;
+                      if (!hasScheduled) return null;
+                      const isScheduledPause = sc.scheduled_status === 'paused';
+                      return (
+                        <div className="rounded-lg border border-amber-300 bg-amber-50 text-amber-800 p-3 space-y-1.5">
+                          <p className="text-[11.5px] font-semibold leading-snug flex items-center gap-1">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-500" /> {isScheduledPause ? 'Pause' : 'Cancellation'} scheduled after{' '}
+                            <strong>{scheduledDate ? formatShortLastDay(scheduledDate) : '—'}</strong> — their last tiffin day.
+                          </p>
+                          <p className="text-[11px] text-amber-700 leading-snug">
+                            Customer will automatically transition to {isScheduledPause ? 'Paused' : 'Cancelled'} the next day.
+                          </p>
                           <button
                             type="button"
                             disabled={isPending}
                             onClick={() => startTransition(async () => {
-                              await resumeCustomer(selectedCustomer.id);
-                              setSelectedCustomer({ ...selectedCustomer, subscription_status: 'active', pause_start_date: null, pause_end_date: null });
-                              closePanelGracefully();
+                              try {
+                                await clearScheduledCancellation(sc.id);
+                                setSelectedCustomer({
+                                  ...sc,
+                                  scheduled_cancel_date: null,
+                                  scheduled_status: null,
+                                  cancellation_reason: null,
+                                });
+                                showToast(`${sc.full_name} — scheduled ${isScheduledPause ? 'pause' : 'cancellation'} cleared`);
+                              } catch (err) {
+                                showToast(err instanceof Error ? err.message : 'Failed to clear the scheduled cancellation', 'error');
+                              }
                             })}
-                            className="h-10 px-3 bg-green-50 text-green-700 border border-green-200 rounded-xl text-xs font-bold hover:bg-green-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                            className="w-full mt-0.5 px-3 py-2 bg-white text-amber-800 border border-amber-400 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
                           >
-                            <Play className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
-                            <span>{isPending ? 'Resuming...' : 'Resume Service'}</span>
+                            {isPending ? 'Clearing…' : <span className="flex items-center justify-center gap-1"><Undo2 className="w-3.5 h-3.5" /> Undo Cancellation & Keep Active</span>}
                           </button>
+                        </div>
+                      );
+                    })()}
+
+                    {!(selectedCustomer.scheduled_status === 'cancelled' || selectedCustomer.scheduled_cancel_date) ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        {(selectedCustomer.subscription_status || 'active') === 'active' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPauseStartDate(toLocalDateKey(new Date()));
+                                setPauseEndDate('');
+                                setIsIndefinitePause(false);
+                                setShowPauseModal(true);
+                              }}
+                              className="h-10 px-3 flex items-center justify-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-xs font-bold hover:bg-amber-100 transition-colors"
+                            >
+                              <Pause className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
+                              <span>Pause Service</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCancelReason('');
+                                setCancelDate(toLocalDateKey(new Date()));
+                                setShowCancelModal(true);
+                              }}
+                              className="h-10 px-3 flex items-center justify-center gap-1.5 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold hover:bg-red-100 transition-colors"
+                            >
+                              <Ban className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
+                              <span>Cancel Service</span>
+                            </button>
+                          </>
+                        )}
+                        {(selectedCustomer.subscription_status || 'active') === 'paused' && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={isPending}
+                              onClick={() => startTransition(async () => {
+                                await resumeCustomer(selectedCustomer.id);
+                                setSelectedCustomer({ ...selectedCustomer, subscription_status: 'active', pause_start_date: null, pause_end_date: null });
+                                closePanelGracefully();
+                              })}
+                              className="h-10 px-3 bg-green-50 text-green-700 border border-green-200 rounded-xl text-xs font-bold hover:bg-green-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                            >
+                              <Play className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
+                              <span>{isPending ? 'Resuming...' : 'Resume Service'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCancelReason('');
+                                setCancelDate(toLocalDateKey(new Date()));
+                                setShowCancelModal(true);
+                              }}
+                              className="h-10 px-3 flex items-center justify-center gap-1.5 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs rounded-xl transition-colors"
+                            >
+                              <Ban className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
+                              <span>Cancel Service</span>
+                            </button>
+                          </>
+                        )}
+                        {(selectedCustomer.subscription_status || 'active') === 'cancelled' && (
                           <button
                             type="button"
-                            onClick={() => {
-                              setCancelReason('');
-                              setCancelDate(toLocalDateKey(new Date()));
-                              setShowCancelModal(true);
-                            }}
-                            className="h-10 px-3 flex items-center justify-center gap-1.5 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs rounded-xl transition-colors"
+                            disabled={isPending}
+                            onClick={() => startTransition(async () => {
+                              try {
+                                await reactivateCustomer(selectedCustomer.id);
+                                showToast(`${selectedCustomer.full_name} reactivated successfully`);
+                                closePanelGracefully();
+                              } catch (err) {
+                                showToast(err instanceof Error ? err.message : 'Failed to reactivate customer', 'error');
+                              }
+                            })}
+                            className="col-span-2 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-bold hover:bg-emerald-100 transition-colors disabled:opacity-50"
                           >
-                            <Ban className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
-                            <span>Cancel Service</span>
+                            {isPending ? 'Reactivating...' : '✔ Reactivate Service'}
                           </button>
-                        </>
-                      )}
-                      {(selectedCustomer.subscription_status || 'active') === 'cancelled' && (
-                        <button
-                          type="button"
-                          disabled={isPending}
-                          onClick={() => startTransition(async () => {
-                            try {
-                              await reactivateCustomer(selectedCustomer.id);
-                              showToast(`${selectedCustomer.full_name} reactivated successfully`);
-                              closePanelGracefully();
-                            } catch (err) {
-                              showToast(err instanceof Error ? err.message : 'Failed to reactivate customer', 'error');
-                            }
-                          })}
-                          className="col-span-2 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-bold hover:bg-emerald-100 transition-colors disabled:opacity-50"
-                        >
-                          {isPending ? 'Reactivating...' : '✔ Reactivate Service'}
-                        </button>
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              )}
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
 
-              {selectedCustomer && (
-                <button type="button" disabled={isPending} onClick={() => { if (confirm(`Delete record?`)) startTransition(async () => { await deleteCustomer(selectedCustomer.id); closePanelGracefully(); }); }} className="w-full text-center text-xs text-red-500 py-2 border border-dashed border-red-200 bg-red-50/20 rounded-lg mt-2">
-                  {isPending ? 'Removing...' : 'Delete Customer Record'}
-                </button>
-              )}
-            </div>
-          </form>
-        </div>
-      </>
-    )}
-
-    {/* MODALS */}
-    {showPauseModal && (confirmCustomer ?? selectedCustomer) && (
-      <>
-        <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowPauseModal(false); setConfirmCustomer(null); }} />
-        <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
-            <h3 className="text-[15px] font-bold text-[#11142D] mb-1">⏸️ Pause Service</h3>
-            <p className="text-[12px] text-gray-500 mb-5">
-              Pausing delivery for <strong>{(confirmCustomer ?? selectedCustomer)?.full_name}</strong>
-            </p>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">Last Service Date</label>
-                <input
-                  type="date"
-                  value={pauseStartDate}
-                  onChange={(e) => setPauseStartDate(e.target.value)}
-                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px]"
-                />
-                <p className="text-[10.5px] text-gray-400 mt-1 leading-snug">
-                  The last tiffin day we prepare for them — pause begins the day after. Choose today to pause immediately.
-                </p>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase">Pause End Date</label>
-                  <label className="flex items-center space-x-1.5 text-[11px] text-gray-500 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={isIndefinitePause}
-                      onChange={(e) => setIsIndefinitePause(e.target.checked)}
-                      className="rounded border-gray-300 text-[#5D5FEF] focus:ring-[#5D5FEF]"
-                    />
-                    <span>Indefinite</span>
-                  </label>
-                </div>
-                <input
-                  type="date"
-                  value={pauseEndDate}
-                  onChange={(e) => setPauseEndDate(e.target.value)}
-                  disabled={isIndefinitePause}
-                  className={`w-full px-3 py-2 border rounded-lg outline-none text-[13px] transition-all ${isIndefinitePause
-                    ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
-                    : 'border-[#E0E0E0] focus:border-[#5D5FEF]'
-                    }`}
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end space-x-2 mt-6">
-              <button
-                type="button"
-                onClick={() => { setShowPauseModal(false); setConfirmCustomer(null); }}
-                className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isPending || !pauseStartDate}
-                onClick={() => startTransition(async () => {
-                  const target = (confirmCustomer ?? selectedCustomer)!;
-                  try {
-                    const lastServiceDate = pauseStartDate;
-                    const endDate = isIndefinitePause ? null : pauseEndDate || null;
-                    const isScheduledPause = lastServiceDate > todayKey;
-                    await pauseCustomer(target.id, lastServiceDate, endDate);
-                    setShowPauseModal(false);
-                    setConfirmCustomer(null);
-                    if (selectedCustomer?.id === target.id) {
-                      setSelectedCustomer(
-                        isScheduledPause
-                          ? {
-                            ...selectedCustomer,
-                            subscription_status: 'active',
-                            pause_start_date: null,
-                            pause_end_date: endDate,
-                            scheduled_cancel_date: lastServiceDate,
-                            scheduled_status: 'paused',
-                          }
-                          : {
-                            ...selectedCustomer,
-                            subscription_status: 'paused',
-                            pause_start_date: lastServiceDate,
-                            pause_end_date: endDate,
-                            scheduled_cancel_date: null,
-                            scheduled_status: null,
-                          }
-                      );
-                      closePanelGracefully();
-                    }
-                    showToast(
-                      isScheduledPause
-                        ? `${target.full_name} — pause scheduled after ${formatShortLastDay(lastServiceDate)}`
-                        : `${target.full_name} paused`
-                    );
-                  } catch (err) {
-                    showToast(err instanceof Error ? err.message : 'Failed to pause customer', 'error');
-                  }
-                })}
-                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
-              >
-                {isPending ? 'Pausing...' : 'Confirm Pause'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </>
-    )}
-
-    {showCancelModal && (confirmCustomer ?? selectedCustomer) && (
-      <>
-        <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowCancelModal(false); setConfirmCustomer(null); }} />
-        <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
-            <h3 className="text-[15px] font-bold text-red-600 mb-1">🛑 Cancel Service</h3>
-            <p className="text-[12px] text-gray-500 mb-5">
-              This will permanently cancel delivery service for <strong>{(confirmCustomer ?? selectedCustomer)?.full_name}</strong>.
-              This action can be undone by reactivating the customer.
-            </p>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
-                Last Service Date
-              </label>
-              <input
-                type="date"
-                value={cancelDate}
-                onChange={(e) => setCancelDate(e.target.value)}
-                className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-slate-700 bg-white mb-1"
-              />
-              <p className="text-[10.5px] text-gray-400 mb-3 leading-snug">
-                Today or earlier cancels immediately. Pick a future date to schedule their final tiffin day.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
-                Cancellation Reason <span className="text-gray-400 normal-case">(optional)</span>
-              </label>
-              <textarea
-                rows={3}
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
-                placeholder="e.g. Customer request, moving, budget, etc."
-                className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] resize-none"
-              />
-            </div>
-
-            <div className="flex items-center justify-end space-x-2 mt-6">
-              <button
-                type="button"
-                onClick={() => { setShowCancelModal(false); setConfirmCustomer(null); }}
-                className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
-              >
-                Keep Active
-              </button>
-              <button
-                type="button"
-                disabled={isPending}
-                onClick={() => startTransition(async () => {
-                  const target = (confirmCustomer ?? selectedCustomer)!;
-                  try {
-                    const cancelledAt = cancelDate
-                      ? new Date(`${cancelDate}T00:00:00`).toISOString()
-                      : new Date().toISOString();
-                    const isScheduledCancel = !!cancelDate && cancelDate > todayKey;
-                    await cancelCustomer(target.id, cancelReason.trim() || null, cancelledAt);
-                    setShowCancelModal(false);
-                    setConfirmCustomer(null);
-                    if (selectedCustomer?.id === target.id) {
-                      setSelectedCustomer(
-                        isScheduledCancel
-                          ? {
-                            ...selectedCustomer,
-                            cancellation_reason: cancelReason.trim() || null,
-                            cancelled_at: null,
-                            scheduled_cancel_date: cancelDate,
-                            scheduled_status: 'cancelled',
-                          }
-                          : {
-                            ...selectedCustomer,
-                            subscription_status: 'cancelled',
-                            cancellation_reason: cancelReason.trim() || null,
-                            cancelled_at: cancelledAt,
-                            scheduled_cancel_date: null,
-                            scheduled_status: null,
-                          }
-                      );
-                      closePanelGracefully();
-                    }
-                    showToast(
-                      isScheduledCancel
-                        ? `${target.full_name} — cancellation scheduled after ${formatShortLastDay(cancelDate)}`
-                        : `${target.full_name} cancelled`
-                    );
-                  } catch (err) {
-                    showToast(err instanceof Error ? err.message : 'Failed to cancel customer', 'error');
-                  }
-                })}
-                className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
-              >
-                {isPending ? 'Cancelling...' : 'Confirm Cancellation'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </>
-    )}
-
-    {showRenewModal &&
-      confirmCustomer &&
-      (() => {
-        const used = confirmCustomer.used_credits || 0;
-        const total = confirmCustomer.total_tiffin_credits || 20;
-        const graceUsed = Math.max(0, used - total);
-        const remaining = Math.max(0, 20 - graceUsed);
-        return (
-          <>
-            <div
-              className="fixed inset-0 z-50 bg-black/30"
-              onClick={() => { setShowRenewModal(false); setConfirmCustomer(null); }}
-            />
-            <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-              <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
-                <h3 className="text-[15px] font-bold text-[#11142D] mb-1">💳 Log Payment / Renew Cycle</h3>
-                <p className="text-[12px] text-gray-500 mb-5">
-                  {graceUsed > 0 ? (
-                    <>
-                      Customer consumed <strong>{graceUsed} grace tiffin{graceUsed > 1 ? 's' : ''}</strong> during
-                      this cycle. Renewing a <strong>Monthly (20)</strong> plan will start them with{' '}
-                      <strong>{remaining} remaining deliver{remaining === 1 ? 'y' : 'ies'}</strong>.
-                    </>
-                  ) : (
-                    <>Reset delivery ledger to <strong>0/20 delivered</strong> for the next cycle.</>
-                  )}
-                </p>
-                <div className="flex items-center justify-end space-x-2 mt-6">
-                  <button
-                    type="button"
-                    onClick={() => { setShowRenewModal(false); setConfirmCustomer(null); }}
-                    className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
-                  >
-                    Cancel
+                {selectedCustomer && (
+                  <button type="button" disabled={isPending} onClick={() => { if (confirm(`Delete record?`)) startTransition(async () => { await deleteCustomer(selectedCustomer.id); closePanelGracefully(); }); }} className="w-full text-center text-xs text-red-500 py-2 border border-dashed border-red-200 bg-red-50/20 rounded-lg mt-2">
+                    {isPending ? 'Removing...' : 'Delete Customer Record'}
                   </button>
-                  <button
-                    type="button"
-                    disabled={isPending}
-                    onClick={confirmRenewCycle}
-                    className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
-                  >
-                    {isPending ? 'Renewing…' : 'Confirm & Renew'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </>
-        );
-      })()}
-
-    {showUpgradeModal &&
-      confirmCustomer &&
-      (() => {
-        const currentTier = confirmCustomer.plan_tier || 'monthly';
-        const options =
-          currentTier === 'trial'
-            ? PLAN_OPTIONS.filter(o => o.key === 'weekly' || o.key === 'monthly')
-            : PLAN_OPTIONS.filter(o => o.key === 'monthly');
-        return (
-          <>
-            <div
-              className="fixed inset-0 z-50 bg-black/30"
-              onClick={() => { setShowUpgradeModal(false); setConfirmCustomer(null); }}
-            />
-            <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-              <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
-                <h3 className="text-[15px] font-bold text-indigo-700 mb-1">⭐ Upgrade Plan</h3>
-                <p className="text-[12px] text-gray-500 mb-5">
-                  Choose a new plan for <strong>{confirmCustomer.full_name}</strong>. Address and dietary
-                  preferences are preserved, and credits top up on top of their current usage.
-                </p>
-                <div className="space-y-2">
-                  {options.map(opt => (
-                    <button
-                      key={opt.key}
-                      type="button"
-                      disabled={isPending}
-                      onClick={opt.key === 'weekly' ? confirmUpgradeToWeekly : confirmUpgradeToMonthly}
-                      className="w-full px-4 py-2.5 rounded-lg text-[13px] font-semibold border bg-indigo-50/60 border-indigo-200 text-indigo-700 hover:bg-indigo-100 flex items-center justify-between disabled:opacity-50 transition-colors"
-                    >
-                      <span>Upgrade to {opt.label} ({opt.credits})</span>
-                      <span>→</span>
-                    </button>
-                  ))}
-                </div>
-                <div className="flex items-center justify-end space-x-2 mt-6">
-                  <button
-                    type="button"
-                    onClick={() => { setShowUpgradeModal(false); setConfirmCustomer(null); }}
-                    className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
-          </>
-        );
-      })()}
-
-    {showDeleteModal && confirmCustomer && (
-      <>
-        <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowDeleteModal(false); setConfirmCustomer(null); }} />
-        <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-          <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
-            <h3 className="text-[15px] font-bold text-red-600 mb-1">🗑️ Delete Customer</h3>
-            <p className="text-[12px] text-gray-500 mb-5">
-              Are you sure you want to permanently delete <strong>{confirmCustomer.full_name}</strong>?
-              This cannot be undone.
-            </p>
-            <div className="flex items-center justify-end space-x-2 mt-6">
-              <button
-                type="button"
-                onClick={() => { setShowDeleteModal(false); setConfirmCustomer(null); }}
-                className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
-              >
-                Keep Record
-              </button>
-              <button
-                type="button"
-                disabled={isPending}
-                onClick={() => {
-                  const customerId = confirmCustomer.id;
-                  setShowDeleteModal(false);
-                  setConfirmCustomer(null);
-                  handleDeleteCustomer(customerId);
-                }}
-                className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
-              >
-                {isPending ? 'Deleting...' : 'Delete Customer'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </>
-    )}
-
-    {showCancellationDetails && cancellationDetailsCustomer && (
-      <>
-        <div className="fixed inset-0 z-50 bg-black/30" onClick={closeCancellationDetails} />
-        <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-          <div
-            className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[420px] pointer-events-auto p-6 max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between gap-3 mb-1">
-              <div className="min-w-0">
-                <h3 className="text-[16px] font-bold text-[#11142D] capitalize truncate">
-                  {cancellationDetailsCustomer.full_name}
-                </h3>
-                {cancellationDetailsCustomer.delivery_address ? (
-                  <p className="text-[12px] text-gray-500 font-medium truncate mt-0.5 flex items-center">
-                    <span className="mr-1">📍</span>
-                    {cancellationDetailsCustomer.delivery_address}
-                  </p>
-                ) : (
-                  <p className="text-[12px] text-gray-300 italic mt-0.5">No address on file</p>
                 )}
               </div>
-              <span className="px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-600 border border-red-100 shrink-0">
-                Cancelled
-              </span>
-            </div>
+            </form>
+          </div>
+        </>
+      )}
 
-            <div className="mt-5">
-              <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
-                Cancellation Date
-              </label>
-              <input
-                type="date"
-                value={cancelDetailDate}
-                onChange={(e) => setCancelDetailDate(e.target.value)}
-                className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-slate-700 bg-white"
-              />
-            </div>
+      {/* MODALS */}
+      {showPauseModal && (confirmCustomer ?? selectedCustomer) && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowPauseModal(false); setConfirmCustomer(null); }} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+            <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
+              <h3 className="text-[15px] font-bold text-[#11142D] mb-1">⏸️ Pause Service</h3>
+              <p className="text-[12px] text-gray-500 mb-5">
+                Pausing delivery for <strong>{(confirmCustomer ?? selectedCustomer)?.full_name}</strong>
+              </p>
 
-            <div className="mt-3">
-              <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
-                Cancellation Reason
-              </label>
-              <textarea
-                rows={3}
-                value={cancelDetailReason}
-                onChange={(e) => setCancelDetailReason(e.target.value)}
-                placeholder="e.g. Moved away, budget, temporary break..."
-                className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-slate-700 resize-none"
-              />
-            </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">Last Service Date</label>
+                  <input
+                    type="date"
+                    value={pauseStartDate}
+                    onChange={(e) => setPauseStartDate(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px]"
+                  />
+                  <p className="text-[10.5px] text-gray-400 mt-1 leading-snug">
+                    The last tiffin day we prepare for them — pause begins the day after. Choose today to pause immediately.
+                  </p>
+                </div>
 
-            <div className="flex items-center justify-between gap-3 mt-6 pt-4 border-t border-gray-100">
-              <button
-                type="button"
-                disabled={isPending}
-                onClick={handleModalReactivate}
-                className="px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors disabled:opacity-50"
-              >
-                Reactivate Customer
-              </button>
-              <div className="flex items-center gap-2">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase">Pause End Date</label>
+                    <label className="flex items-center space-x-1.5 text-[11px] text-gray-500 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isIndefinitePause}
+                        onChange={(e) => setIsIndefinitePause(e.target.checked)}
+                        className="rounded border-gray-300 text-[#5D5FEF] focus:ring-[#5D5FEF]"
+                      />
+                      <span>Indefinite</span>
+                    </label>
+                  </div>
+                  <input
+                    type="date"
+                    value={pauseEndDate}
+                    onChange={(e) => setPauseEndDate(e.target.value)}
+                    disabled={isIndefinitePause}
+                    className={`w-full px-3 py-2 border rounded-lg outline-none text-[13px] transition-all ${isIndefinitePause
+                      ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
+                      : 'border-[#E0E0E0] focus:border-[#5D5FEF]'
+                      }`}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 mt-6">
                 <button
                   type="button"
-                  onClick={closeCancellationDetails}
-                  className="px-3 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                  onClick={() => { setShowPauseModal(false); setConfirmCustomer(null); }}
+                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
                 >
-                  Close
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isPending || !pauseStartDate}
+                  onClick={() => startTransition(async () => {
+                    const target = (confirmCustomer ?? selectedCustomer)!;
+                    try {
+                      const lastServiceDate = pauseStartDate;
+                      const endDate = isIndefinitePause ? null : pauseEndDate || null;
+                      const isScheduledPause = lastServiceDate > todayKey;
+                      await pauseCustomer(target.id, lastServiceDate, endDate);
+                      setShowPauseModal(false);
+                      setConfirmCustomer(null);
+                      if (selectedCustomer?.id === target.id) {
+                        setSelectedCustomer(
+                          isScheduledPause
+                            ? {
+                              ...selectedCustomer,
+                              subscription_status: 'active',
+                              pause_start_date: null,
+                              pause_end_date: endDate,
+                              scheduled_cancel_date: lastServiceDate,
+                              scheduled_status: 'paused',
+                            }
+                            : {
+                              ...selectedCustomer,
+                              subscription_status: 'paused',
+                              pause_start_date: lastServiceDate,
+                              pause_end_date: endDate,
+                              scheduled_cancel_date: null,
+                              scheduled_status: null,
+                            }
+                        );
+                        closePanelGracefully();
+                      }
+                      showToast(
+                        isScheduledPause
+                          ? `${target.full_name} — pause scheduled after ${formatShortLastDay(lastServiceDate)}`
+                          : `${target.full_name} paused`
+                      );
+                    } catch (err) {
+                      showToast(err instanceof Error ? err.message : 'Failed to pause customer', 'error');
+                    }
+                  })}
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                >
+                  {isPending ? 'Pausing...' : 'Confirm Pause'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {showCancelModal && (confirmCustomer ?? selectedCustomer) && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowCancelModal(false); setConfirmCustomer(null); }} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+            <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
+              <h3 className="text-[15px] font-bold text-red-600 mb-1">🛑 Cancel Service</h3>
+              <p className="text-[12px] text-gray-500 mb-5">
+                This will permanently cancel delivery service for <strong>{(confirmCustomer ?? selectedCustomer)?.full_name}</strong>.
+                This action can be undone by reactivating the customer.
+              </p>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
+                  Last Service Date
+                </label>
+                <input
+                  type="date"
+                  value={cancelDate}
+                  onChange={(e) => setCancelDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-slate-700 bg-white mb-1"
+                />
+                <p className="text-[10.5px] text-gray-400 mb-3 leading-snug">
+                  Today or earlier cancels immediately. Pick a future date to schedule their final tiffin day.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
+                  Cancellation Reason <span className="text-gray-400 normal-case">(optional)</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  placeholder="e.g. Customer request, moving, budget, etc."
+                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end space-x-2 mt-6">
+                <button
+                  type="button"
+                  onClick={() => { setShowCancelModal(false); setConfirmCustomer(null); }}
+                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                >
+                  Keep Active
                 </button>
                 <button
                   type="button"
                   disabled={isPending}
-                  onClick={handleSaveCancellationDetails}
-                  className="px-4 py-2 bg-[#5D5FEF] text-white text-xs font-semibold rounded-lg hover:opacity-90 shadow-sm disabled:opacity-50"
+                  onClick={() => startTransition(async () => {
+                    const target = (confirmCustomer ?? selectedCustomer)!;
+                    try {
+                      const cancelledAt = cancelDate
+                        ? new Date(`${cancelDate}T00:00:00`).toISOString()
+                        : new Date().toISOString();
+                      const isScheduledCancel = !!cancelDate && cancelDate > todayKey;
+                      await cancelCustomer(target.id, cancelReason.trim() || null, cancelledAt);
+                      setShowCancelModal(false);
+                      setConfirmCustomer(null);
+                      if (selectedCustomer?.id === target.id) {
+                        setSelectedCustomer(
+                          isScheduledCancel
+                            ? {
+                              ...selectedCustomer,
+                              cancellation_reason: cancelReason.trim() || null,
+                              cancelled_at: null,
+                              scheduled_cancel_date: cancelDate,
+                              scheduled_status: 'cancelled',
+                            }
+                            : {
+                              ...selectedCustomer,
+                              subscription_status: 'cancelled',
+                              cancellation_reason: cancelReason.trim() || null,
+                              cancelled_at: cancelledAt,
+                              scheduled_cancel_date: null,
+                              scheduled_status: null,
+                            }
+                        );
+                        closePanelGracefully();
+                      }
+                      showToast(
+                        isScheduledCancel
+                          ? `${target.full_name} — cancellation scheduled after ${formatShortLastDay(cancelDate)}`
+                          : `${target.full_name} cancelled`
+                      );
+                    } catch (err) {
+                      showToast(err instanceof Error ? err.message : 'Failed to cancel customer', 'error');
+                    }
+                  })}
+                  className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
                 >
-                  {isPending ? 'Saving...' : 'Save Changes'}
+                  {isPending ? 'Cancelling...' : 'Confirm Cancellation'}
                 </button>
               </div>
             </div>
           </div>
-        </div>
-      </>
-    )}
+        </>
+      )}
 
-    {/* TOAST NOTIFICATION */}
-    {toast && (
-      <div
-        className={`fixed bottom-5 right-5 z-[70] px-4 py-2.5 rounded-lg text-white text-[13px] font-semibold shadow-lg flex items-center gap-2 transition-all ${
-          toast.kind === 'success' ? 'bg-emerald-600' : 'bg-red-600'
-        }`}
-        role="status"
-      >
-        {toast.kind === 'success' ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
-        {toast.message}
-      </div>
-    )}
-  </div>
+      {showRenewModal &&
+        confirmCustomer &&
+        (() => {
+          const used = confirmCustomer.used_credits || 0;
+          const total = confirmCustomer.total_tiffin_credits || 20;
+          const graceUsed = Math.max(0, used - total);
+          const remaining = Math.max(0, 20 - graceUsed);
+          return (
+            <>
+              <div
+                className="fixed inset-0 z-50 bg-black/30"
+                onClick={() => { setShowRenewModal(false); setConfirmCustomer(null); }}
+              />
+              <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+                <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-[15px] font-bold text-[#11142D] mb-1">💳 Log Payment / Renew Cycle</h3>
+                  <p className="text-[12px] text-gray-500 mb-5">
+                    {graceUsed > 0 ? (
+                      <>
+                        Customer consumed <strong>{graceUsed} grace tiffin{graceUsed > 1 ? 's' : ''}</strong> during
+                        this cycle. Renewing a <strong>Monthly (20)</strong> plan will start them with{' '}
+                        <strong>{remaining} remaining deliver{remaining === 1 ? 'y' : 'ies'}</strong>.
+                      </>
+                    ) : (
+                      <>Reset delivery ledger to <strong>0/20 delivered</strong> for the next cycle.</>
+                    )}
+                  </p>
+                  <div className="flex items-center justify-end space-x-2 mt-6">
+                    <button
+                      type="button"
+                      onClick={() => { setShowRenewModal(false); setConfirmCustomer(null); }}
+                      className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={confirmRenewCycle}
+                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                    >
+                      {isPending ? 'Renewing…' : 'Confirm & Renew'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
+      {showUpgradeModal &&
+        confirmCustomer &&
+        (() => {
+          const currentTier = confirmCustomer.plan_tier || 'monthly';
+          const options =
+            currentTier === 'trial'
+              ? PLAN_OPTIONS.filter(o => o.key === 'weekly' || o.key === 'monthly')
+              : PLAN_OPTIONS.filter(o => o.key === 'monthly');
+          return (
+            <>
+              <div
+                className="fixed inset-0 z-50 bg-black/30"
+                onClick={() => { setShowUpgradeModal(false); setConfirmCustomer(null); }}
+              />
+              <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+                <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
+                  <h3 className="text-[15px] font-bold text-indigo-700 mb-1">⭐ Upgrade Plan</h3>
+                  <p className="text-[12px] text-gray-500 mb-5">
+                    Choose a new plan for <strong>{confirmCustomer.full_name}</strong>. Address and dietary
+                    preferences are preserved, and credits top up on top of their current usage.
+                  </p>
+                  <div className="space-y-2">
+                    {options.map(opt => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        disabled={isPending}
+                        onClick={opt.key === 'weekly' ? confirmUpgradeToWeekly : confirmUpgradeToMonthly}
+                        className="w-full px-4 py-2.5 rounded-lg text-[13px] font-semibold border bg-indigo-50/60 border-indigo-200 text-indigo-700 hover:bg-indigo-100 flex items-center justify-between disabled:opacity-50 transition-colors"
+                      >
+                        <span>Upgrade to {opt.label} ({opt.credits})</span>
+                        <span>→</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-end space-x-2 mt-6">
+                    <button
+                      type="button"
+                      onClick={() => { setShowUpgradeModal(false); setConfirmCustomer(null); }}
+                      className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
+      {showDeleteModal && confirmCustomer && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/30" onClick={() => { setShowDeleteModal(false); setConfirmCustomer(null); }} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+            <div className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[400px] pointer-events-auto p-6" onClick={e => e.stopPropagation()}>
+              <h3 className="text-[15px] font-bold text-red-600 mb-1">🗑️ Delete Customer</h3>
+              <p className="text-[12px] text-gray-500 mb-5">
+                Are you sure you want to permanently delete <strong>{confirmCustomer.full_name}</strong>?
+                This cannot be undone.
+              </p>
+              <div className="flex items-center justify-end space-x-2 mt-6">
+                <button
+                  type="button"
+                  onClick={() => { setShowDeleteModal(false); setConfirmCustomer(null); }}
+                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                >
+                  Keep Record
+                </button>
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={() => {
+                    const customerId = confirmCustomer.id;
+                    setShowDeleteModal(false);
+                    setConfirmCustomer(null);
+                    handleDeleteCustomer(customerId);
+                  }}
+                  className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                >
+                  {isPending ? 'Deleting...' : 'Delete Customer'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {showCancellationDetails && cancellationDetailsCustomer && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/30" onClick={closeCancellationDetails} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
+            <div
+              className="bg-white rounded-xl shadow-2xl border border-[#EEEEEE] w-[420px] pointer-events-auto p-6 max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 mb-1">
+                <div className="min-w-0">
+                  <h3 className="text-[16px] font-bold text-[#11142D] capitalize truncate">
+                    {cancellationDetailsCustomer.full_name}
+                  </h3>
+                  {cancellationDetailsCustomer.delivery_address ? (
+                    <p className="text-[12px] text-gray-500 font-medium truncate mt-0.5 flex items-center">
+                      <span className="mr-1">📍</span>
+                      {cancellationDetailsCustomer.delivery_address}
+                    </p>
+                  ) : (
+                    <p className="text-[12px] text-gray-300 italic mt-0.5">No address on file</p>
+                  )}
+                </div>
+                <span className="px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide bg-red-50 text-red-600 border border-red-100 shrink-0">
+                  Cancelled
+                </span>
+              </div>
+
+              <div className="mt-5">
+                <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
+                  Cancellation Date
+                </label>
+                <input
+                  type="date"
+                  value={cancelDetailDate}
+                  onChange={(e) => setCancelDetailDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-slate-700 bg-white"
+                />
+              </div>
+
+              <div className="mt-3">
+                <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
+                  Cancellation Reason
+                </label>
+                <textarea
+                  rows={3}
+                  value={cancelDetailReason}
+                  onChange={(e) => setCancelDetailReason(e.target.value)}
+                  placeholder="e.g. Moved away, budget, temporary break..."
+                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg outline-none focus:border-[#5D5FEF] text-[13px] text-slate-700 resize-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3 mt-6 pt-4 border-t border-gray-100">
+                <button
+                  type="button"
+                  disabled={isPending}
+                  onClick={handleModalReactivate}
+                  className="px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors disabled:opacity-50"
+                >
+                  Reactivate Customer
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={closeCancellationDetails}
+                    className="px-3 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={handleSaveCancellationDetails}
+                    className="px-4 py-2 bg-[#5D5FEF] text-white text-xs font-semibold rounded-lg hover:opacity-90 shadow-sm disabled:opacity-50"
+                  >
+                    {isPending ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* TOAST NOTIFICATION */}
+      {toast && (
+        <div
+          className={`fixed bottom-5 right-5 z-[70] px-4 py-2.5 rounded-lg text-white text-[13px] font-semibold shadow-lg flex items-center gap-2 transition-all ${toast.kind === 'success' ? 'bg-emerald-600' : 'bg-red-600'
+            }`}
+          role="status"
+        >
+          {toast.kind === 'success' ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
+          {toast.message}
+        </div>
+      )}
+    </div>
   );
 }

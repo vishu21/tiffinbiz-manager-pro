@@ -48,6 +48,24 @@ type CustomerPayload = {
   scheduled_cancel_date?: string | null;
   scheduled_status?: 'cancelled' | 'paused' | null;
   referred_by?: string | null;
+  disliked_dishes?: string[] | null;
+};
+
+// Dish dislikes/exclusions are stored as a text[] on customers. Trim, drop empties,
+// and de-duplicate case-insensitively while preserving the operator's display casing.
+const normalizeDislikedDishes = (list: string[] | null | undefined): string[] => {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  list.forEach(item => {
+    const trimmed = String(item ?? '').trim();
+    const key = trimmed.toLowerCase();
+    if (trimmed !== '' && !seen.has(key)) {
+      seen.add(key);
+      out.push(trimmed);
+    }
+  });
+  return out;
 };
 
 const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => {
@@ -111,6 +129,10 @@ const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => 
     clean.referred_by = referral ? referral : null;
   }
 
+  if (clean.disliked_dishes !== undefined) {
+    clean.disliked_dishes = normalizeDislikedDishes(clean.disliked_dishes);
+  }
+
   (Object.keys(clean) as (keyof CustomerPayload)[]).forEach(key => {
     if (clean[key] === undefined) delete clean[key];
   });
@@ -170,6 +192,15 @@ const stripReferredByColumn = (payload: CustomerPayload): CustomerPayload => {
 
 const isReferredByColumnMissing = (error: unknown): boolean =>
   isMissingColumnError(error, ['referred_by']);
+
+const stripDislikedDishes = (payload: CustomerPayload): CustomerPayload => {
+  const copy: CustomerPayload = { ...payload };
+  delete copy.disliked_dishes;
+  return copy;
+};
+
+const isDislikedDishesColumnMissing = (error: unknown): boolean =>
+  isMissingColumnError(error, ['disliked_dishes']);
 
 const SCHEDULED_COLUMNS = ['scheduled_cancel_date', 'scheduled_status'];
 const SCHEDULE_MIGRATION_HINT =
@@ -361,6 +392,10 @@ export async function createCustomer(payload: CustomerPayload) {
         current = stripReferredByColumn(current);
         continue;
       }
+      if (isDislikedDishesColumnMissing(error)) {
+        current = stripDislikedDishes(current);
+        continue;
+      }
       logDatabaseError('createCustomer.insert', error);
       throw new Error(formatCustomerWriteError(error));
     }
@@ -424,6 +459,10 @@ export async function updateCustomer(
     }
     if (isReferredByColumnMissing(error)) {
       current = stripReferredByColumn(current);
+      continue;
+    }
+    if (isDislikedDishesColumnMissing(error)) {
+      current = stripDislikedDishes(current);
       continue;
     }
     logDatabaseError('updateCustomer.update', error);
@@ -718,6 +757,7 @@ export type MealConfigPayload = {
   delivery_instructions?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
+  disliked_dishes?: string[] | null;
 };
 
 export async function updateCustomerMealConfig(id: string, config: MealConfigPayload) {
@@ -744,9 +784,19 @@ export async function updateCustomerMealConfig(id: string, config: MealConfigPay
   if (config.dietary_notes !== undefined) {
     payload.dietary_notes = String(config.dietary_notes || '').trim() || null;
   }
-  if (config.delivery_instructions !== undefined) {
-    payload.delivery_instructions = String(config.delivery_instructions || '').trim() || null;
+// Inside updateCustomerMealConfig:
+if (config.delivery_instructions !== undefined) {
+  const { data: existing } = await supabase
+    .from('customers')
+    .select('delivery_instructions')
+    .eq('id', customerId)
+    .single();
+
+  const noteMatch = (existing?.delivery_instructions || '').match(/\[NOTE:\s*(.*?)\]/i);
+  if (noteMatch && config.delivery_instructions && !config.delivery_instructions.includes('[NOTE:')) {
+    config.delivery_instructions = `${config.delivery_instructions} [NOTE: ${noteMatch[1].trim()}]`;
   }
+}
   if (config.is_custom_curry !== undefined) {
     payload.is_custom_curry = config.is_custom_curry === true;
   }
@@ -754,17 +804,31 @@ export async function updateCustomerMealConfig(id: string, config: MealConfigPay
     const curry = String(config.curry_config || '').trim();
     payload.curry_config = curry === '' ? null : curry;
   }
+  if (config.disliked_dishes !== undefined) {
+    payload.disliked_dishes = normalizeDislikedDishes(config.disliked_dishes);
+  }
 
   if (Object.keys(payload).length === 0) return;
 
+  let current = { ...payload };
   const { error } = await supabase
     .from('customers')
-    .update(payload)
+    .update(current)
     .eq('id', id);
 
   if (error) {
-    console.error('Database meal config quick-sheet update error:', error);
-    throw new Error(error.message);
+    // Tolerate environments where migration 00024 (disliked_dishes) isn't applied yet.
+    if (current.disliked_dishes !== undefined && isDislikedDishesColumnMissing(error)) {
+      delete current.disliked_dishes;
+      const retry = await supabase.from('customers').update(current).eq('id', id);
+      if (retry.error) {
+        console.error('Database meal config quick-sheet update error:', retry.error);
+        throw new Error(retry.error.message);
+      }
+    } else {
+      console.error('Database meal config quick-sheet update error:', error);
+      throw new Error(error.message);
+    }
   }
 
   revalidatePath('/prep');
