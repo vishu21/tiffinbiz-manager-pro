@@ -789,7 +789,7 @@ if (config.delivery_instructions !== undefined) {
   const { data: existing } = await supabase
     .from('customers')
     .select('delivery_instructions')
-    .eq('id', customerId)
+    .eq('id', id)
     .single();
 
   const noteMatch = (existing?.delivery_instructions || '').match(/\[NOTE:\s*(.*?)\]/i);
