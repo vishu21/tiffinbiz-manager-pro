@@ -8,8 +8,8 @@ interface MobileHeaderProps {
 
 export default function MobileHeader({ onMenuClick }: MobileHeaderProps) {
   return (
-    <div className="lg:hidden flex items-center justify-between p-4 bg-[#11142D] text-white">
-      <button onClick={onMenuClick} className="text-white focus:outline-none">
+    <div className="lg:hidden flex items-center justify-between p-4 bg-brand-sidebar text-[rgb(var(--brand-sidebar-fg))]">
+      <button onClick={onMenuClick} className="text-[rgb(var(--brand-sidebar-fg))] focus:outline-none">
         <svg
           className="w-6 h-6"
           fill="none"
@@ -26,7 +26,7 @@ export default function MobileHeader({ onMenuClick }: MobileHeaderProps) {
         </svg>
       </button>
       <h1 className="text-lg font-black tracking-widest text-white">
-        TIFFIN<span className="text-[#5D5FEF]">OS</span>
+        TIFFIN<span className="text-brand">OS</span>
       </h1>
     </div>
   );

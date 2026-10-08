@@ -3,7 +3,6 @@
 import { useState, useTransition } from 'react';
 import { 
   Check, 
-  AlertCircle, 
   Loader2, 
   Search, 
   ExternalLink, 
@@ -13,6 +12,7 @@ import {
   Navigation 
 } from 'lucide-react';
 import { saveAppSettings, geocodeKitchenAddress, type AppSettingsPayload } from '../actions';
+import { useToast } from '@/app/components/ToastProvider';
 
 export default function KitchenSettingsClient({
   initialSettings,
@@ -21,8 +21,9 @@ export default function KitchenSettingsClient({
 }) {
   const [settings, setSettings] = useState<AppSettingsPayload>(initialSettings);
   const [savedBaseline, setSavedBaseline] = useState<AppSettingsPayload>(initialSettings);
-  const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle');
-  const [errorMsg, setErrorMsg] = useState('');
+  /** Bottom-right floating feedback (app/components/ToastProvider.tsx) — replaces
+   *  the inline banner that used to push the whole form down on every save. */
+  const { showToast } = useToast();
   const [isPending, startTransition] = useTransition();
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [geocodeSuccess, setGeocodeSuccess] = useState(false);
@@ -45,43 +46,27 @@ export default function KitchenSettingsClient({
       setGeocodeSuccess(true);
       setTimeout(() => setGeocodeSuccess(false), 3500);
     } else {
-      setErrorMsg('Could not find GPS coordinates for this address.');
+      showToast('Could not find GPS coordinates for this address.', 'error');
     }
   };
 
   const handleSave = () => {
-    setStatus('idle');
-    setErrorMsg('');
-
     startTransition(async () => {
       const res = await saveAppSettings(settings);
       if (res.success) {
         setSavedBaseline(settings);
-        setStatus('saved');
-        setTimeout(() => setStatus('idle'), 3000);
+        showToast('Kitchen hub settings saved successfully!');
       } else {
-        setStatus('error');
-        setErrorMsg(res.message || 'Error saving settings');
+        showToast(res.message || 'Error saving settings', 'error');
       }
     });
   };
 
   return (
     <div className="space-y-4">
-      {/* Toast Feedback */}
-      {status === 'saved' && (
-        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold rounded-xl flex items-center gap-2 animate-in fade-in">
-          <Check className="w-4 h-4 text-emerald-600" />
-          <span>Kitchen hub settings saved successfully!</span>
-        </div>
-      )}
-
-      {status === 'error' && (
-        <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold rounded-xl flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-rose-600" />
-          <span>{errorMsg}</span>
-        </div>
-      )}
+      {/* Save / error feedback is a bottom-right floating toast now
+          (app/components/ToastProvider.tsx) — nothing is injected above the card,
+          so the form never shifts when a save resolves. */}
 
       {/* Main Card */}
       <div className="bg-white rounded-2xl border border-gray-200/90 p-6 sm:p-8 space-y-6 shadow-2xs">

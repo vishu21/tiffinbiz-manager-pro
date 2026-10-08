@@ -598,7 +598,7 @@ export function computePrepMetrics(
     const legsPerContainer = size === 'LG' ? 2 : 1; // 2 legs per 12oz LG, 1 per 8oz RG
 
     // 2. True side counts for today (structured profile → instructions → defaults).
-    const baseCounts = resolveCurryCounts(customer, isChickenDay);
+    const rawCounts = resolveCurryCounts(customer, isChickenDay);
 
     // 2b. Salad / Dessert add-on staging — counted ONCE per active customer from
     //     the combined meal-config + note + (merged) override marker text. Runs
@@ -609,8 +609,7 @@ export function computePrepMetrics(
 
     // 2c. Strict dish-dislike verification against TODAY's selected Dal/Sabji. The
     //     boolean pair drives the swap in every routing branch below (Sabji dislike →
-    //     its containers become Dal; Dal dislike → they become Sabji). The exclusion
-    //     object also feeds the swap tallies behind the dashboard summary banner.
+    //     its containers become Dal; Dal dislike → they become Sabji).
     const exclusion = resolveDishExclusion(customer, todayDalName, todaySabjiName);
     const dislikesDal = exclusion.dislikesDal;
     const dislikesSabji = exclusion.dislikesSabji;
@@ -627,79 +626,76 @@ export function computePrepMetrics(
       // a Veg customer packs veg on chicken days too. Dal & Sabji only.
       // ══════════════════════════════════════════════════════════════════
       if (isHalf) {
-        // Half portion = exactly ONE container total (12 oz if LG, 8 oz if RG).
-        // Determine whether the base choice was Sabji or Dal, then apply the swap.
-        const baseIsSabji = baseCounts.sabji > 0 && baseCounts.dal === 0;
-        const selectedSabji = baseIsSabji ? 1 : 0;
-        const selectedDal = baseIsSabji ? 0 : 1;
+        // Half plan: exactly ONE container total (12 oz if LG, 8 oz if RG).
+        const prefersSabji = rawCounts.sabji > 0 && rawCounts.dal === 0;
+        const assignedSabji = prefersSabji ? 1 : 0;
+        const assignedDal = prefersSabji ? 0 : 1;
 
-        if (dislikesSabji && selectedSabji > 0) {
+        if (dislikesSabji && !dislikesDal && assignedSabji > 0) {
           // Disliked Sabji → the single container becomes Dal (drop 1 Sabji, add 1 Dal).
           finalDal = 1;
           swappedTo = 'dal';
-        } else if (dislikesDal && selectedDal > 0) {
+        } else if (dislikesDal && !dislikesSabji && assignedDal > 0) {
           // Disliked Dal → the single container becomes Sabji (drop 1 Dal, add 1 Sabji).
           finalSabji = 1;
           swappedTo = 'sabji';
         } else {
-          finalDal = selectedDal;
-          finalSabji = selectedSabji;
+          finalDal = assignedDal;
+          finalSabji = assignedSabji;
         }
       } else {
-        // Full portion = exactly TWO containers total.
-        let bDal = baseCounts.dal;
-        let bSabji = baseCounts.sabji;
-        if (bDal + bSabji < 2) {
-          bDal = 1;
-          bSabji = 1;
+        // Full plan: exactly TWO containers total.
+        let baseDal = rawCounts.dal;
+        let baseSabji = rawCounts.sabji;
+        if (baseDal + baseSabji < 2) {
+          baseDal = 1;
+          baseSabji = 1;
         }
 
-        if (dislikesSabji && !dislikesDal && bSabji > 0) {
-          // Disliked Sabji → fold its container(s) into Dal.
-          finalDal = bDal + bSabji;
-          finalSabji = 0;
+        if (dislikesSabji && !dislikesDal && baseSabji > 0) {
+          finalDal = baseDal + baseSabji;
           swappedTo = 'dal';
-        } else if (dislikesDal && !dislikesSabji && bDal > 0) {
-          // Disliked Dal → fold its container(s) into Sabji.
-          finalSabji = bSabji + bDal;
-          finalDal = 0;
+        } else if (dislikesDal && !dislikesSabji && baseDal > 0) {
+          finalSabji = baseSabji + baseDal;
           swappedTo = 'sabji';
         } else {
-          finalDal = bDal;
-          finalSabji = bSabji;
+          finalDal = baseDal;
+          finalSabji = baseSabji;
         }
       }
 
       recordDishSwap(acc, swappedTo, exclusion, finalDal + finalSabji > 0);
-      addDal(acc, size, finalDal, ozPerContainer);
       addSabji(acc, size, finalSabji, ozPerContainer);
+      addDal(acc, size, finalDal, ozPerContainer);
       return acc;
     }
 
     // ══════════════════════════════════════════════════════════════════
     // CHICKEN ROUTING — Non-Veg customer on a non-veg menu day.
     // ══════════════════════════════════════════════════════════════════
-    const chickenContainers = baseCounts.chicken;
-    const gravyContainers = baseCounts.gravy;
+    const chickenContainers = rawCounts.chicken;
+    const gravyContainers = rawCounts.gravy;
 
     // Legacy safety: a Non-Veg customer with no chicken/gravy allocation at all
     // (an old all-veg instruction row) still receives a normal veg meal.
     if (chickenContainers + gravyContainers === 0) {
-      const bDal = baseCounts.dal || 1;
-      const bSabji = baseCounts.sabji || 1;
+      const baseDal = rawCounts.dal || 1;
+      const baseSabji = rawCounts.sabji || 1;
 
       if (dislikesSabji && !dislikesDal) {
-        addDal(acc, size, bDal + bSabji, ozPerContainer);
+        finalDal = baseDal + baseSabji;
         swappedTo = 'dal';
       } else if (dislikesDal && !dislikesSabji) {
-        addSabji(acc, size, bDal + bSabji, ozPerContainer);
+        finalSabji = baseDal + baseSabji;
         swappedTo = 'sabji';
       } else {
-        addDal(acc, size, bDal, ozPerContainer);
-        addSabji(acc, size, bSabji, ozPerContainer);
+        finalDal = baseDal;
+        finalSabji = baseSabji;
       }
 
-      recordDishSwap(acc, swappedTo, exclusion, bDal + bSabji > 0);
+      recordDishSwap(acc, swappedTo, exclusion, finalDal + finalSabji > 0);
+      addSabji(acc, size, finalSabji, ozPerContainer);
+      addDal(acc, size, finalDal, ozPerContainer);
       return acc;
     }
 
@@ -709,24 +705,24 @@ export function computePrepMetrics(
     // Full non-veg meals pack their single veg-side container at the Veg station;
     // Half non-veg meals pack ONLY the chicken container.
     if (!isHalf) {
-      const baseVegDal = baseCounts.dal > 0 && baseCounts.sabji === 0 ? 1 : 0;
+      const baseVegDal = rawCounts.dal > 0 && rawCounts.sabji === 0 ? 1 : 0;
       const baseVegSabji = baseVegDal === 1 ? 0 : 1;
-      let nvDal = baseVegDal;
-      let nvSabji = baseVegSabji;
+      let nvVegDal = baseVegDal;
+      let nvVegSabji = baseVegSabji;
 
       if (dislikesSabji && !dislikesDal) {
-        nvDal = 1;
-        nvSabji = 0;
+        nvVegDal = 1;
+        nvVegSabji = 0;
         if (baseVegSabji > 0) swappedTo = 'dal';
       } else if (dislikesDal && !dislikesSabji) {
-        nvDal = 0;
-        nvSabji = 1;
+        nvVegDal = 0;
+        nvVegSabji = 1;
         if (baseVegDal > 0) swappedTo = 'sabji';
       }
 
-      recordDishSwap(acc, swappedTo, exclusion, nvDal + nvSabji > 0);
-      addDal(acc, size, nvDal, ozPerContainer);
-      addSabji(acc, size, nvSabji, ozPerContainer);
+      recordDishSwap(acc, swappedTo, exclusion, nvVegDal + nvVegSabji > 0);
+      addSabji(acc, size, nvVegSabji, ozPerContainer);
+      addDal(acc, size, nvVegDal, ozPerContainer);
     }
     return acc;
   }, emptyMetrics());

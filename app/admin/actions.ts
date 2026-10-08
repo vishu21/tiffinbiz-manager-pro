@@ -4,6 +4,15 @@ import { createClient } from '@/utils/supabase/server';
 import { geocodeAddress } from '@/app/utils/geocoding';
 import { revalidatePath } from 'next/cache';
 import { normalizePickupDays } from '@/app/utils/customerPickup';
+import {
+  DEFAULT_BRANDING,
+  DEFAULT_SIDEBAR_STYLE,
+  DEFAULT_THEME_PRESET,
+  isSidebarStyle,
+  isThemePreset,
+  normalizeHex,
+  type BusinessBranding,
+} from '@/app/utils/branding';
 
 // Canonical default delivery plan: Mon–Fri as a comma-separated day list.
 const DEFAULT_DELIVERY_SCHEDULE = 'Mon,Tue,Wed,Thu,Fri';
@@ -1065,7 +1074,9 @@ export async function updateCustomerPayment(
     amount: number;
     paymentMethod: 'etransfer' | 'cash' | 'card' | 'other';
     creditsAdded?: number;
-    cycleAction?: 'settle_current' | 'renew_next' | 'topup';
+    // Keep in sync with RecordPaymentPayload below and the ledger editor UI
+    // (CustomerSplitLayout) — 'historical' back-fills pre-existing payments.
+    cycleAction?: 'settle_current' | 'renew_next' | 'topup' | 'historical';
     billingCycleStart?: string | null;
     billingCycleEnd?: string | null;
     referenceNote?: string | null;
@@ -1127,4 +1138,221 @@ export async function deleteCustomerPayment(paymentId: string, customerId: strin
   revalidatePath('/admin/customers');
   revalidatePath('/admin/billing');
   return { success: true };
+}
+
+// ── 13. WHITE-LABEL BRANDING (public.business_settings) ──────────────────────
+//
+// Single-row branding record that powers the global theme engine: business
+// name / tagline / logo / favicon, the brand preset stamped on <html data-theme="…">
+// (see app/globals.css) and the console sidebar surface. Shared token helpers
+// live in app/utils/branding.ts so both server and client code can use them.
+//
+// The app must boot before 00025_add_business_settings.sql is applied, so a
+// missing table quietly resolves to the stock TiffinOS branding.
+
+export type BusinessBrandingPayload = Partial<
+  Pick<
+    BusinessBranding,
+    'business_name' | 'tagline' | 'logo_url' | 'favicon_url' | 'theme_preset' | 'custom_primary_hex' | 'sidebar_style'
+  >
+>;
+
+export type BusinessBrandingResult = {
+  success: boolean;
+  message?: string;
+  branding?: BusinessBranding;
+};
+
+/** Postgres / PostgREST codes that mean "the branding table isn't installed yet". */
+const BRANDING_TABLE_MISSING_CODES = new Set(['42P01', 'PGRST205']);
+
+const isBrandingTableMissing = (
+  error: { code?: string | null; message?: string | null } | null
+): boolean => {
+  if (!error) return false;
+  if (error.code && BRANDING_TABLE_MISSING_CODES.has(error.code)) return true;
+  return /relation .*business_settings.* does not exist|could not find the table .*business_settings/i.test(
+    error.message ?? ''
+  );
+};
+
+/**
+ * Next signals "this route cannot be prerendered" by throwing a tagged error
+ * (`cookies()` inside createClient() does exactly that). It must be re-thrown so
+ * the route is rendered on demand instead of silently falling back to stock
+ * branding at build time.
+ */
+/**
+ * PostgREST / Postgres codes that mean "that column isn't in the table yet".
+ * `favicon_url` ships in supabase/migrations/00026_add_favicon_url.sql, which
+ * may be applied *after* the app is already running, so its absence must not
+ * break an otherwise valid branding save.
+ */
+const BRANDING_COLUMN_MISSING_CODES = new Set(['42703', 'PGRST204']);
+
+const isFaviconColumnMissing = (
+  error: { code?: string | null; message?: string | null } | null
+): boolean => {
+  if (!error) return false;
+  if (!/favicon_url/i.test(error.message ?? '')) return false;
+  return (
+    BRANDING_COLUMN_MISSING_CODES.has(error.code ?? '') ||
+    /column|schema cache/i.test(error.message ?? '')
+  );
+};
+
+const isDynamicServerUsage = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { digest?: unknown }).digest === 'DYNAMIC_SERVER_USAGE';
+
+/** Coerces a raw `business_settings` row into a safe, fully-defaulted branding object. */
+const normalizeBrandingRow = (row: Record<string, unknown>): BusinessBranding => ({
+  id: typeof row.id === 'string' && row.id ? row.id : DEFAULT_BRANDING.id,
+  business_name:
+    typeof row.business_name === 'string' && row.business_name.trim()
+      ? row.business_name.trim()
+      : DEFAULT_BRANDING.business_name,
+  tagline: typeof row.tagline === 'string' ? row.tagline : DEFAULT_BRANDING.tagline,
+  logo_url: typeof row.logo_url === 'string' && row.logo_url.trim() ? row.logo_url.trim() : null,
+  favicon_url: typeof row.favicon_url === 'string' && row.favicon_url.trim() ? row.favicon_url.trim() : null,
+  theme_preset: isThemePreset(row.theme_preset) ? row.theme_preset : DEFAULT_THEME_PRESET,
+  custom_primary_hex: normalizeHex(typeof row.custom_primary_hex === 'string' ? row.custom_primary_hex : null),
+  sidebar_style: isSidebarStyle(row.sidebar_style) ? row.sidebar_style : DEFAULT_SIDEBAR_STYLE,
+  created_at: typeof row.created_at === 'string' ? row.created_at : null,
+  updated_at: typeof row.updated_at === 'string' ? row.updated_at : null,
+});
+
+/**
+ * Reads the active branding row. When the table is empty the stock TiffinOS row
+ * is created and returned so the console always renders one source of truth.
+ * Never throws — callers (e.g. the root layout) always get usable branding.
+ */
+export async function getBusinessBranding(): Promise<BusinessBranding> {
+  try {
+    const supabase = await createClient();
+
+    // `select('*')` — deliberately not an explicit column list — so `favicon_url`
+    // keeps flowing through even before 00026_add_favicon_url.sql is applied;
+    // naming the column explicitly would make PostgREST reject the whole read.
+    const { data, error } = await supabase
+      .from('business_settings')
+      .select('*')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      if (isBrandingTableMissing(error)) {
+        console.warn(
+          '[getBusinessBranding] business_settings table missing — using default branding. Apply supabase/migrations/00025_add_business_settings.sql.'
+        );
+        return DEFAULT_BRANDING;
+      }
+      throw error;
+    }
+
+    if (data) return normalizeBrandingRow({ ...data });
+
+    // First run — seed the default row and hand it straight back.
+    const { data: created, error: insertError } = await supabase
+      .from('business_settings')
+      .insert({
+        business_name: DEFAULT_BRANDING.business_name,
+        tagline: DEFAULT_BRANDING.tagline,
+        theme_preset: DEFAULT_BRANDING.theme_preset,
+        sidebar_style: DEFAULT_BRANDING.sidebar_style,
+      })
+      .select('*')
+      .maybeSingle();
+
+    if (insertError) {
+      if (isBrandingTableMissing(insertError)) return DEFAULT_BRANDING;
+      throw insertError;
+    }
+
+    return created ? normalizeBrandingRow({ ...created }) : DEFAULT_BRANDING;
+  } catch (err) {
+    if (isDynamicServerUsage(err)) throw err;
+    console.error('[getBusinessBranding] error:', err);
+    return DEFAULT_BRANDING;
+  }
+}
+
+/**
+ * Persists a partial branding update and refreshes the admin shell so the new
+ * theme drives every dashboard on the next render.
+ */
+export async function updateBusinessBranding(
+  payload: BusinessBrandingPayload
+): Promise<BusinessBrandingResult> {
+  try {
+    const supabase = await createClient();
+    const current = await getBusinessBranding();
+
+    // Merge → normalize, so unknown presets / malformed hex values can never
+    // reach the database.
+    const next = normalizeBrandingRow({
+      ...current,
+      ...payload,
+      theme_preset: payload.theme_preset ?? current.theme_preset,
+      sidebar_style: payload.sidebar_style ?? current.sidebar_style,
+      custom_primary_hex:
+        payload.custom_primary_hex === undefined ? current.custom_primary_hex : payload.custom_primary_hex,
+    });
+
+    // Two payload shapes: the full row (with favicon_url) plus a legacy fallback,
+    // so a database that has not yet run 00026_add_favicon_url.sql still saves
+    // everything else instead of failing the whole update.
+    const baseUpdate = {
+      business_name: next.business_name,
+      tagline: next.tagline,
+      logo_url: next.logo_url,
+      theme_preset: next.theme_preset,
+      custom_primary_hex: next.custom_primary_hex,
+      sidebar_style: next.sidebar_style,
+      updated_at: new Date().toISOString(),
+    };
+
+    let { data, error } = await supabase
+      .from('business_settings')
+      .update({ ...baseUpdate, favicon_url: next.favicon_url })
+      .eq('id', next.id)
+      .select('*')
+      .maybeSingle();
+
+    if (error && isFaviconColumnMissing(error)) {
+      console.warn(
+        '[updateBusinessBranding] favicon_url column missing — saving without it. Apply supabase/migrations/00026_add_favicon_url.sql.'
+      );
+      ({ data, error } = await supabase
+        .from('business_settings')
+        .update(baseUpdate)
+        .eq('id', next.id)
+        .select('*')
+        .maybeSingle());
+    }
+
+    if (error) {
+      if (isBrandingTableMissing(error)) {
+        return {
+          success: false,
+          message:
+            'Branding storage is not installed yet — apply supabase/migrations/00025_add_business_settings.sql.',
+        };
+      }
+      throw error;
+    }
+
+    revalidatePath('/admin');
+    revalidatePath('/admin', 'layout');
+
+    return { success: true, branding: data ? normalizeBrandingRow({ ...data }) : next };
+  } catch (err) {
+    console.error('[updateBusinessBranding] error:', err);
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : 'Failed to save branding',
+    };
+  }
 }

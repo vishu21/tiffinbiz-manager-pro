@@ -2,7 +2,7 @@
 
 import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
-import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Check, Undo2, History, Clock } from 'lucide-react';
+import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Undo2, History, Clock } from 'lucide-react';
 import { 
   createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, 
   resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, 
@@ -19,6 +19,7 @@ import {
   pickupDaysForCustomer,
 } from '@/app/utils/customerPickup';
 import { calculateCycleTargetLastDay, resolveDeliveryDayNumbers, calculateStandardPlanPrice } from '@/app/utils/subscriptionCycle';
+import { useToast } from '@/app/components/ToastProvider';
 
 // Preferred common dish exclusions in priority order, surfaced as a compact quick-toggle
 // strip instead of dumping the entire recipe catalog as a wall of pills. These are only
@@ -683,8 +684,6 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     };
   }, []);
 
-  const [toast, setToast] = useState<{ message: string; kind: 'success' | 'error' } | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [lastModifiedCustomerId, setLastModifiedCustomerId] = useState<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [newlyAddedCustomers, setNewlyAddedCustomers] = useState<Customer[]>([]);
@@ -1365,17 +1364,14 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     return () => document.removeEventListener('mousedown', closeMenuOnOutside);
   }, [activeMenuId]);
 
-  const showToast = (message: string, kind: 'success' | 'error' = 'success') => {
-    setToast({ message, kind });
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 3200);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    };
-  }, []);
+  /**
+   * Floating feedback now comes from the shared surface
+   * (app/components/ToastProvider.tsx) rather than a page-local pill rendered
+   * below the modals — same bottom-right corner and emerald/rose semantics, plus
+   * real enter/exit motion, de-duplication and proper timer cleanup. The
+   * `(message, kind)` signature is unchanged, so every call site below is intact.
+   */
+  const { showToast } = useToast();
 
   const handleAddressChange = (value: string) => {
     setDeliveryAddress(value);
@@ -2764,27 +2760,38 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
           {/* Horizontally Scrollable Filters on Mobile */}
           <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none flex-nowrap pb-0.5 sm:pb-0">
-            {/* Meal Type Pills */}
+            {/* Meal Type Pills (Color-Themed Selection) */}
             <div className="flex items-center gap-0.5 bg-gray-50 p-0.5 sm:p-1 rounded-xl border border-gray-200/80 shrink-0">
-              {(['all', 'veg', 'non-veg'] as const).map(tab => (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => setActiveTab(tab)}
-                  className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${activeTab === tab
-                    ? 'bg-white text-[#5D5FEF] shadow-2xs'
-                    : 'text-gray-500 hover:text-gray-900'
+              {(['all', 'veg', 'non-veg'] as const).map(tab => {
+                const isSelected = activeTab === tab;
+                const activeStyle =
+                  tab === 'veg'
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-2xs'
+                    : tab === 'non-veg'
+                      ? 'bg-rose-50 text-rose-700 border border-rose-200 shadow-2xs'
+                      : 'bg-white text-[#5D5FEF] border border-gray-200/60 shadow-2xs';
+
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setActiveTab(tab)}
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                      isSelected
+                        ? activeStyle
+                        : 'border border-transparent text-gray-500 hover:text-gray-900'
                     }`}
-                >
-                  {tab === 'all' ? 'All' : tab === 'veg' ? 'Veg' : 'Non-Veg'}
-                </button>
-              ))}
+                  >
+                    {tab === 'all' ? 'All' : tab === 'veg' ? 'Veg' : 'Non-Veg'}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="h-4 w-px bg-gray-200 shrink-0" />
 
-            {/* Status Pills */}
-            <div className="flex items-center gap-1 shrink-0">
+            {/* Status Pills (Matching Container Layout & Color-Themed Selection) */}
+            <div className="flex items-center gap-0.5 bg-gray-50 p-0.5 sm:p-1 rounded-xl border border-gray-200/80 shrink-0">
               {(['all', 'active', 'paused', 'cancelled'] as const).map(status => {
                 const statusCounts: Record<string, number> = {
                   all: customersForDisplay.length,
@@ -2792,23 +2799,29 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   paused: customersForDisplay.filter(c => c.subscription_status === 'paused').length,
                   cancelled: customersForDisplay.filter(c => c.subscription_status === 'cancelled').length,
                 };
+                const isSelected = statusFilter === status;
+
+                const activeStyle =
+                  status === 'active'
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-2xs'
+                    : status === 'paused'
+                      ? 'bg-amber-50 text-amber-700 border border-amber-200 shadow-2xs'
+                      : status === 'cancelled'
+                        ? 'bg-rose-50 text-rose-700 border border-rose-200 shadow-2xs'
+                        : 'bg-white text-[#5D5FEF] border border-gray-200/60 shadow-2xs';
+
                 return (
                   <button
                     key={status}
                     type="button"
                     onClick={() => setStatusFilter(status)}
-                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-xl text-[10.5px] sm:text-[11px] font-black uppercase tracking-wider transition-all border cursor-pointer whitespace-nowrap ${statusFilter === status
-                      ? status === 'active'
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                        : status === 'paused'
-                          ? 'bg-amber-50 text-amber-700 border-amber-200'
-                          : status === 'cancelled'
-                            ? 'bg-rose-50 text-rose-700 border-rose-200'
-                            : 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
-                      : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
-                      }`}
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-[10.5px] sm:text-xs font-bold transition-all cursor-pointer whitespace-nowrap capitalize ${
+                      isSelected
+                        ? activeStyle
+                        : 'border border-transparent text-gray-500 hover:text-gray-900'
+                    }`}
                   >
-                    {status} ({statusCounts[status]})
+                    {status} <span className="opacity-75 font-semibold">({statusCounts[status]})</span>
                   </button>
                 );
               })}
@@ -5475,17 +5488,6 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         </>
       )}
 
-      {/* TOAST NOTIFICATION */}
-      {toast && (
-        <div
-          className={`fixed bottom-5 right-5 z-[70] px-4 py-2.5 rounded-lg text-white text-[13px] font-semibold shadow-lg flex items-center gap-2 transition-all ${toast.kind === 'success' ? 'bg-emerald-600' : 'bg-red-600'
-            }`}
-          role="status"
-        >
-          {toast.kind === 'success' ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
-          {toast.message}
-        </div>
-      )}
       {/* ── ADVANCED CYCLE-AWARE PAYMENT MODAL ── */}
       {showLogPaymentModal && selectedCustomer && (
         <>

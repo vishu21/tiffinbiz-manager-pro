@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import Sidebar from "@/app/components/Sidebar";
 import MobileHeader from "@/app/components/MobileHeader";
+import DynamicFavicon from "@/app/components/DynamicFavicon";
 
 export default function AdminLayout({
   children,
@@ -13,6 +14,8 @@ export default function AdminLayout({
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#F8FAFC]">
+      {/* White-label browser-tab icon: favicon_url → logo_url → shipped default. */}
+      <DynamicFavicon />
       <MobileHeader onMenuClick={() => setIsSidebarOpen(true)} />
       <div className="flex flex-1 overflow-hidden">
         {/* Fixed Sidebar */}

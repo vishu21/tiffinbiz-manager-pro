@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { Check, AlertCircle, Loader2, Plus, Trash2 } from 'lucide-react';
+import { Check, Loader2, Plus, Trash2 } from 'lucide-react';
 import { saveAppSettings, type AppSettingsPayload, type CustomTemplate } from '../actions';
+import { useToast } from '@/app/components/ToastProvider';
 import { formatDeliveryMessage } from '@/app/utils/messageTemplate';
 
 export default function MessagingSettingsClient({
@@ -12,8 +13,9 @@ export default function MessagingSettingsClient({
 }) {
   const [settings, setSettings] = useState<AppSettingsPayload>(initialSettings);
   const [savedBaseline, setSavedBaseline] = useState<AppSettingsPayload>(initialSettings);
-  const [status, setStatus] = useState<'idle' | 'saved' | 'error'>('idle');
-  const [errorMsg, setErrorMsg] = useState('');
+  /** Bottom-right floating feedback (app/components/ToastProvider.tsx) — replaces
+   *  the inline banner that used to push the whole form down on every save. */
+  const { showToast } = useToast();
   const [isPending, startTransition] = useTransition();
 
   const isDirty = JSON.stringify(settings) !== JSON.stringify(savedBaseline);
@@ -49,18 +51,13 @@ export default function MessagingSettingsClient({
   };
 
   const handleSave = () => {
-    setStatus('idle');
-    setErrorMsg('');
-
     startTransition(async () => {
       const res = await saveAppSettings(settings);
       if (res.success) {
         setSavedBaseline(settings);
-        setStatus('saved');
-        setTimeout(() => setStatus('idle'), 3000);
+        showToast('Message templates saved and active across all dispatch routes!');
       } else {
-        setStatus('error');
-        setErrorMsg(res.message || 'Error saving settings');
+        showToast(res.message || 'Error saving settings', 'error');
       }
     });
   };
@@ -84,20 +81,9 @@ export default function MessagingSettingsClient({
 
   return (
     <div className="space-y-4">
-      {/* Toast Feedback */}
-      {status === 'saved' && (
-        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold rounded-xl flex items-center gap-2 animate-in fade-in">
-          <Check className="w-4 h-4 text-emerald-600" />
-          <span>Message templates saved and active across all dispatch routes!</span>
-        </div>
-      )}
-
-      {status === 'error' && (
-        <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold rounded-xl flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-rose-600" />
-          <span>{errorMsg}</span>
-        </div>
-      )}
+      {/* Save / error feedback is a bottom-right floating toast now
+          (app/components/ToastProvider.tsx) — nothing is injected above the card,
+          so the form never shifts when a save resolves. */}
 
       {/* Main Card */}
       <div className="bg-white rounded-2xl border border-gray-200/90 p-6 sm:p-8 space-y-6 shadow-2xs">

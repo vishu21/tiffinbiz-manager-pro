@@ -3,6 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useBranding } from '@/app/components/ThemeProvider';
 import { 
   Utensils, 
   Users, 
@@ -14,6 +15,7 @@ import {
   MapPin,
   MessageSquare,
   Sliders,
+  Palette,
   ChevronDown
 } from 'lucide-react';
 
@@ -36,6 +38,12 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
   const isSettingsActive = pathname.startsWith('/admin/settings');
   const [settingsOpen, setSettingsOpen] = React.useState(true);
 
+  // White-label identity from the shared branding context (app/components/
+  // ThemeProvider.tsx) — a configured logo replaces the stock wordmark.
+  const branding = useBranding();
+  const logoUrl = (branding?.logo_url ?? '').trim();
+  const businessName = (branding?.business_name ?? '').trim() || 'TiffinOS';
+
   return (
     <>
       {/* Overlay for mobile */}
@@ -47,16 +55,27 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
       )}
 
       <div
-        className={`fixed inset-y-0 left-0 w-[260px] h-screen bg-[#11142D] text-white flex flex-col shrink-0 z-40
+        className={`fixed inset-y-0 left-0 w-[260px] h-screen bg-brand-sidebar text-[rgb(var(--brand-sidebar-fg))] flex flex-col shrink-0 z-40
           transform transition-transform duration-200 ease-in-out
           ${isOpen ? 'translate-x-0' : '-translate-x-full'}
           lg:relative lg:translate-x-0`}
       >
         {/* Brand Logo Area */}
-        <div className="px-8 py-6 border-b border-white/10 shrink-0">
-          <h1 className="text-lg font-black tracking-widest text-white flex items-center gap-2">
-            <span><Utensils className="w-5 h-5" /></span> TIFFIN<span className="text-[#5D5FEF]">OS</span>
-          </h1>
+        <div className="px-8 py-6 border-b border-[color:var(--brand-sidebar-border)] shrink-0">
+          {logoUrl ? (
+            <span
+              role="img"
+              aria-label={businessName}
+              title={businessName}
+              className="block h-8 w-full max-w-[180px] bg-left bg-contain bg-no-repeat"
+              style={{ backgroundImage: `url("${logoUrl}")` }}
+            />
+          ) : (
+            <h1 className="text-lg font-black tracking-tight text-[rgb(var(--brand-sidebar-fg))] flex items-center gap-2 truncate">
+              <span className="shrink-0"><Utensils className="w-5 h-5" /></span>
+              <span className="truncate">{businessName}</span>
+            </h1>
+          )}
         </div>
 
         {/* Navigation Links */}
@@ -71,14 +90,16 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                 href={item.href}
                 className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 group ${
                   isActive
-                    ? 'bg-[#5D5FEF] text-white shadow-lg shadow-[#5D5FEF]/20'
-                    : 'text-slate-300 hover:text-white hover:bg-white/5'
+                    ? 'bg-brand text-white shadow-lg shadow-brand/20'
+                    : 'text-[rgb(var(--brand-sidebar-fg-soft))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                 }`}
                 onClick={onClose}
               >
                 <Icon
                   className={`w-[18px] h-[18px] shrink-0 transition-colors ${
-                    isActive ? 'text-white' : 'text-slate-400 group-hover:text-white'
+                    isActive
+                      ? 'text-white'
+                      : 'text-[rgb(var(--brand-sidebar-fg-muted))] group-hover:text-[rgb(var(--brand-sidebar-fg))]'
                   }`}
                   strokeWidth={2}
                 />
@@ -94,36 +115,38 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
               onClick={() => setSettingsOpen(prev => !prev)}
               className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 group cursor-pointer ${
                 isSettingsActive
-                  ? 'bg-white/10 text-white'
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
+                  ? 'bg-[color:var(--brand-sidebar-active)] text-[rgb(var(--brand-sidebar-fg))]'
+                  : 'text-[rgb(var(--brand-sidebar-fg-soft))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
               }`}
             >
               <div className="flex items-center gap-3 min-w-0">
                 <Settings
                   className={`w-[18px] h-[18px] shrink-0 transition-colors ${
-                    isSettingsActive ? 'text-[#5D5FEF]' : 'text-slate-400 group-hover:text-white'
+                    isSettingsActive
+                      ? 'text-brand'
+                      : 'text-[rgb(var(--brand-sidebar-fg-muted))] group-hover:text-[rgb(var(--brand-sidebar-fg))]'
                   }`}
                   strokeWidth={2}
                 />
                 <span className="truncate">Settings</span>
               </div>
               <ChevronDown
-                className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${
-                  settingsOpen ? 'rotate-180 text-white' : ''
+                className={`w-4 h-4 text-[rgb(var(--brand-sidebar-fg-muted))] transition-transform duration-200 ${
+                  settingsOpen ? 'rotate-180 text-[rgb(var(--brand-sidebar-fg))]' : ''
                 }`}
               />
             </button>
 
             {/* Sub-menu links */}
             {settingsOpen && (
-              <div className="mt-1 ml-4 pl-3 border-l border-white/10 space-y-1">
+              <div className="mt-1 ml-4 pl-3 border-l border-[color:var(--brand-sidebar-border)] space-y-1">
                 <Link
                   href="/admin/settings/kitchen"
                   onClick={onClose}
                   className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
                     pathname === '/admin/settings/kitchen'
-                      ? 'bg-[#5D5FEF] text-white shadow-md shadow-[#5D5FEF]/20'
-                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                      ? 'bg-brand text-white shadow-md shadow-brand/20'
+                      : 'text-[rgb(var(--brand-sidebar-fg-muted))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                   }`}
                 >
                   <MapPin className="w-3.5 h-3.5 shrink-0" />
@@ -135,8 +158,8 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                   onClick={onClose}
                   className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
                     pathname === '/admin/settings/messaging'
-                      ? 'bg-[#5D5FEF] text-white shadow-md shadow-[#5D5FEF]/20'
-                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                      ? 'bg-brand text-white shadow-md shadow-brand/20'
+                      : 'text-[rgb(var(--brand-sidebar-fg-muted))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                   }`}
                 >
                   <MessageSquare className="w-3.5 h-3.5 shrink-0" />
@@ -148,12 +171,25 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                   onClick={onClose}
                   className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
                     pathname === '/admin/settings/rules'
-                      ? 'bg-[#5D5FEF] text-white shadow-md shadow-[#5D5FEF]/20'
-                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                      ? 'bg-brand text-white shadow-md shadow-brand/20'
+                      : 'text-[rgb(var(--brand-sidebar-fg-muted))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                   }`}
                 >
                   <Sliders className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">Plans &amp; Rules</span>
+                </Link>
+
+                <Link
+                  href="/admin/settings/branding"
+                  onClick={onClose}
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                    pathname === '/admin/settings/branding'
+                      ? 'bg-brand text-white shadow-md shadow-brand/20'
+                      : 'text-[rgb(var(--brand-sidebar-fg-muted))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
+                  }`}
+                >
+                  <Palette className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Branding &amp; Appearance</span>
                 </Link>
               </div>
             )}

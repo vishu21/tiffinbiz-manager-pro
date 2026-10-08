@@ -12,7 +12,8 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
             </h1>
           </div>
           <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
-            Configure kitchen departure hub, automated driver messages, and routing rules.
+            Configure kitchen departure hub, automated driver messages, routing rules, and your
+            brand appearance.
           </p>
         </div>
       </div>

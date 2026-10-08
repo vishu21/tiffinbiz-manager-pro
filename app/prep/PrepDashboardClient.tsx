@@ -516,7 +516,7 @@ const kitchenOrderSort = (a: Customer, b: Customer): number => {
 
 type CurryProfile = { dal: number; sabji: number; chicken: number; gravy: number };
 
-const DEFAULT_MWF_PROFILE: CurryProfile = { dal: 0, sabji: 1, chicken: 1, gravy: 0 };
+const DEFAULT_MWF_PROFILE: CurryProfile = { dal: 1, sabji: 0, chicken: 1, gravy: 0 };
 const DEFAULT_TTH_PROFILE: CurryProfile = { dal: 1, sabji: 1, chicken: 0, gravy: 0 };
 
 const normalizeCurryProfile = (p: Partial<CurryProfile> | null | undefined): CurryProfile => ({
@@ -804,7 +804,7 @@ const buildAlertSummary = (input: {
 
   if (!input.customRule && !input.todayOverride) {
     const baseline = input.isNonVeg && input.isChickenDay
-      ? { dal: 0, sabji: 1, chicken: 1, gravy: 0 }
+      ? { dal: 1, sabji: 0, chicken: 1, gravy: 0 }
       : { dal: 1, sabji: 1, chicken: 0, gravy: 0 };
     const labelFor: Record<keyof typeof baseline, string> = {
       dal: 'Daal', sabji: 'Sabji', chicken: 'Chicken', gravy: 'Gravy',
@@ -1947,174 +1947,148 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   return (
     <div className="flex flex-col flex-1 min-h-0 w-full max-w-full overflow-x-hidden bg-[#F8FAFC] font-sans text-[#292D32] print:h-auto print:overflow-visible print:bg-white">
 
-      {/* ── UNIFIED STANDARD PAGE HEADER ── */}
-      <div className="px-4 sm:px-6 lg:px-8 pt-5 sm:pt-7 lg:pt-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-200/80 pb-5 shrink-0 print:hidden">
-        {/* Left: Title + Operational Metrics Group + Mobile Print */}
-        <div className="flex flex-wrap items-center justify-between md:justify-start gap-2.5 shrink-0 w-full md:w-auto">
+      {/* ── CLEAN TWO-TIER PAGE HEADER ── */}
+      <div className="px-4 sm:px-6 lg:px-8 pt-4 sm:pt-6 pb-3 border-b border-gray-200/80 bg-white shrink-0 print:hidden space-y-3">
+        {/* Tier 1: Title & Controls */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <div className="flex items-center gap-2.5">
-              <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
-                Kitchen Prep &amp; Packaging
-              </h1>
-              <span className="inline-flex items-center justify-center px-2.5 py-0.5 bg-gray-100 border border-gray-200 text-gray-600 text-xs font-bold rounded-full">
-                {metrics.totalMeals} orders
-              </span>
-            </div>
-            <p className="text-xs sm:text-sm text-gray-500 font-medium mt-1">
-              Aggregated cooking, packing &amp; dispatch manifest for {formattedTargetDate}.
+            <h1 className="text-xl sm:text-2xl font-black text-[#11142D] tracking-tight">
+              Kitchen Prep &amp; Packaging
+            </h1>
+            <p className="text-xs text-gray-500 font-medium mt-0.5">
+              Cooking, packing &amp; dispatch schedule for <strong className="text-gray-800">{formattedTargetDate}</strong>
             </p>
           </div>
 
-          <div className="flex items-center gap-2 flex-1 md:flex-initial justify-between md:justify-start">
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs">
-                <span className="font-bold text-gray-900">{metrics.totalMeals} Orders</span>
-                <span className="text-gray-300">|</span>
-                <div className="flex items-center gap-1.5 font-semibold text-[11px]">
-                  <span className="text-emerald-700">
-                    {activeCustomers.filter(c => !c.isSkipped && !c.meal_type?.toLowerCase().includes('non')).length} Veg
-                  </span>
-                  <span className="text-gray-300">·</span>
-                  <span className="text-rose-700">
-                    {activeCustomers.filter(c => !c.isSkipped && c.meal_type?.toLowerCase().includes('non')).length} Non-Veg
-                  </span>
-                </div>
+          {/* Right: Date Navigation & Print */}
+          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+            {/* Week & Date Strip */}
+            <div className="inline-flex items-center bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs shrink-0">
+              <button
+                type="button"
+                onClick={() => changeWeek('prev')}
+                title="Previous Week"
+                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+              >
+                ‹
+              </button>
+
+              <div className="flex items-center gap-0.5 px-1">
+                {weekDays.map((item) => {
+                  const isSelected = selectedDateKey === item.dateKey;
+                  const isClosed = closuresMap.has(item.dateKey);
+                  const isWeekend = item.short === 'Sat' || item.short === 'Sun';
+
+                  return (
+                    <button
+                      key={item.dateKey}
+                      type="button"
+                      onClick={() => setSelectedDate(item.dateObj)}
+                      title={isClosed ? `Kitchen Closed: ${closuresMap.get(item.dateKey)}` : undefined}
+                      className={`px-2 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer relative flex items-center gap-0.5
+                        ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
+                        ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
+                        ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs ring-2 ring-amber-300' : ''}
+                        ${!isSelected && isClosed ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200' : ''}
+                        ${!isSelected && !isClosed && isWeekend ? 'text-gray-400 opacity-40 hover:opacity-80' : ''}
+                        ${!isSelected && !isClosed && !isWeekend ? 'text-gray-600 hover:bg-white hover:text-gray-900' : ''}
+                      `}
+                    >
+                      <span className={isClosed && !isSelected ? 'line-through decoration-amber-600' : ''}>
+                        {item.short}
+                      </span>
+                      <span className="opacity-80 font-normal text-[10.5px]">{item.dayNum}</span>
+                      {isClosed && (
+                        <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : 'bg-amber-600'}`} />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
-              {/* Aggregated Portion Breakdown Pill */}
-              <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700">
-                <span><strong className="text-gray-900">{portionCounts.lg}</strong> LG</span>
-                <span className="text-gray-300">·</span>
-                <span><strong className="text-gray-900">{portionCounts.rg}</strong> RG</span>
-                {portionCounts.halfLg > 0 && (
-                  <>
-                    <span className="text-gray-300">·</span>
-                    <span><strong className="text-gray-900">{portionCounts.halfLg}</strong> Half LG</span>
-                  </>
-                )}
-                {portionCounts.halfRg > 0 && (
-                  <>
-                    <span className="text-gray-300">·</span>
-                    <span><strong className="text-gray-900">{portionCounts.halfRg}</strong> Half RG</span>
-                  </>
-                )}
-              </div>
+              <button
+                type="button"
+                onClick={() => changeWeek('next')}
+                title="Next Week"
+                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+              >
+                ›
+              </button>
 
-              {activeClosure && (
-                <span className="px-2 py-1 rounded-lg text-[11px] font-bold uppercase bg-amber-50 text-amber-800 border border-amber-200">
-                  Closed
-                </span>
-              )}
+              <div className="h-4 w-px bg-gray-200 mx-1" />
+
+              <PrepDatePicker
+                selectedDate={selectedDateKey}
+                onChange={(newDateStr) => {
+                  const picked = new Date(`${newDateStr}T12:00:00`);
+                  if (!isNaN(picked.getTime())) setSelectedDate(picked);
+                }}
+                closures={Array.from(closuresMap.keys())}
+              />
             </div>
 
-            {/* Mobile-Only Print Button */}
+            {/* Print Button */}
             <button
               type="button"
               onClick={() => window.print()}
-              className="md:hidden h-8 inline-flex items-center gap-1 px-2.5 border border-gray-200 rounded-lg shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 cursor-pointer shrink-0 ml-auto"
-              title="Print Manifest"
+              className="h-9 inline-flex items-center gap-1.5 px-3 border border-gray-200 rounded-xl shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors shrink-0"
             >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Print</span>
+              <Printer className="w-4 h-4" />
+              <span className="hidden sm:inline">Print</span>
             </button>
           </div>
         </div>
 
-        {/* Center: Target Prep Date Context (Gated by isMounted to eliminate hydration mismatch) */}
-        <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-gray-50/70 border border-gray-200/80 rounded-lg text-xs font-semibold text-gray-500">
-          <span>Prep target:</span>
-          <strong className="text-gray-900">{formattedTargetDate}</strong>
-          {isMounted && isPreppingToday ? (
-            <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+        {/* Tier 2: Clean Secondary Summary Strip */}
+        <div className="flex items-center gap-2 flex-wrap pt-0.5">
+          {/* Total Meals & Dietary Split */}
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs">
+            <span className="font-black text-gray-900">{metrics.totalMeals} Orders</span>
+            <span className="text-gray-300">|</span>
+            <span className="font-bold text-emerald-700">
+              {activeCustomers.filter(c => !c.isSkipped && !c.meal_type?.toLowerCase().includes('non')).length} Veg
+            </span>
+            <span className="text-gray-300">·</span>
+            <span className="font-bold text-rose-700">
+              {activeCustomers.filter(c => !c.isSkipped && c.meal_type?.toLowerCase().includes('non')).length} Non-Veg
+            </span>
+          </div>
+
+          {/* Portion Breakdown */}
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700">
+            <span><strong className="text-gray-900">{portionCounts.lg}</strong> LG</span>
+            <span className="text-gray-300">·</span>
+            <span><strong className="text-gray-900">{portionCounts.rg}</strong> RG</span>
+            {portionCounts.halfLg > 0 && (
+              <>
+                <span className="text-gray-300">·</span>
+                <span><strong className="text-gray-900">{portionCounts.halfLg}</strong> Half-LG</span>
+              </>
+            )}
+            {portionCounts.halfRg > 0 && (
+              <>
+                <span className="text-gray-300">·</span>
+                <span><strong className="text-gray-900">{portionCounts.halfRg}</strong> Half-RG</span>
+              </>
+            )}
+          </div>
+
+          {/* Date Context Tag (Today / Tomorrow / Closed) */}
+          {isMounted && isPreppingToday && (
+            <span className="text-[11px] bg-emerald-50 text-emerald-700 font-bold px-2.5 py-0.5 rounded-lg border border-emerald-200">
               Today
             </span>
-          ) : isMounted && isPreppingTomorrow ? (
-            <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-100">
+          )}
+          {isMounted && isPreppingTomorrow && (
+            <span className="text-[11px] bg-indigo-50 text-indigo-700 font-bold px-2.5 py-0.5 rounded-lg border border-indigo-100">
               Tomorrow
             </span>
-          ) : null}
-        </div>
-
-        {/* Right: Consolidated Date Navigation Strip */}
-        <div className="flex items-center justify-between md:justify-end gap-2 shrink-0 w-full md:w-auto overflow-visible">
-          <div className="inline-flex items-center justify-between sm:justify-start bg-gray-50 border border-gray-200 rounded-xl p-1 shadow-2xs shrink-0 overflow-visible relative w-full sm:w-auto">
-            {/* Prev Week Button */}
-            <button
-              type="button"
-              onClick={() => changeWeek('prev')}
-              title="Previous Week"
-              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
-            >
-              ‹
-            </button>
-
-            {/* 5-Day Mobile / 7-Day Desktop Selector Strip */}
-            <div className="flex items-center justify-around sm:justify-start gap-0.5 px-0.5 sm:px-1 flex-1 sm:flex-initial">
-              {weekDays.map((item) => {
-                const isSelected = selectedDateKey === item.dateKey;
-                const isClosed = closuresMap.has(item.dateKey);
-                const isWeekend = item.short === 'Sat' || item.short === 'Sun';
-
-                return (
-                  <button
-                    key={item.dateKey}
-                    type="button"
-                    onClick={() => setSelectedDate(item.dateObj)}
-                    title={isClosed ? `Kitchen Closed: ${closuresMap.get(item.dateKey)}` : undefined}
-                    className={`px-2 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5
-                      ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
-                      ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
-                      ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs ring-2 ring-amber-300' : ''}
-                      ${!isSelected && isClosed ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200' : ''}
-                      ${!isSelected && !isClosed && isWeekend ? 'text-gray-400 opacity-40 hover:opacity-80 hover:bg-white' : ''}
-                      ${!isSelected && !isClosed && !isWeekend ? 'text-gray-600 hover:bg-white hover:text-gray-900' : ''}
-                    `}
-                  >
-                    <span className={isClosed && !isSelected ? 'line-through decoration-amber-600' : ''}>
-                      {item.short}
-                    </span>
-                    <span className="opacity-80 font-normal text-[10.5px]">{item.dayNum}</span>
-                    {isClosed && (
-                      <span className={`w-1 h-1 rounded-full ${isSelected ? 'bg-white' : 'bg-amber-600'}`} />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Next Week Button */}
-            <button
-              type="button"
-              onClick={() => changeWeek('next')}
-              title="Next Week"
-              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
-            >
-              ›
-            </button>
-
-            {/* Inline Calendar Popover Divider */}
-            <div className="h-4 w-px bg-gray-200 mx-1" />
-
-            {/* Mini Calendar Picker */}
-            <PrepDatePicker
-              selectedDate={selectedDateKey}
-              onChange={(newDateStr) => {
-                const picked = new Date(`${newDateStr}T12:00:00`);
-                if (!isNaN(picked.getTime())) setSelectedDate(picked);
-              }}
-              closures={Array.from(closuresMap.keys())}
-            />
-          </div>
-
-          {/* Desktop-Only Print Button */}
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="hidden md:inline-flex h-9 items-center gap-1.5 px-3 border border-gray-200 rounded-xl shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors shrink-0"
-          >
-            <Printer className="w-4 h-4" />
-            <span>Print</span>
-          </button>
+          )}
+          {activeClosure && (
+            <span className="text-[11px] bg-amber-50 text-amber-800 font-bold px-2.5 py-0.5 rounded-lg border border-amber-200 uppercase">
+              Closed
+            </span>
+          )}
         </div>
       </div>
 
