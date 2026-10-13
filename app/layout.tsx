@@ -3,6 +3,7 @@ import "./globals.css";
 import GlobalProgressBar from '@/app/components/ui/GlobalProgressBar';
 import ThemeProvider from '@/app/components/ThemeProvider';
 import ToastProvider from '@/app/components/ToastProvider';
+import GlobalSkipProvider from '@/app/components/GlobalSkipProvider';
 import 'nprogress/nprogress.css';
 import { getBusinessBranding } from '@/app/admin/actions';
 import { buildBrandStyleVars, buildBrandThemeBootstrapScript, toBrandTheme } from '@/app/utils/branding';
@@ -57,7 +58,12 @@ export default async function RootLayout({
           {/* Floating notification surface (see app/components/ToastProvider.tsx) —
               one instance for every route, mounted here so no page owns its own
               banner and nothing in the layout can shift when a toast fires. */}
-          <ToastProvider>{children}</ToastProvider>
+          <ToastProvider>
+            {/* One global skip modal for the entire console — reachable from any
+                surface (global header, customer row, prep drawer) via
+                `useGlobalSkip()`. See app/components/GlobalSkipProvider.tsx. */}
+            <GlobalSkipProvider>{children}</GlobalSkipProvider>
+          </ToastProvider>
         </ThemeProvider>
       </body>
     </html>

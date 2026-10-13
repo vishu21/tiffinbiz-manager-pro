@@ -5,6 +5,11 @@ import { geocodeAddress } from '@/app/utils/geocoding';
 import { revalidatePath } from 'next/cache';
 import { normalizePickupDays } from '@/app/utils/customerPickup';
 import {
+  calculateCycleTargetLastDay,
+  normalizeDateKey,
+  resolveDeliveryDayNumbers,
+} from '@/app/utils/subscriptionCycle';
+import {
   DEFAULT_BRANDING,
   DEFAULT_SIDEBAR_STYLE,
   DEFAULT_THEME_PRESET,
@@ -46,6 +51,7 @@ type CustomerPayload = {
   discount_note?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
+  weekly_schedule_matrix?: string | null;
   plan_tier?: 'trial' | 'weekly' | 'monthly' | null;
   total_tiffin_credits?: number | null;
   start_date?: string | null;
@@ -112,6 +118,11 @@ const normalizeCustomerPayload = (payload: CustomerPayload): CustomerPayload => 
   if (clean.curry_config !== undefined && clean.curry_config !== null) {
     const trimmed = clean.curry_config.trim();
     clean.curry_config = trimmed === '' ? null : trimmed;
+  }
+
+  if (clean.weekly_schedule_matrix !== undefined && clean.weekly_schedule_matrix !== null) {
+    const trimmed = clean.weekly_schedule_matrix.trim();
+    clean.weekly_schedule_matrix = trimmed === '' ? null : trimmed;
   }
 
   if (clean.plan_tier !== undefined && clean.plan_tier !== null) {
@@ -210,7 +221,14 @@ const stripDislikedDishes = (payload: CustomerPayload): CustomerPayload => {
 
 const isDislikedDishesColumnMissing = (error: unknown): boolean =>
   isMissingColumnError(error, ['disliked_dishes']);
+const stripWeeklyScheduleMatrix = (payload: CustomerPayload): CustomerPayload => {
+  const copy: CustomerPayload = { ...payload };
+  delete copy.weekly_schedule_matrix;
+  return copy;
+};
 
+const isWeeklyScheduleMatrixColumnMissing = (error: unknown): boolean =>
+  isMissingColumnError(error, ['weekly_schedule_matrix']);
 const SCHEDULED_COLUMNS = ['scheduled_cancel_date', 'scheduled_status'];
 const SCHEDULE_MIGRATION_HINT =
   'Scheduling a future cancel/pause requires supabase/migrations/00014_add_scheduled_status.sql. Please run the migration and try again.';
@@ -405,6 +423,10 @@ export async function createCustomer(payload: CustomerPayload) {
         current = stripDislikedDishes(current);
         continue;
       }
+      if (isWeeklyScheduleMatrixColumnMissing(error)) {
+        current = stripWeeklyScheduleMatrix(current);
+        continue;
+      }
       logDatabaseError('createCustomer.insert', error);
       throw new Error(formatCustomerWriteError(error));
     }
@@ -472,6 +494,10 @@ export async function updateCustomer(
     }
     if (isDislikedDishesColumnMissing(error)) {
       current = stripDislikedDishes(current);
+      continue;
+    }
+    if (isWeeklyScheduleMatrixColumnMissing(error)) {
+      current = stripWeeklyScheduleMatrix(current);
       continue;
     }
     logDatabaseError('updateCustomer.update', error);
@@ -1354,5 +1380,399 @@ export async function updateBusinessBranding(
       success: false,
       message: err instanceof Error ? err.message : 'Failed to save branding',
     };
+  }
+}
+
+// 13. CENTRALIZED CUSTOMER SKIP ("Global Skip")
+// ─────────────────────────────────────────────────────────────────────────────
+// Single source of truth for recording / undoing delivery skips from ANY
+// surface (global header, customer rows, prep drawer). It:
+//   1. writes the date-scoped `customer_daily_overrides.is_skipped` rows,
+//   2. re-walks the subscription cycle with the SHARED calculator so the newly
+//      recomputed `cycle_end_date` is persisted back onto `customers` (no more
+//      desync between /prep and /admin/customers),
+//   3. drops an audit row on the customer History tab, and
+//   4. revalidates every screen that renders the cycle.
+export type RecordCustomerSkipParams = {
+  customerId: string;
+  skipDates: string[]; // ['YYYY-MM-DD']
+  isSkipped: boolean; // true = add skip, false = undo
+  reason?: string;
+};
+
+export type RecordCustomerSkipResult = {
+  success: boolean;
+  newCycleEndDate?: string | null;
+  message?: string;
+};
+
+const MAX_SKIP_DATES = 400;
+
+const MISSING_DAILY_OVERRIDE_MESSAGE =
+  'Delivery overrides are not installed yet — apply supabase/migrations/00019_add_daily_skip.sql.';
+
+// `customer_daily_overrides` may not be installed yet on a given database. Every
+// write degrades to a clear message instead of crashing the calling screen
+// (mirrors the schema-tolerant handling in app/prep/actions.ts).
+const isDailyOverrideSchemaMissing = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const e = error as { code?: string; message?: string; details?: string; hint?: string };
+  const text = [e.message, e.details, e.hint].filter(Boolean).join(' ').toLowerCase();
+  if (['PGRST204', 'PGRST205', '42P01', '42703'].includes(e.code ?? '')) {
+    return (
+      text.includes('customer_daily_overrides') ||
+      text.includes('is_skipped') ||
+      text.includes('does not exist') ||
+      text.includes('could not find')
+    );
+  }
+  return (
+    (text.includes('does not exist') ||
+      text.includes('could not find the table') ||
+      text.includes('could not find the column')) &&
+    text.includes('customer_daily_overrides')
+  );
+};
+
+type SkipCycleCustomerRow = {
+  id: string;
+  start_date: string | null;
+  total_tiffin_credits: number | null;
+  total_credits?: number | null;
+  delivery_schedule: string | null;
+  cycle_end_date: string | null;
+  plan_tier?: string | null;
+};
+
+// Tolerant column list: `total_credits` is a legacy alias that may not exist on
+// every database, and a slim install may not carry cycle_end_date / plan_tier.
+const readSkipCycleCustomer = async (
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  customerId: string
+): Promise<{ data: SkipCycleCustomerRow | null; error: unknown }> => {
+  const attempts = [
+    'id, start_date, total_tiffin_credits, total_credits, delivery_schedule, cycle_end_date, plan_tier',
+    'id, start_date, total_tiffin_credits, delivery_schedule, cycle_end_date, plan_tier',
+    'id, start_date, total_tiffin_credits, delivery_schedule',
+  ];
+
+  let lastError: unknown = null;
+  for (const columns of attempts) {
+    const { data, error } = await supabase
+      .from('customers')
+      .select(columns)
+      .eq('id', customerId)
+      .maybeSingle();
+    if (!error) return { data: (data as SkipCycleCustomerRow | null) ?? null, error: null };
+    lastError = error;
+  }
+  return { data: null, error: lastError };
+};
+
+const fetchSkipCycleClosureKeys = async (
+  supabase: Awaited<ReturnType<typeof createClient>>
+): Promise<Set<string>> => {
+  try {
+    const { data, error } = await supabase.from('kitchen_closures').select('closure_date');
+    if (error || !data) return new Set();
+    return new Set(
+      data
+        .map(row => normalizeDateKey((row as { closure_date?: string | null }).closure_date))
+        .filter((key): key is string => Boolean(key))
+    );
+  } catch {
+    return new Set();
+  }
+};
+
+const fetchSkipCycleActiveSkipKeys = async (
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  customerId: string
+): Promise<Set<string>> => {
+  try {
+    const { data, error } = await supabase
+      .from('customer_daily_overrides')
+      .select('override_date')
+      .eq('customer_id', customerId)
+      .eq('is_skipped', true);
+    if (error || !data) return new Set();
+    return new Set(
+      data
+        .map(row => normalizeDateKey((row as { override_date?: string | null }).override_date))
+        .filter((key): key is string => Boolean(key))
+    );
+  } catch {
+    return new Set();
+  }
+};
+
+export async function recordCustomerSkip(
+  params: RecordCustomerSkipParams
+): Promise<RecordCustomerSkipResult> {
+  const customerId = typeof params?.customerId === 'string' ? params.customerId.trim() : '';
+  const isSkipped = params?.isSkipped === true;
+  const reason = typeof params?.reason === 'string' ? params.reason.trim() || null : null;
+
+  if (!customerId) {
+    return { success: false, message: 'Missing customer id.' };
+  }
+
+  // Normalize + de-duplicate every requested date to a 'YYYY-MM-DD' key.
+  const skipDates = Array.from(
+    new Set(
+      (params.skipDates ?? [])
+        .map(date => normalizeDateKey(date))
+        .filter((key): key is string => Boolean(key))
+    )
+  ).sort();
+
+  if (skipDates.length === 0) {
+    return {
+      success: false,
+      message: isSkipped ? 'Pick at least one date to skip.' : 'Pick at least one skip to undo.',
+    };
+  }
+  if (skipDates.length > MAX_SKIP_DATES) {
+    return { success: false, message: 'Too many dates in a single skip request.' };
+  }
+
+  try {
+    const supabase = await createClient();
+
+    // 1. Persist (skip) or remove (undo) the date-scoped override rows.
+    if (isSkipped) {
+      const now = new Date().toISOString();
+      const { error } = await supabase.from('customer_daily_overrides').upsert(
+        skipDates.map(date => ({
+          customer_id: customerId,
+          override_date: date,
+          is_skipped: true,
+          updated_at: now,
+        })),
+        { onConflict: 'customer_id,override_date' }
+      );
+
+      if (error) {
+        if (isDailyOverrideSchemaMissing(error)) {
+          console.warn('[recordCustomerSkip] customer_daily_overrides missing:', error.message);
+          return { success: false, message: MISSING_DAILY_OVERRIDE_MESSAGE };
+        }
+        console.error('[recordCustomerSkip] Failed to persist skips:', error);
+        return { success: false, message: error.message };
+      }
+    } else {
+      const { error } = await supabase
+        .from('customer_daily_overrides')
+        .delete()
+        .eq('customer_id', customerId)
+        .in('override_date', skipDates);
+
+      if (error) {
+        if (isDailyOverrideSchemaMissing(error)) {
+          console.warn('[recordCustomerSkip] customer_daily_overrides missing:', error.message);
+          return { success: false, message: MISSING_DAILY_OVERRIDE_MESSAGE };
+        }
+        console.error('[recordCustomerSkip] Failed to undo skips:', error);
+        return { success: false, message: error.message };
+      }
+    }
+
+    // 2. Re-walk the cycle with the shared calculator so /prep and
+    //    /admin/customers agree on when the subscription ends.
+    const { data: customer, error: readError } = await readSkipCycleCustomer(supabase, customerId);
+    if (readError) {
+      console.error('[recordCustomerSkip] Failed to read the customer cycle inputs:', readError);
+      return { success: false, message: formatDatabaseError(readError) };
+    }
+    if (!customer) {
+      return { success: false, message: 'Customer not found.' };
+    }
+
+    const startDate = normalizeDateKey(customer.start_date);
+    const deliveryDays = resolveDeliveryDayNumbers(customer.delivery_schedule);
+    const closureDates = await fetchSkipCycleClosureKeys(supabase);
+    const customerSkips = await fetchSkipCycleActiveSkipKeys(supabase, customerId);
+
+    const dbCredits = Math.trunc(Number(customer.total_tiffin_credits));
+    const legacyCredits = Math.trunc(Number(customer.total_credits));
+    const totalMeals =
+      Number.isFinite(dbCredits) && dbCredits > 0
+        ? dbCredits
+        : Number.isFinite(legacyCredits) && legacyCredits > 0
+          ? legacyCredits
+          : TIER_CREDITS[customer.plan_tier || 'monthly'] || 20;
+
+    const cycle = startDate
+      ? calculateCycleTargetLastDay({
+          startDate,
+          totalMeals,
+          deliveryDays,
+          closureDates,
+          customerSkips,
+        })
+      : null;
+    const newCycleEndDate = cycle?.dateKey ?? normalizeDateKey(customer.cycle_end_date);
+
+    // 3. Persist the recomputed cycle end date.
+    if (newCycleEndDate && newCycleEndDate !== normalizeDateKey(customer.cycle_end_date)) {
+      const { error: updateError } = await supabase
+        .from('customers')
+        .update({ cycle_end_date: newCycleEndDate })
+        .eq('id', customerId);
+
+      if (updateError) {
+        console.error('[recordCustomerSkip] Failed to persist cycle_end_date:', updateError);
+        return {
+          success: false,
+          newCycleEndDate,
+          message: `Delivery ${isSkipped ? 'skip' : 'restore'} saved, but the cycle end date could not be updated: ${formatDatabaseError(updateError)}`,
+        };
+      }
+    }
+
+    // 4. Audit trail (shows on the customer History tab).
+    try {
+      const scopeLabel =
+        skipDates.length === 1
+          ? skipDates[0]
+          : `${skipDates[0]} → ${skipDates[skipDates.length - 1]} (${skipDates.length} days)`;
+      const summary = isSkipped
+        ? `Delivery skipped for ${scopeLabel} · Cycle end ${newCycleEndDate ?? 'unchanged'}`
+        : `Restored delivery for ${scopeLabel} · Cycle end ${newCycleEndDate ?? 'unchanged'}`;
+
+      await supabase.from('customer_activity_logs').insert({
+        customer_id: customerId,
+        action_type: 'OVERRIDE',
+        summary: reason ? `${summary} · Reason: ${reason}` : summary,
+        changed_fields: {
+          is_skipped: isSkipped,
+          dates: skipDates,
+          new_cycle_end_date: newCycleEndDate,
+          holiday_days_compensated: cycle?.holidayDaysSkipped ?? 0,
+          skip_days_compensated: cycle?.customerDaysSkipped ?? 0,
+          reason,
+        },
+        performed_by: 'Global Skip',
+        created_at: new Date().toISOString(),
+      });
+    } catch (logErr) {
+      console.warn('[recordCustomerSkip] Could not record activity log:', logErr);
+    }
+
+    // 5. Refresh every surface that renders the cycle.
+    revalidatePath('/prep');
+    revalidatePath('/admin/customers');
+    revalidatePath('/admin/deliveries');
+
+    return { success: true, newCycleEndDate };
+  } catch (err) {
+    console.error('[recordCustomerSkip] unexpected error:', err);
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : 'Failed to record the skip.',
+    };
+  }
+}
+
+// Raw cycle inputs for the Global Skip modal's client-side impact preview. The
+// modal calls `calculateCycleTargetLastDay` itself (the same shared calculator
+// this server action uses), so the numbers previewed and the numbers persisted
+// can never drift. Returns null when the customer cannot be read.
+export type SkipPreviewContext = {
+  customerId: string;
+  deliverySchedule: string | null;
+  startDate: string | null;
+  totalMeals: number;
+  cycleEndDate: string | null;
+  closureDates: string[];
+  customerSkips: string[];
+};
+
+export async function getSkipPreviewContext(
+  customerId: string
+): Promise<SkipPreviewContext | null> {
+  const id = typeof customerId === 'string' ? customerId.trim() : '';
+  if (!id) return null;
+
+  try {
+    const supabase = await createClient();
+    const { data: customer, error } = await readSkipCycleCustomer(supabase, id);
+    if (error || !customer) return null;
+
+    const [closureKeys, skipKeys] = await Promise.all([
+      fetchSkipCycleClosureKeys(supabase),
+      fetchSkipCycleActiveSkipKeys(supabase, id),
+    ]);
+
+    const dbCredits = Math.trunc(Number(customer.total_tiffin_credits));
+    const legacyCredits = Math.trunc(Number(customer.total_credits));
+    const totalMeals =
+      Number.isFinite(dbCredits) && dbCredits > 0
+        ? dbCredits
+        : Number.isFinite(legacyCredits) && legacyCredits > 0
+          ? legacyCredits
+          : TIER_CREDITS[customer.plan_tier || 'monthly'] || 20;
+
+    return {
+      customerId: id,
+      deliverySchedule: customer.delivery_schedule,
+      startDate: normalizeDateKey(customer.start_date),
+      totalMeals,
+      cycleEndDate: normalizeDateKey(customer.cycle_end_date),
+      closureDates: Array.from(closureKeys).sort(),
+      customerSkips: Array.from(skipKeys).sort(),
+    };
+  } catch (err) {
+    console.error('[getSkipPreviewContext] error:', err);
+    return null;
+  }
+}
+
+export type SkipCandidate = {
+  id: string;
+  full_name: string | null;
+  phone_number: string | null;
+  delivery_schedule: string | null;
+};
+
+// Minimal, search-friendly customer list powering the Global Skip modal's
+// picker when it opens from a surface with no customer context (e.g. the
+// global header). Cancelled / expired cycles are filtered out.
+export async function getSkipCandidates(): Promise<SkipCandidate[]> {
+  try {
+    const supabase = await createClient();
+
+    const primary = await supabase
+      .from('customers')
+      .select('id, full_name, phone_number, delivery_schedule, subscription_status')
+      .order('full_name', { ascending: true });
+
+    let rows: Record<string, unknown>[] = [];
+    if (!primary.error && primary.data) {
+      rows = primary.data as Record<string, unknown>[];
+    } else {
+      // Slim schema fallback: still let the picker work with just names.
+      const fallback = await supabase
+        .from('customers')
+        .select('id, full_name')
+        .order('full_name', { ascending: true });
+      if (fallback.error || !fallback.data) return [];
+      rows = fallback.data as Record<string, unknown>[];
+    }
+
+    return rows
+      .filter(row => {
+        const status = String(row.subscription_status ?? '').toLowerCase();
+        return status !== 'cancelled' && status !== 'expired';
+      })
+      .map(row => ({
+        id: String(row.id),
+        full_name: (row.full_name as string | null) ?? null,
+        phone_number: (row.phone_number as string | null) ?? null,
+        delivery_schedule: (row.delivery_schedule as string | null) ?? null,
+      }));
+  } catch (err) {
+    console.error('[getSkipCandidates] error:', err);
+    return [];
   }
 }

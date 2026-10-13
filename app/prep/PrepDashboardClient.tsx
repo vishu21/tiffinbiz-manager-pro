@@ -34,7 +34,7 @@ import type { MealConfigPayload } from '@/app/admin/actions';
 import PrepQuickEditSheet, { type QuickEditSaveRequest } from './PrepQuickEditSheet';
 import { isPickupOnDay, parseActiveScheduleDays } from '@/app/utils/customerPickup';
 import { computeCycleEndDate, resolveDeliveryDayNumbers } from '@/app/utils/subscriptionCycle';
-import { computePrepMetrics, resolveSideAddons, getDishDislikeAlert } from './prepCalculations';
+import { computePrepMetrics, resolveSideAddons, getDishDislikeAlert, resolveCustomerDayPlan } from './prepCalculations';
 import DriverDispatchModal from './components/DriverDispatchModal';
 
 const noopSubscribe = () => () => {};
@@ -1224,6 +1224,24 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     [applyOverrideRows]
   );
 
+  // Global skip surface → live manifest sync. The shared skip modal
+  // (app/components/GlobalSkipModal.tsx) dispatches `tiffin:skip-synced` on a
+  // successful save, so /prep counts + active skip ranges refresh without a hard
+  // browser reload.
+  useEffect(() => {
+    const handleSkipSynced = () => {
+      router.refresh();
+      // Silently refresh daily overrides and active skip ranges for the selected date
+      void refreshDailyOverrides(selectedDateKey);
+      getCustomerActiveSkipRanges(selectedDateKey).then(ranges => {
+        if (ranges) setSkipRanges(ranges);
+      });
+    };
+
+    window.addEventListener('tiffin:skip-synced', handleSkipSynced);
+    return () => window.removeEventListener('tiffin:skip-synced', handleSkipSynced);
+  }, [selectedDateKey, refreshDailyOverrides, router]);
+
   const dailyOverrides = overridesByDate[selectedDateKey] || EMPTY_OVERRIDES;
 
   const handleToggleSkip = (customerId: string, nextSkipped: boolean) => {
@@ -1850,8 +1868,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const printSabjiName = selectedSabjiRecipe?.name || (veg2 || '').trim() || '—';
 
   const metrics = useMemo(
-    () => computePrepMetrics(activeCookingCustomers, isChickenDay, { dalName: printDalName, sabjiName: printSabjiName }),
-    [activeCookingCustomers, isChickenDay, printDalName, printSabjiName],
+    () => computePrepMetrics(activeCookingCustomers, isChickenDay, { dalName: printDalName, sabjiName: printSabjiName }, activeDay),
+    [activeCookingCustomers, isChickenDay, printDalName, printSabjiName, activeDay],
   );
 
   const formatOz = (oz: number): string => `${oz.toFixed(1)} oz`;
@@ -2346,15 +2364,15 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     const street = isPickupOnDay(customer, activeDay)
                       ? 'PU'
                       : formatShortAddress(customer.delivery_address) || '—';
-                    const hasPronthi =
-                      typeof customer.pronthi_count === 'number' && customer.pronthi_count > 0;
+                    const dayPlan = resolveCustomerDayPlan(customer, activeDay, isChickenDay);
+                    const hasPronthi = dayPlan.pronthi > 0;
                     const rotiText =
-                      typeof customer.roti_count === 'number' && customer.roti_count > 0
-                        ? `${customer.roti_count}${hasPronthi ? ` +${customer.pronthi_count}P` : ''}`
+                      dayPlan.roti > 0
+                        ? `${dayPlan.roti}${hasPronthi ? ` +${dayPlan.pronthi}P` : ''}`
                         : hasPronthi
-                          ? `${customer.pronthi_count}P`
+                          ? `${dayPlan.pronthi}P`
                           : '—';
-                    const riceText = formatShortRice(customer.rice_count);
+                    const riceText = formatShortRice(dayPlan.rice);
                     return (
                       <tr
                         key={customer.id}
@@ -2855,11 +2873,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                   ? null
                   : getDishDislikeAlert(customer, printDalName, printSabjiName);
 
-                const hasRoti = typeof customer.roti_count === 'number' && customer.roti_count > 0;
-                const hasPronthi = typeof customer.pronthi_count === 'number' && customer.pronthi_count > 0;
+                const dayPlan = resolveCustomerDayPlan(customer, activeDay, isChickenDay);
+                const hasRoti = dayPlan.roti > 0;
+                const hasPronthi = dayPlan.pronthi > 0;
                 const breadParts: string[] = [];
-                if (hasRoti) breadParts.push(`${customer.roti_count} Roti`);
-                if (hasPronthi) breadParts.push(`${customer.pronthi_count} Pronthi`);
+                if (hasRoti) breadParts.push(`${dayPlan.roti} Roti`);
+                if (hasPronthi) breadParts.push(`${dayPlan.pronthi} Pronthi`);
 
                 const isNonVeg = customer.meal_type?.toLowerCase().includes('non');
 
@@ -2944,7 +2963,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       </div>
                     </div>
 
-                    {!customer.isSkipped && (breadParts.length > 0 || hasRiceToPack(customer.rice_count) || (sidesBadge && !sideText)) && (
+                    {!customer.isSkipped && (breadParts.length > 0 || hasRiceToPack(dayPlan.rice) || (sidesBadge && !sideText)) && (
                       <div className="flex items-center gap-2 flex-wrap text-xs bg-gray-50 border border-gray-200/70 rounded-lg px-2.5 py-1.5 font-medium">
                         {breadParts.length > 0 && (
                           <span className="font-bold text-gray-900">
@@ -2952,11 +2971,11 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                           </span>
                         )}
 
-                        {hasRiceToPack(customer.rice_count) && (
+                        {hasRiceToPack(dayPlan.rice) && (
                           <>
                             {breadParts.length > 0 && <span className="text-gray-300">·</span>}
                             <span className="font-bold text-blue-700">
-                              🍚 {customer.rice_count}
+                              🍚 {dayPlan.rice}
                             </span>
                           </>
                         )}
@@ -3249,16 +3268,15 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                             if (customer.isSkipped) {
                               return <span className="text-gray-300 font-mono">—</span>;
                             }
-                            const hasRoti =
-                              typeof customer.roti_count === 'number' && customer.roti_count > 0;
-                            const hasPronthi =
-                              typeof customer.pronthi_count === 'number' && customer.pronthi_count > 0;
+                            const dayPlan = resolveCustomerDayPlan(customer, activeDay, isChickenDay);
+                            const hasRoti = dayPlan.roti > 0;
+                            const hasPronthi = dayPlan.pronthi > 0;
                             if (!hasRoti && !hasPronthi) {
                               return <span className="text-gray-300 font-mono">—</span>;
                             }
                             const breadParts: string[] = [];
-                            if (hasRoti) breadParts.push(`${customer.roti_count} Roti`);
-                            if (hasPronthi) breadParts.push(`${customer.pronthi_count} Pronthi`);
+                            if (hasRoti) breadParts.push(`${dayPlan.roti} Roti`);
+                            if (hasPronthi) breadParts.push(`${dayPlan.pronthi} Pronthi`);
                             return (
                               <span className={`text-[12px] font-bold font-mono ${customer.isExpiredRenewalPending ? 'text-gray-500' : 'text-[#11142D]'}`}>
                                 {breadParts.join(', ')}
@@ -3268,15 +3286,17 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                         </td>
 
                         <td className="px-3 py-2 font-mono text-blue-700 font-bold uppercase text-[12px] align-top whitespace-nowrap print:py-1 print:px-1.5 print:text-[11px]">
-                          {customer.isSkipped ? (
-                            <span className="text-gray-300 font-mono">—</span>
-                          ) : hasRiceToPack(customer.rice_count) ? (
-                            <span className={customer.isExpiredRenewalPending ? 'opacity-60 text-gray-600' : ''}>
-                              {customer.rice_count}
-                            </span>
-                          ) : (
-                            <span className="text-gray-300 font-mono">—</span>
-                          )}
+                          {(() => {
+                            if (customer.isSkipped) return <span className="text-gray-300 font-mono">—</span>;
+                            const dayPlan = resolveCustomerDayPlan(customer, activeDay, isChickenDay);
+                            return hasRiceToPack(dayPlan.rice) ? (
+                              <span className={customer.isExpiredRenewalPending ? 'opacity-60 text-gray-600' : ''}>
+                                {dayPlan.rice}
+                              </span>
+                            ) : (
+                              <span className="text-gray-300 font-mono">—</span>
+                            );
+                          })()}
                         </td>
 
                         <td className="pl-3 pr-6 py-2 align-top print:py-1 print:px-1.5 print:text-[11px]">

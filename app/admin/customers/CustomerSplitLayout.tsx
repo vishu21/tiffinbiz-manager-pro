@@ -20,6 +20,9 @@ import {
 } from '@/app/utils/customerPickup';
 import { calculateCycleTargetLastDay, resolveDeliveryDayNumbers, calculateStandardPlanPrice } from '@/app/utils/subscriptionCycle';
 import { useToast } from '@/app/components/ToastProvider';
+import { useGlobalSkip } from '@/app/components/GlobalSkipProvider';
+import CustomerMessageModal from '@/app/components/CustomerMessageModal';
+import { MessageSquare } from 'lucide-react';
 
 // Preferred common dish exclusions in priority order, surfaced as a compact quick-toggle
 // strip instead of dumping the entire recipe catalog as a wall of pills. These are only
@@ -199,6 +202,7 @@ type Customer = {
   discount_note?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
+  weekly_schedule_matrix?: string | null;
   disliked_dishes?: string[] | null;
   created_at: string;
 };
@@ -554,6 +558,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
+  // Global skip surface (app/components/GlobalSkipProvider.tsx) — the row action
+  // menu hands a customer straight to the one shared skip modal.
+  const { openSkipModal } = useGlobalSkip();
+
+  // Active customer for on-demand inquiries / messaging modal
+  const [messagingCustomer, setMessagingCustomer] = useState<Customer | null>(null);
 
   // Payment recording modal & ledger states
   const [showLogPaymentModal, setShowLogPaymentModal] = useState(false);
@@ -684,6 +694,18 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     };
   }, []);
 
+  // Re-sync the roster whenever a skip is recorded anywhere (global header, row
+  // menu, or prep drawer) — the shared modal dispatches this event on success.
+  useEffect(() => {
+    const handleSkipSynced = () => {
+      router.refresh();
+      void fetchClosuresAndSkips();
+    };
+    window.addEventListener('tiffin:skip-synced', handleSkipSynced);
+    return () => window.removeEventListener('tiffin:skip-synced', handleSkipSynced);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [lastModifiedCustomerId, setLastModifiedCustomerId] = useState<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [newlyAddedCustomers, setNewlyAddedCustomers] = useState<Customer[]>([]);
@@ -749,6 +771,66 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [usedCredits, setUsedCredits] = useState<number>(0);
   const [isRotiCountCustom, setIsRotiCountCustom] = useState(false);
   const [riceCount, setRiceCount] = useState('');
+
+  // ── 100% Granular Day-by-Day Schedule Matrix State (Mon to Fri) ──
+  const MATRIX_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+  type DayMealPlan = {
+    roti: number;
+    pronthi: number;
+    rice: string;
+    dal: number;
+    sabji: number;
+    chicken: number;
+    gravy: number;
+    salad: number;
+    dessert: number;
+  };
+
+  const DEFAULT_MATRIX_DAY_PLAN: DayMealPlan = {
+    roti: 6,
+    pronthi: 0,
+    rice: 'None',
+    dal: 1,
+    sabji: 1,
+    chicken: 0,
+    gravy: 0,
+    salad: 0,
+    dessert: 0,
+  };
+
+  const [isCustomWeekly, setIsCustomWeekly] = useState(false);
+  const [activeMatrixDay, setActiveMatrixDay] = useState('Monday');
+  const [weeklyMatrix, setWeeklyMatrix] = useState<Record<string, DayMealPlan>>(() => {
+    const init: Record<string, DayMealPlan> = {};
+    MATRIX_DAYS.forEach(d => {
+      init[d] = { ...DEFAULT_MATRIX_DAY_PLAN };
+    });
+    return init;
+  });
+
+  const updateMatrixDayField = (day: string, field: keyof DayMealPlan, val: any) => {
+    setWeeklyMatrix(prev => ({
+      ...prev,
+      [day]: {
+        ...(prev[day] || DEFAULT_MATRIX_DAY_PLAN),
+        [field]: val,
+      },
+    }));
+  };
+
+  const copyMatrixDayToAll = () => {
+    const current = weeklyMatrix[activeMatrixDay] || DEFAULT_MATRIX_DAY_PLAN;
+    setWeeklyMatrix(() => {
+      const next: Record<string, DayMealPlan> = {};
+      MATRIX_DAYS.forEach(d => {
+        next[d] = { ...current };
+      });
+      return next;
+    });
+    showToast(`Copied ${activeMatrixDay}'s configuration to all days`);
+  };
+
   const ALL_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
   const [selectedDays, setSelectedDays] = useState<string[]>(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
 
@@ -1774,6 +1856,18 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setRiceRg(0);
     setRiceLg(0);
     setRiceXl(0);
+
+    // Reset Day-by-Day Matrix (Mon to Fri)
+    setIsCustomWeekly(false);
+    setActiveMatrixDay('Monday');
+    setWeeklyMatrix(() => {
+      const init: Record<string, DayMealPlan> = {};
+      MATRIX_DAYS.forEach(d => {
+        init[d] = { ...DEFAULT_MATRIX_DAY_PLAN };
+      });
+      return init;
+    });
+
     setDalCount(0);
     setSabjiCount(0);
     setGravyCount(0);
@@ -1921,6 +2015,39 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setRiceXl(riceCounters.xl);
 
     setRiceCount(formatRiceCellText(customer.rice_count));
+
+    // Restore Day-by-Day Weekly Matrix if present
+    const rawMatrix = (customer as any).weekly_schedule_matrix;
+    if (rawMatrix && String(rawMatrix).trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(rawMatrix);
+        setIsCustomWeekly(Boolean(parsed.is_custom_schedule));
+        if (parsed.days && typeof parsed.days === 'object') {
+          setWeeklyMatrix(parsed.days);
+        }
+      } catch {
+        setIsCustomWeekly(false);
+      }
+    } else {
+      setIsCustomWeekly(false);
+      setWeeklyMatrix(() => {
+        const init: Record<string, DayMealPlan> = {};
+        MATRIX_DAYS.forEach(d => {
+          init[d] = {
+            roti: customer.roti_count ?? 6,
+            pronthi: customer.pronthi_count ?? 0,
+            rice: customer.rice_count || 'None',
+            dal: 1,
+            sabji: 1,
+            chicken: 0,
+            gravy: 0,
+            salad: 0,
+            dessert: 0,
+          };
+        });
+        return init;
+      });
+    }
     const restoredDays = normalizeScheduleDays(parseScheduleDays(customer.delivery_schedule));
     const scheduleDaysForEdit = restoredDays.length > 0 ? restoredDays : [...WEEKDAY_DELIVERY_DAYS];
     setSelectedDays(scheduleDaysForEdit);
@@ -2156,6 +2283,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       deliveryAddress.trim() ||
       (allDaysArePickup ? 'Kitchen Pickup' : '');
 
+    const serializedMatrix = isCustomWeekly
+      ? JSON.stringify({
+          is_custom_schedule: true,
+          days: weeklyMatrix,
+        })
+      : null;
+
     const payload = {
       full_name: fullName.trim(),
       phone_number: formatContactValue(contactChannel, phoneNumber) || null,
@@ -2173,6 +2307,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       roti_count: rotiCount === '' ? null : Number(rotiCount),
       pronthi_count: pronthiCount === '' ? null : Number(pronthiCount),
       rice_count: builtRice,
+      weekly_schedule_matrix: serializedMatrix,
       delivery_schedule: serializeSchedule(selectedDays) || DEFAULT_DELIVERY_SCHEDULE,
       delivery_instructions: finalInstructions,
       is_pickup: finalPickupDays.length > 0,
@@ -3419,6 +3554,34 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
                                     <div className="border-t border-gray-100 my-1" />
 
+                                    {customer.phone_number && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setActiveMenuId(null);
+                                          setMessagingCustomer(customer);
+                                        }}
+                                        className="w-full px-3.5 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      >
+                                        <MessageSquare className="w-4 h-4 text-emerald-600 shrink-0" />
+                                        <span className="whitespace-nowrap">Send Message / Inquiry</span>
+                                      </button>
+                                    )}
+
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveMenuId(null);
+                                        openSkipModal({ id: customer.id, name: customer.full_name });
+                                      }}
+                                      className="w-full px-3.5 py-2 text-xs font-medium text-amber-800 hover:bg-amber-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                    >
+                                      <span className="text-amber-600">⚡</span>
+                                      <span className="whitespace-nowrap">Log Skip / Vacation</span>
+                                    </button>
+
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -3611,9 +3774,22 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       </div>
 
                       <div className="min-w-0">
-                        <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase mb-1">
-                          Contact Method <span className="text-gray-400 font-normal normal-case">(Optional)</span>
-                        </label>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-[11px] font-semibold text-[#A2A4B0] uppercase">
+                            Contact Method <span className="text-gray-400 font-normal normal-case">(Optional)</span>
+                          </label>
+                          {!isAddingNew && selectedCustomer && phoneNumber && (
+                            <button
+                              type="button"
+                              onClick={() => setMessagingCustomer(selectedCustomer)}
+                              className="text-[10.5px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Send quick status, remaining meals, or end date update"
+                            >
+                              <MessageSquare className="w-3 h-3 text-emerald-600" />
+                              <span>Quick Message</span>
+                            </button>
+                          )}
+                        </div>
                         <div className="flex items-stretch">
                           <select
                             value={contactChannel}
@@ -4228,10 +4404,189 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         </div>
                       </div>
 
+                      {/* ── 100% Day-by-Day Custom Schedule Matrix Toggle ── */}
+                      <div className="flex items-center justify-between p-3.5 bg-indigo-50/70 border border-indigo-200 rounded-xl mb-4">
+                        <div>
+                          <span className="text-xs font-black text-indigo-950 block">
+                            Custom Day-by-Day Weekly Schedule
+                          </span>
+                          <span className="text-[11px] text-indigo-700 font-medium">
+                            Set different rotis, rice, curries, and sides for each day of the week.
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={isCustomWeekly}
+                          onClick={() => setIsCustomWeekly(prev => !prev)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+                            isCustomWeekly ? 'bg-[#5D5FEF]' : 'bg-gray-300'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                              isCustomWeekly ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      {isCustomWeekly && (
+                        <div className="border border-indigo-200 bg-slate-50/90 rounded-2xl p-4 mb-4 space-y-3.5">
+                          {/* Day Pills Bar */}
+                          <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-gray-200">
+                            <div className="flex items-center gap-1 overflow-x-auto">
+                              {MATRIX_DAYS.map(day => (
+                                <button
+                                  key={day}
+                                  type="button"
+                                  onClick={() => setActiveMatrixDay(day)}
+                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                                    activeMatrixDay === day
+                                      ? 'bg-[#5D5FEF] text-white shadow-2xs'
+                                      : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
+                                  }`}
+                                >
+                                  {day.slice(0, 3)}
+                                </button>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={copyMatrixDayToAll}
+                              className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 bg-white border border-indigo-200 px-2.5 py-1 rounded-lg cursor-pointer transition-colors"
+                            >
+                              Copy {activeMatrixDay.slice(0, 3)} to All Days
+                            </button>
+                          </div>
+
+                          {/* Active Day Matrix Controls */}
+                          {(() => {
+                            const cur = weeklyMatrix[activeMatrixDay] || DEFAULT_MATRIX_DAY_PLAN;
+                            return (
+                              <div className="space-y-3">
+                                <span className="text-[11px] font-black uppercase tracking-wider text-gray-800 block">
+                                  {activeMatrixDay} Meal Allocation
+                                </span>
+
+                                {/* Breads & Rice Grid */}
+                                <div className="grid grid-cols-3 gap-2.5 bg-white p-3 rounded-xl border border-gray-200">
+                                  <div>
+                                    <span className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Roti</span>
+                                    <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden h-8">
+                                      <button
+                                        type="button"
+                                        onClick={() => updateMatrixDayField(activeMatrixDay, 'roti', Math.max(0, cur.roti - 1))}
+                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold"
+                                      >−</button>
+                                      <span className="flex-1 text-center font-bold text-xs text-gray-900">{cur.roti}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => updateMatrixDayField(activeMatrixDay, 'roti', cur.roti + 1)}
+                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold"
+                                      >+</button>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <span className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Pronthi</span>
+                                    <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden h-8">
+                                      <button
+                                        type="button"
+                                        onClick={() => updateMatrixDayField(activeMatrixDay, 'pronthi', Math.max(0, cur.pronthi - 1))}
+                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold"
+                                      >−</button>
+                                      <span className="flex-1 text-center font-bold text-xs text-gray-900">{cur.pronthi}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => updateMatrixDayField(activeMatrixDay, 'pronthi', cur.pronthi + 1)}
+                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold"
+                                      >+</button>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <span className="block text-[10px] font-bold text-gray-400 uppercase mb-1">Rice</span>
+                                    <select
+                                      value={cur.rice}
+                                      onChange={e => updateMatrixDayField(activeMatrixDay, 'rice', e.target.value)}
+                                      className="w-full h-8 px-2 border border-gray-200 rounded-lg text-xs font-bold bg-white text-gray-800 outline-none"
+                                    >
+                                      <option value="None">None</option>
+                                      <option value="1 rg">1 RG</option>
+                                      <option value="1 lg">1 LG</option>
+                                      <option value="2 rg">2 RG</option>
+                                      <option value="2 lg">2 LG</option>
+                                      <option value="1 xl">1 XL</option>
+                                    </select>
+                                  </div>
+                                </div>
+
+                                {/* Curries: Dal, Sabji, Chicken, Gravy */}
+                                <div className="grid grid-cols-4 gap-2 bg-white p-3 rounded-xl border border-gray-200">
+                                  {[
+                                    { key: 'dal' as const, label: 'Dal', color: 'text-amber-800' },
+                                    { key: 'sabji' as const, label: 'Sabji', color: 'text-emerald-800' },
+                                    { key: 'chicken' as const, label: 'Chicken', color: 'text-rose-800' },
+                                    { key: 'gravy' as const, label: 'Gravy', color: 'text-orange-800' },
+                                  ].map(item => (
+                                    <div key={item.key}>
+                                      <span className={`block text-[10px] font-black uppercase mb-1 ${item.color}`}>
+                                        {item.label}
+                                      </span>
+                                      <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden h-8">
+                                        <button
+                                          type="button"
+                                          onClick={() => updateMatrixDayField(activeMatrixDay, item.key, Math.max(0, cur[item.key] - 1))}
+                                          className="w-6 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs"
+                                        >−</button>
+                                        <span className="flex-1 text-center font-bold text-xs text-gray-900">{cur[item.key]}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => updateMatrixDayField(activeMatrixDay, item.key, cur[item.key] + 1)}
+                                          className="w-6 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs"
+                                        >+</button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                {/* Sides: Salad & Dessert */}
+                                <div className="grid grid-cols-2 gap-2.5 bg-white p-2.5 rounded-xl border border-gray-200">
+                                  {[
+                                    { key: 'salad' as const, label: 'Salad' },
+                                    { key: 'dessert' as const, label: 'Dessert' },
+                                  ].map(item => (
+                                    <div key={item.key} className="flex items-center justify-between">
+                                      <span className="text-xs font-bold text-gray-700">{item.label}:</span>
+                                      <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden h-7 w-24">
+                                        <button
+                                          type="button"
+                                          onClick={() => updateMatrixDayField(activeMatrixDay, item.key, Math.max(0, cur[item.key] - 1))}
+                                          className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs"
+                                        >−</button>
+                                        <span className="flex-1 text-center font-bold text-xs text-gray-900">{cur[item.key]}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => updateMatrixDayField(activeMatrixDay, item.key, cur[item.key] + 1)}
+                                          className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs"
+                                        >+</button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="grid grid-cols-2 gap-4">
                           <div>
-                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">Roti</label>
+                            <label className="block text-[11px] font-semibold text-gray-500 uppercase mb-1.5">
+                              {isCustomWeekly ? 'Base Default Roti' : 'Roti'}
+                            </label>
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
@@ -6045,6 +6400,28 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             </div>
           </div>
         </>
+      )}
+
+      {/* ── ON-DEMAND CUSTOMER INQUIRY / MESSAGING MODAL ── */}
+      {messagingCustomer && (
+        <CustomerMessageModal
+          open={Boolean(messagingCustomer)}
+          onClose={() => setMessagingCustomer(null)}
+          customer={{
+            id: messagingCustomer.id,
+            full_name: messagingCustomer.full_name,
+            phone_number: messagingCustomer.phone_number,
+            delivery_address: messagingCustomer.delivery_address,
+            remaining_meals: Math.max(
+              0,
+              (messagingCustomer.total_tiffin_credits ?? 20) - (messagingCustomer.used_credits ?? 0)
+            ),
+            cycle_end_date: messagingCustomer.cycle_end_date
+              ? messagingCustomer.cycle_end_date.slice(0, 10)
+              : null,
+            total_credits: messagingCustomer.total_tiffin_credits ?? 20,
+          }}
+        />
       )}
     </div>
   );

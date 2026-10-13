@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import PrepDatePicker from '@/app/components/PrepDatePicker';
 import { getDeliveryDateData, saveRouteAndPropagateFuture } from './actions';
 import { formatDeliveryMessage } from '@/app/utils/messageTemplate';
+import { resolveCustomerDayPlan } from '@/app/prep/prepCalculations';
 import {
   Package,
   BookOpen,
@@ -49,6 +50,7 @@ type CustomerRow = {
   delivery_instructions?: string | null;
   dietary_notes?: string | null;
   disliked_dishes?: string[] | null;
+  weekly_schedule_matrix?: string | null;
   meal_type?: string | null;
   portion_size?: string | null;
   roti_count?: number | null;
@@ -1270,6 +1272,9 @@ export default function DeliveriesClient({
                             remaining <= 1 ||
                             (c.cycle_end_date && c.cycle_end_date.slice(0, 10) === selectedDateKey);
 
+                          const isChickenDay = activeDay === 'Monday' || activeDay === 'Wednesday' || activeDay === 'Friday';
+                          const dayPlan = resolveCustomerDayPlan(c, activeDay, isChickenDay);
+
                           const isFriday = activeDay === 'Friday';
                           const isDoublePackFriday =
                             isFriday &&
@@ -1289,6 +1294,9 @@ export default function DeliveriesClient({
                             customer_name: c.full_name,
                             address: formatStreetOnlyAddress(c.delivery_address),
                             remaining_meals: remaining,
+                            cycle_end_date: c.cycle_end_date?.slice(0, 10),
+                            total_credits: total,
+                            used_credits: used,
                           });
 
                           const cleanPhone = cleanPhoneNumberForWhatsApp(c.phone_number);
@@ -1299,65 +1307,82 @@ export default function DeliveriesClient({
                           const isWhatsAppPreferred = !isSmsPreferred && !isMessenger && Boolean(cleanPhone);
 
                           return (
-                            <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center gap-2">
-                              <div className="flex-1 flex items-center gap-1.5 min-w-0">
-                                {isWhatsAppPreferred && (
-                                  <a
-                                    href={`whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`}
-                                    onClick={() => handleMarkDelivered(c.id)}
-                                    title="Send WhatsApp & Complete"
-                                    className="flex-1 h-10 bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da851] text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
-                                  >
-                                    <MessageSquare className="w-4 h-4 shrink-0" />
-                                    <span className="truncate">WhatsApp &amp; Complete</span>
-                                  </a>
-                                )}
-
-                                {isSmsPreferred && cleanPhone && (
-                                  <a
-                                    href={`sms:${cleanPhone}?&body=${encodeURIComponent(messageText)}`}
-                                    onClick={() => handleMarkDelivered(c.id)}
-                                    title="Send SMS & Complete"
-                                    className="flex-1 h-10 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
-                                  >
-                                    <Phone className="w-4 h-4 shrink-0" />
-                                    <span className="truncate">SMS &amp; Complete</span>
-                                  </a>
-                                )}
-
-                                {(!cleanPhone || isMessenger) && (
-                                  <button
-                                    type="button"
-                                    disabled={busyId === c.id}
-                                    onClick={() => handleMarkDelivered(c.id)}
-                                    className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-[13px] rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer min-w-0"
-                                  >
-                                    <Check className="w-4 h-4 stroke-[3] shrink-0" />
-                                    <span className="truncate">Mark Delivered</span>
-                                  </button>
-                                )}
-
-                                {cleanPhone && (
-                                  <button
-                                    type="button"
-                                    disabled={busyId === c.id}
-                                    onClick={() => handleMarkDelivered(c.id)}
-                                    title="Mark delivered silently (without sending message)"
-                                    className="h-10 w-10 flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-colors cursor-pointer shrink-0"
-                                  >
-                                    <Check className="w-4 h-4 stroke-[2.5]" />
-                                  </button>
+                            <div className="mt-2.5 pt-2 border-t border-gray-100 space-y-2">
+                              {/* Day-specific pack details */}
+                              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
+                                <span>📦 Pack:</span>
+                                <span className="font-bold text-gray-800">
+                                  {dayPlan.roti > 0 ? `${dayPlan.roti} Roti` : 'No Roti'}
+                                  {dayPlan.pronthi > 0 ? ` + ${dayPlan.pronthi} Pronthi` : ''}
+                                </span>
+                                {dayPlan.rice && dayPlan.rice !== 'None' && dayPlan.rice !== '—' && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="font-bold text-blue-700">Rice: {dayPlan.rice}</span>
+                                  </>
                                 )}
                               </div>
 
-                              <button
-                                type="button"
-                                disabled={busyId === c.id}
-                                onClick={() => handleLogSkip(c.id)}
-                                className="h-10 px-3.5 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0"
-                              >
-                                Skip
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <div className="flex-1 flex items-center gap-1.5 min-w-0">
+                                  {isWhatsAppPreferred && (
+                                    <a
+                                      href={`whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`}
+                                      onClick={() => handleMarkDelivered(c.id)}
+                                      title="Send WhatsApp & Complete"
+                                      className="flex-1 h-10 bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da851] text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
+                                    >
+                                      <MessageSquare className="w-4 h-4 shrink-0" />
+                                      <span className="truncate">WhatsApp &amp; Complete</span>
+                                    </a>
+                                  )}
+
+                                  {isSmsPreferred && cleanPhone && (
+                                    <a
+                                      href={`sms:${cleanPhone}?&body=${encodeURIComponent(messageText)}`}
+                                      onClick={() => handleMarkDelivered(c.id)}
+                                      title="Send SMS & Complete"
+                                      className="flex-1 h-10 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
+                                    >
+                                      <Phone className="w-4 h-4 shrink-0" />
+                                      <span className="truncate">SMS &amp; Complete</span>
+                                    </a>
+                                  )}
+
+                                  {(!cleanPhone || isMessenger) && (
+                                    <button
+                                      type="button"
+                                      disabled={busyId === c.id}
+                                      onClick={() => handleMarkDelivered(c.id)}
+                                      className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-[13px] rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer min-w-0"
+                                    >
+                                      <Check className="w-4 h-4 stroke-[3] shrink-0" />
+                                      <span className="truncate">Mark Delivered</span>
+                                    </button>
+                                  )}
+
+                                  {cleanPhone && (
+                                    <button
+                                      type="button"
+                                      disabled={busyId === c.id}
+                                      onClick={() => handleMarkDelivered(c.id)}
+                                      title="Mark delivered silently (without sending message)"
+                                      className="h-10 w-10 flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-colors cursor-pointer shrink-0"
+                                    >
+                                      <Check className="w-4 h-4 stroke-[2.5]" />
+                                    </button>
+                                  )}
+                                </div>
+
+                                <button
+                                  type="button"
+                                  disabled={busyId === c.id}
+                                  onClick={() => handleLogSkip(c.id)}
+                                  className="h-10 px-3.5 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0"
+                                >
+                                  Skip
+                                </button>
+                              </div>
                             </div>
                           );
                         })()}

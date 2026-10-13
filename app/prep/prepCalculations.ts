@@ -15,11 +15,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Container volume reference ──────────────────────────────────────────────
-// Physical container sizes used by the metric cards:
-//   LG container = 12 oz (Full LG AND Half LG both pack the 12 oz container)
-//   RG container = 8 oz  (Full RG AND Half RG — incl. legacy SM/SMALL — pack the 8 oz)
-// There is intentionally NO "SM" container: legacy SM customers are re-bucketed
-// into the RG 8 oz half tier. The PACK columns only ever show LG (12 oz) / RG (8 oz).
 export const CONTAINER_OZ = { LG: 12, RG: 8 } as const;
 export type ContainerSize = keyof typeof CONTAINER_OZ;
 
@@ -28,25 +23,21 @@ const PORTION_LG = 'LG';
 const PORTION_HALF_RG = 'Half RG';
 const PORTION_HALF_LG = 'Half LG';
 
-// Canonical portion-token normalization (mirrors the prep manifest / customer
-// editor vocabulary: "Large" == "LG", "SMALL" == "Half RG", ...).
 const normalizePortionToken = (value: string | null | undefined): string => {
   const v = (value || '').trim().toUpperCase().split(' ').filter(Boolean).join(' ');
   if (v.startsWith('HALF')) {
     return v.includes('LG') || v.includes('LARGE') ? PORTION_HALF_LG : PORTION_HALF_RG;
   }
   if (v === 'LG' || v === 'LARGE') return PORTION_LG;
-  if (v === 'SM' || v === 'SMALL') return PORTION_HALF_RG; // legacy 1x 8oz
-  return PORTION_RG; // RG / REGULAR / empty -> full regular
+  if (v === 'SM' || v === 'SMALL') return PORTION_HALF_RG;
+  return PORTION_RG;
 };
 
-// Portion tier → container-size bucket for packing/volume math.
 const getPortionSize = (portionSize: string | null | undefined): ContainerSize => {
   const p = normalizePortionToken(portionSize);
   return p === PORTION_LG || p === PORTION_HALF_LG ? 'LG' : 'RG';
 };
 
-// Half tiers (Half LG / Half RG — incl. legacy SM/SMALL) pack exactly ONE container/day.
 const isHalfPortion = (portionSize: string | null | undefined): boolean => {
   const p = normalizePortionToken(portionSize);
   return p === PORTION_HALF_LG || p === PORTION_HALF_RG;
@@ -54,14 +45,22 @@ const isHalfPortion = (portionSize: string | null | undefined): boolean => {
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-// Curry-side count vocabulary shared by delivery_instructions text and the
-// structured curry_config profiles (M/W/F + T/Th day groups).
 export type CurryCounts = { dal: number; sabji: number; chicken: number; gravy: number };
-
 export type RiceCounts = { rg: number; lg: number; xl: number };
 
-// The complete, fully-dynamic metric set the dashboard renders. Every pack field
-// is the count of PHYSICAL containers of that item/size (never customers).
+// Complete day meal specification
+export type DayMealPlan = {
+  roti: number;
+  pronthi: number;
+  rice: string;
+  dal: number;
+  sabji: number;
+  chicken: number;
+  gravy: number;
+  salad: number;
+  dessert: number;
+};
+
 export type PrepMetrics = {
   totalMeals: number;
   totalRoti: number;
@@ -69,7 +68,6 @@ export type PrepMetrics = {
   rice: RiceCounts;
   totalRiceContainers: number;
 
-  // Veg-station items — itemized PACK (LG 12 oz / RG 8 oz) + cooking volume (oz)
   sabjiPackLG: number;
   sabjiPackRG: number;
   sabjiOz: number;
@@ -77,58 +75,37 @@ export type PrepMetrics = {
   dalPackRG: number;
   dalOz: number;
 
-  // Chicken-station chicken — PACK, volume, and leg count (LG = 2 legs/container).
   chickenPackLG: number;
   chickenPackRG: number;
   chickenOz: number;
   chickenLegs: number;
 
-  // Gravy variants are also cooked/packed at the Chicken station but never carry legs.
   gravyPackLG: number;
   gravyPackRG: number;
   gravyOz: number;
 
-  // Side add-on staging counts — the total number of Salad containers and Dessert
-  // cups to pull. Derived dynamically from each active customer's Salad/Dessert
-  // markers (case-insensitive) across notes, daily overrides, and meal configs.
   saladCount: number;
   dessertCount: number;
 
-  // Dish-exclusion substitutions — how many active customers had a disliked dish
-  // match today's menu and consequently received a swapped container:
-  //   dishSwapToDal  → disliked today's Sabji → their Sabji container became Dal
-  //   dishSwapToSabji→ disliked today's Dal   → their Dal container became Sabji
-  //   dishSwapUnresolved → disliked BOTH of today's veg dishes (kitchen override)
   dishSwapToDal: number;
   dishSwapToSabji: number;
   dishSwapUnresolved: number;
 };
 
-// Minimal row shape the engine needs. The prep page passes its active customers;
-// because every field below is optional, any superset customer row is accepted.
 export type PrepCustomer = {
   meal_type?: string | null;
   portion_size?: string | null;
   delivery_instructions?: string | null;
   curry_config?: string | null;
+  weekly_schedule_matrix?: string | null; // Universal day-by-day matrix (Mon through Sat)
   roti_count?: number | null;
   pronthi_count?: number | null;
   rice_count?: string | null;
-  // Free-text note columns searched for Salad/Dessert markers alongside the meal
-  // config above (daily overrides are already merged into the row before this
-  // engine runs, so a "Today Only" note/override is picked up automatically).
   dietary_notes?: string | null;
   notes?: string | null;
   side_notes?: string | null;
   custom_instructions?: string | null;
-  // Single-day skip: the customer has an active date-scoped override with
-  // is_skipped === true for the target date. A skipped customer contributes NOTHING to
-  // any cooking total, the itemized PACK counts, or the active-delivery count — the
-  // manifest still renders the row (muted) for the packer, but the kitchen never preps it.
   isSkipped?: boolean;
-  // Master-profile dish dislikes/exclusions (customers.disliked_dishes). Matched
-  // case-insensitively against TODAY'S selected Dal/Sabji names to auto-swap the
-  // corresponding container to the other veg side (see resolveDishExclusion).
   disliked_dishes?: string[] | null;
 };
 
@@ -148,23 +125,10 @@ const norm = (p: Partial<CurryCounts> | null | undefined): CurryCounts => ({
 });
 
 // ── Dish-exclusion resolution (disliked_dishes → automatic veg-side swap) ─────
-//
-// Operators record the dishes a customer refuses on the customer profile
-// (customers.disliked_dishes). When one of them matches TODAY'S selected Dal or
-// Sabji, the engine reroutes that customer's container for the disliked item to
-// the other veg side so they still receive a full meal of a dish they do eat:
-//   • dislikes today's Sabji → their Sabji container becomes Dal   ("2x Dal")
-//   • dislikes today's Dal   → their Dal container becomes Sabji   ("2x Sabji")
-//   • dislikes BOTH sides    → no automatic swap; the kitchen must override.
-// Matching is case-insensitive and whitespace-normalized ("Aloo  Baingan" matches
-// "aloo baingan"): a customer's structured disliked_dishes list is checked for a
-// full OR substring match, and the free-text note / instruction columns are scanned
-// for "no <dish>" / "dislikes <dish>" phrasing (see checkDishDislike).
+
 export const normalizeDishName = (value: string | null | undefined): string =>
   String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
-// Customer columns that may carry a free-text dish dislike ("no Aloo Baingan",
-// "dislikes Karela") which the structured disliked_dishes list does not capture.
 type DishDislikeCustomer = Pick<
   PrepCustomer,
   'portion_size' | 'disliked_dishes' | 'dietary_notes' | 'delivery_instructions' | 'notes' | 'side_notes' | 'custom_instructions'
@@ -178,25 +142,11 @@ const DISLIKE_TEXT_COLUMNS: (keyof DishDislikeCustomer)[] = [
   'custom_instructions',
 ];
 
-// Escapes a dish name for use inside a RegExp and relaxes internal whitespace so a
-// note reading "no  Aloo  Baingan" still matches today's "Aloo Baingan".
 const dishNamePattern = (dishName: string | null | undefined): string =>
   normalizeDishName(dishName)
     .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     .replace(/\s+/g, '\\s+');
 
-/**
- * Single source of truth for "does this customer dislike <dish>?". Pure.
- *
- *  1. Structured list (customers.disliked_dishes): case-insensitive, whitespace-
- *     normalized FULL OR SUBSTRING match — a stored dislike of "Aloo Baingan" also
- *     matches today's "Aloo Baingan Curry" (and vice versa).
- *  2. Free-text fallback: scans dietary_notes / delivery_instructions / notes (and
- *     the other note columns) for "no <dish>" / "dislikes <dish>" phrasing.
- *
- * Consumed by resolveDishExclusion() to reroute the veg-side container to the other
- * side; reused by the packing manifest badges.
- */
 export function checkDishDislike(
   customer: DishDislikeCustomer,
   dishName: string | null | undefined
@@ -204,13 +154,11 @@ export function checkDishDislike(
   const dishKey = normalizeDishName(dishName);
   if (dishKey === '') return false;
 
-  // 1. Structured disliked_dishes list — full or substring (either direction) match.
   const disliked = (customer.disliked_dishes || []).map(normalizeDishName).filter(Boolean);
   if (disliked.some(entry => entry === dishKey || entry.includes(dishKey) || dishKey.includes(entry))) {
     return true;
   }
 
-  // 2. Free-text fallback across the note / instruction columns.
   const text = DISLIKE_TEXT_COLUMNS
     .map(col => String(customer[col] ?? '').trim())
     .filter(t => t !== '' && t !== 'None' && t !== '—')
@@ -229,18 +177,10 @@ export function checkDishDislike(
 export type DishExclusionMatch = {
   dislikesDal: boolean;
   dislikesSabji: boolean;
-  // Which veg side the customer's container was routed to (or why it couldn't be).
   swapTo: 'dal' | 'sabji' | 'none' | 'unresolved';
-  // Ready-to-render manifest alert. Full plans fold both containers into the
-  // surviving side ("⚡ No Aloo Baingan → 2x Dal"); Half plans pack a single
-  // container ("⚡ No Aloo Baingan → 1 Dal").
   badge: string | null;
 };
 
-/**
- * Resolves a customer's dish exclusions against today's menu. Pure — used both by
- * the prep calculator (to reroute containers) and the packing manifest (badge).
- */
 export function resolveDishExclusion(
   customer: DishDislikeCustomer,
   todayDalName?: string | null,
@@ -251,10 +191,6 @@ export function resolveDishExclusion(
 
   const dislikesDal = dalKey !== '' && checkDishDislike(customer, todayDalName);
   const dislikesSabji = sabjiKey !== '' && checkDishDislike(customer, todaySabjiName);
-
-  // Half tiers (Half LG / Half RG) pack a SINGLE LG/8 oz container, so the swapped
-  // side is a lone "1" — not the "2x" a full 1 Dal + 1 Sabji meal folds into. The
-  // manifest badge must therefore read "→ 1 Dal" / "→ 1 Sabji" on Half plans.
   const isHalf = isHalfPortion(customer.portion_size);
 
   if (dislikesDal && dislikesSabji) {
@@ -284,13 +220,6 @@ export function resolveDishExclusion(
   return { dislikesDal: false, dislikesSabji: false, swapTo: 'none', badge: null };
 }
 
-/**
- * Convenience wrapper around resolveDishExclusion() for the packing manifest
- * (desktop rows, mobile cards AND the print-only roster). Returns the ready-to-render
- * alert string — e.g. "⚡ No Aloo Baingan → 2x Dal" on a Full plan or
- * "⚡ No Aloo Baingan → 1 Dal" on a Half plan — when one of the customer's excluded
- * dishes matches today's selected Dal/Sabji, otherwise null.
- */
 export function getDishDislikeAlert(
   customer: DishDislikeCustomer,
   todayDalName?: string | null,
@@ -299,8 +228,6 @@ export function getDishDislikeAlert(
   return resolveDishExclusion(customer, todayDalName, todaySabjiName).badge;
 }
 
-// Parses a structured `curry_config` JSON value ({ mwf, tth, extras }). Returns
-// null for legacy plain-text configs and malformed values (treated as "no profile").
 const parseStructuredCurryConfig = (raw: string | null | undefined): StructuredCurryConfig | null => {
   const trimmed = String(raw || '').trim();
   if (!trimmed.startsWith('{')) return null;
@@ -312,13 +239,10 @@ const parseStructuredCurryConfig = (raw: string | null | undefined): StructuredC
     if (!parsed || !parsed.mwf || !parsed.tth) return null;
     return { mwf: norm(parsed.mwf), tth: norm(parsed.tth) };
   } catch {
-    return null; // ignore malformed JSON
+    return null;
   }
 };
 
-// Auto-applied defaults when a row carries no instructions/profile at all.
-// Mirrors the customer editor / quick-edit defaults: full plans → two containers,
-// Half plans → one container.
 const defaultCurryCounts = (isNonVeg: boolean, portion: string): CurryCounts => {
   if (isHalfPortion(portion)) {
     return isNonVeg
@@ -330,8 +254,6 @@ const defaultCurryCounts = (isNonVeg: boolean, portion: string): CurryCounts => 
     : { dal: 1, sabji: 1, chicken: 0, gravy: 0 };
 };
 
-// Counts one ingredient out of instruction text. Same vocabulary as the rest of
-// the app: "2x Dal", "2 Dal", "both Dal", or a bare mention (1).
 const extractCurryCount = (text: string, keyword: string): number => {
   const xMatch = text.match(new RegExp(`(\\d+)\\s*x\\s*${keyword}\\b`, 'i'));
   if (xMatch) return parseInt(xMatch[1], 10);
@@ -341,7 +263,6 @@ const extractCurryCount = (text: string, keyword: string): number => {
   return text.includes(keyword) ? 1 : 0;
 };
 
-// Parses the plain daily count text stored in delivery_instructions.
 const parseCurryCounts = (instructions: string | null | undefined): CurryCounts => {
   const text = String(instructions || '').trim().toLowerCase();
   if (!text || text === 'none' || text === '—') return { ...EMPTY_CURRY };
@@ -354,15 +275,7 @@ const parseCurryCounts = (instructions: string | null | undefined): CurryCounts 
 };
 
 // ── Side add-on (Salad / Dessert) detection ──────────────────────────────────
-// Salad and Dessert are optional per-customer add-ons that surface as text markers
-// on any of the surfaces the manifest can see:
-//   · the plain `delivery_instructions` summary ("1 Dal + 1 Sabji + Salad + Dessert (weekly)")
-//   · the structured `curry_config` JSON `extras` array (["2x Salad", "Dessert"])
-//   · free-text note / daily-override columns ("dietary_notes", "notes", ...)
-// Because the structured profile and the plain instruction text MIRROR the same
-// add-on (both editors write them together), every surface is scanned as ONE
-// haystack and the LARGEST explicit count wins ("2x Salad" beats a bare "+ Salad").
-// Mirrored fields therefore never double-count a single customer.
+
 const sideAddonMarkerText = (customer: PrepCustomer): string =>
   [
     customer.curry_config,
@@ -379,9 +292,6 @@ const sideAddonMarkerText = (customer: PrepCustomer): string =>
     .map(v => v.trim())
     .join(' ');
 
-// Reads one add-on ("salad" / "dessert") out of the combined marker haystack,
-// case-insensitively: "2x Salad" → 2, "2 Salad" → 2, bare "Salad" / "+ Salad" → 1,
-// and no mention → 0.
 const extractSideAddonCount = (text: string, keyword: string): number => {
   const haystack = ` ${text.toLowerCase()} `;
   if (!haystack.includes(keyword)) return 0;
@@ -396,17 +306,14 @@ const extractSideAddonCount = (text: string, keyword: string): number => {
   return max > 0 ? max : 1;
 };
 
-// The customer's Salad container / Dessert cup quantities for the selected day.
 export const resolveSideAddons = (customer: PrepCustomer): { salad: number; dessert: number } => {
   const portion = normalizePortionToken(customer.portion_size);
   const isFullLg = portion === PORTION_LG;
   const isHalf = isHalfPortion(customer.portion_size);
 
-  // Standard Plan Baseline: Full Large (LG) includes 1 Salad & 1 Dessert by default
   let salad = isFullLg ? 1 : 0;
   let dessert = isFullLg ? 1 : 0;
 
-  // 1. Check structured curry_config JSON extras first (takes highest precedence)
   if (customer.curry_config && customer.curry_config.startsWith('{')) {
     try {
       const parsed = JSON.parse(customer.curry_config);
@@ -429,7 +336,6 @@ export const resolveSideAddons = (customer: PrepCustomer): { salad: number; dess
     }
   }
 
-  // 2. Scan text markers (notes, overrides, custom instructions) for explicit additions or removals
   const text = sideAddonMarkerText(customer);
   const lowerText = ` ${text.toLowerCase()} `;
 
@@ -451,7 +357,6 @@ export const resolveSideAddons = (customer: PrepCustomer): { salad: number; dess
     }
   }
 
-  // Half-portion guard: single containers do not receive default full sides unless explicitly opted in
   if (isHalf && !customer.curry_config?.includes('Salad') && !lowerText.includes('salad')) {
     salad = 0;
   }
@@ -462,16 +367,10 @@ export const resolveSideAddons = (customer: PrepCustomer): { salad: number; dess
   return { salad, dessert };
 };
 
-// The customer's TRUE side allocation for the selected day. Structured profiles
-// win because they are day-group aware (a custom T/Th "2x Dal" would otherwise be
-// lost when the same delivery_instructions row only mirrors the M/W/F meal).
 const resolveCurryCounts = (customer: PrepCustomer, isChickenDay: boolean): CurryCounts => {
   const isNonVeg = String(customer.meal_type || '').toLowerCase().includes('non');
   const structured = parseStructuredCurryConfig(customer.curry_config);
   if (structured) {
-    // M/W/F group on non-veg menu days, T/Th group on veg menu days. veg_fixed
-    // profiles store the same veg meal in both groups, so the day-group pick holds
-    // for Veg customers as well.
     return isChickenDay ? { ...structured.mwf } : { ...structured.tth };
   }
   const parsed = parseCurryCounts(customer.delivery_instructions);
@@ -479,14 +378,6 @@ const resolveCurryCounts = (customer: PrepCustomer, isChickenDay: boolean): Curr
   return defaultCurryCounts(isNonVeg, String(customer.portion_size || ''));
 };
 
-// ── Meal shaping is applied inline in computePrepMetrics() ───────────────────
-// Tier-aware container shaping now runs in the same reducer pass that tallies the
-// packs, so a dish-exclusion swap is ALWAYS deducted from the disliked side and added
-// to the surviving side (shapeVegMeal / shapeNonVegVegSide / applyDishSwap were folded
-// into the reducer for exactly this reason).
-
-// Tracks substitution stats for the dashboard summary — counts a swap only when it
-// actually moved containers, and flags the rare "dislikes both sides" override case.
 const recordDishSwap = (
   acc: PrepMetrics,
   swappedTo: 'dal' | 'sabji' | null,
@@ -535,6 +426,60 @@ const addGravy = (acc: PrepMetrics, size: ContainerSize, count: number, ozPerCon
   acc.gravyOz += count * ozPerContainer;
 };
 
+// ── Weekly Starch Split Resolution Helper ───────────────────────────────────
+
+/**
+ * Resolves a customer's meal plan for the target day of the week.
+ * 1. If weekly_schedule_matrix is set and enabled, uses that day's specific custom plan.
+ * 2. Otherwise falls back to base configs (curry_config, instructions, and profile defaults).
+ */
+export function resolveCustomerDayPlan(
+  customer: PrepCustomer,
+  activeDay?: string | null,
+  isChickenDay: boolean = false
+): DayMealPlan {
+  const dayKey = activeDay || 'Monday';
+
+  // 1. Day-by-Day schedule matrix check
+  if (customer.weekly_schedule_matrix && customer.weekly_schedule_matrix.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(customer.weekly_schedule_matrix);
+      if (parsed.is_custom_schedule && parsed.days && parsed.days[dayKey]) {
+        const d = parsed.days[dayKey];
+        return {
+          roti: typeof d.roti === 'number' ? d.roti : (customer.roti_count ?? 8),
+          pronthi: typeof d.pronthi === 'number' ? d.pronthi : (customer.pronthi_count ?? 0),
+          rice: d.rice || customer.rice_count || 'None',
+          dal: typeof d.dal === 'number' ? d.dal : 1,
+          sabji: typeof d.sabji === 'number' ? d.sabji : 1,
+          chicken: typeof d.chicken === 'number' ? d.chicken : 0,
+          gravy: typeof d.gravy === 'number' ? d.gravy : 0,
+          salad: typeof d.salad === 'number' ? d.salad : 0,
+          dessert: typeof d.dessert === 'number' ? d.dessert : 0,
+        };
+      }
+    } catch {
+      // Fallback on JSON parse error
+    }
+  }
+
+  // 2. Base profile resolution
+  const curries = resolveCurryCounts(customer, isChickenDay);
+  const addons = resolveSideAddons(customer);
+
+  return {
+    roti: customer.roti_count ?? 8,
+    pronthi: customer.pronthi_count ?? 0,
+    rice: customer.rice_count || 'None',
+    dal: curries.dal,
+    sabji: curries.sabji,
+    chicken: curries.chicken,
+    gravy: curries.gravy,
+    salad: addons.salad,
+    dessert: addons.dessert,
+  };
+}
+
 // ── Engine ──────────────────────────────────────────────────────────────────
 
 const emptyMetrics = (): PrepMetrics => ({
@@ -563,104 +508,66 @@ const emptyMetrics = (): PrepMetrics => ({
   dishSwapUnresolved: 0,
 });
 
-/**
- * Computes every dynamic prep metric by walking the ACTIVE customer list for the
- * selected date. `isChickenDay` selects the M/W/F (non-veg) menu vs the T/Th (veg)
- * menu routing matrix:
- *   - Veg menu day (or a Veg customer on any day)  → all sides route to the Veg pool.
- *   - Non-Veg customer on a chicken day            → chicken/gravy containers route
- *     to the Chicken station; a full meal also sends its one veg-side container to
- *     the Veg station.
- *
- * `menu` carries the day's selected Dal / Sabji dish names; they are matched against
- * each customer's dish exclusions so a disliked container is rerouted to the other
- * veg side before the pack/volume totals are accumulated (the /prep batch scaling
- * then recalculates every raw ingredient off the swapped RG/LG container counts).
- */
 export function computePrepMetrics(
   customers: PrepCustomer[],
   isChickenDay: boolean,
-  menu?: { dalName?: string | null; sabjiName?: string | null }
+  menu?: { dalName?: string | null; sabjiName?: string | null },
+  activeDay?: string | null
 ): PrepMetrics {
   const todayDalName = menu?.dalName ?? null;
   const todaySabjiName = menu?.sabjiName ?? null;
+  const dayName = activeDay || 'Monday';
+
   const metrics = customers.reduce((acc, customer) => {
-    // 0. Single-day skip: the customer's meal is skipped for this date, so NOTHING is
-    //    cooked or packed for them (roti, pronthi, rice, sabji, dal, chicken, legs,
-    //    salad, dessert) and they never reach any station branch below.
     if (customer.isSkipped) return acc;
 
-    // 1. Determine the physical container this customer packs (LG = 12 oz, RG = 8 oz).
     const size = getPortionSize(customer.portion_size);
     const ozPerContainer = CONTAINER_OZ[size];
     const isHalf = isHalfPortion(customer.portion_size);
     const isNonVeg = String(customer.meal_type || '').toLowerCase().includes('non');
-    const legsPerContainer = size === 'LG' ? 2 : 1; // 2 legs per 12oz LG, 1 per 8oz RG
+    const legsPerContainer = size === 'LG' ? 2 : 1;
 
-    // 2. True side counts for today (structured profile → instructions → defaults).
-    const rawCounts = resolveCurryCounts(customer, isChickenDay);
+    // Resolve this customer's exact plan for this day
+    const dayPlan = resolveCustomerDayPlan(customer, dayName, isChickenDay);
 
-    // 2b. Salad / Dessert add-on staging — counted ONCE per active customer from
-    //     the combined meal-config + note + (merged) override marker text. Runs
-    //     before the routing branches below so every row contributes, veg or not.
-    const addons = resolveSideAddons(customer);
-    acc.saladCount += addons.salad;
-    acc.dessertCount += addons.dessert;
+    acc.saladCount += dayPlan.salad;
+    acc.dessertCount += dayPlan.dessert;
 
-    // 2c. Strict dish-dislike verification against TODAY's selected Dal/Sabji. The
-    //     boolean pair drives the swap in every routing branch below (Sabji dislike →
-    //     its containers become Dal; Dal dislike → they become Sabji).
     const exclusion = resolveDishExclusion(customer, todayDalName, todaySabjiName);
     const dislikesDal = exclusion.dislikesDal;
     const dislikesSabji = exclusion.dislikesSabji;
 
-    // 3. Calculate the ACTUAL containers to pack today, applying the swap in the SAME
-    //    pass so the pack tallies + pot oz targets always reflect the substitution.
-    let finalDal = 0;
-    let finalSabji = 0;
+    let finalDal = dayPlan.dal;
+    let finalSabji = dayPlan.sabji;
     let swappedTo: 'dal' | 'sabji' | null = null;
 
     if (!isChickenDay || !isNonVeg) {
-      // ══════════════════════════════════════════════════════════════════
-      // VEG ROUTING — a veg menu day routes every customer to the Veg pool;
-      // a Veg customer packs veg on chicken days too. Dal & Sabji only.
-      // ══════════════════════════════════════════════════════════════════
       if (isHalf) {
-        // Half plan: exactly ONE container total (12 oz if LG, 8 oz if RG).
-        const prefersSabji = rawCounts.sabji > 0 && rawCounts.dal === 0;
+        const prefersSabji = dayPlan.sabji > 0 && dayPlan.dal === 0;
         const assignedSabji = prefersSabji ? 1 : 0;
         const assignedDal = prefersSabji ? 0 : 1;
 
         if (dislikesSabji && !dislikesDal && assignedSabji > 0) {
-          // Disliked Sabji → the single container becomes Dal (drop 1 Sabji, add 1 Dal).
           finalDal = 1;
+          finalSabji = 0;
           swappedTo = 'dal';
         } else if (dislikesDal && !dislikesSabji && assignedDal > 0) {
-          // Disliked Dal → the single container becomes Sabji (drop 1 Dal, add 1 Sabji).
           finalSabji = 1;
+          finalDal = 0;
           swappedTo = 'sabji';
         } else {
           finalDal = assignedDal;
           finalSabji = assignedSabji;
         }
       } else {
-        // Full plan: exactly TWO containers total.
-        let baseDal = rawCounts.dal;
-        let baseSabji = rawCounts.sabji;
-        if (baseDal + baseSabji < 2) {
-          baseDal = 1;
-          baseSabji = 1;
-        }
-
-        if (dislikesSabji && !dislikesDal && baseSabji > 0) {
-          finalDal = baseDal + baseSabji;
+        if (dislikesSabji && !dislikesDal && finalSabji > 0) {
+          finalDal += finalSabji;
+          finalSabji = 0;
           swappedTo = 'dal';
-        } else if (dislikesDal && !dislikesSabji && baseDal > 0) {
-          finalSabji = baseSabji + baseDal;
+        } else if (dislikesDal && !dislikesSabji && finalDal > 0) {
+          finalSabji += finalDal;
+          finalDal = 0;
           swappedTo = 'sabji';
-        } else {
-          finalDal = baseDal;
-          finalSabji = baseSabji;
         }
       }
 
@@ -670,17 +577,13 @@ export function computePrepMetrics(
       return acc;
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // CHICKEN ROUTING — Non-Veg customer on a non-veg menu day.
-    // ══════════════════════════════════════════════════════════════════
-    const chickenContainers = rawCounts.chicken;
-    const gravyContainers = rawCounts.gravy;
+    // Chicken day routing for Non-Veg customer
+    const chickenContainers = dayPlan.chicken;
+    const gravyContainers = dayPlan.gravy;
 
-    // Legacy safety: a Non-Veg customer with no chicken/gravy allocation at all
-    // (an old all-veg instruction row) still receives a normal veg meal.
     if (chickenContainers + gravyContainers === 0) {
-      const baseDal = rawCounts.dal || 1;
-      const baseSabji = rawCounts.sabji || 1;
+      const baseDal = dayPlan.dal || 1;
+      const baseSabji = dayPlan.sabji || 1;
 
       if (dislikesSabji && !dislikesDal) {
         finalDal = baseDal + baseSabji;
@@ -702,10 +605,8 @@ export function computePrepMetrics(
     addChicken(acc, size, chickenContainers, ozPerContainer, legsPerContainer);
     addGravy(acc, size, gravyContainers, ozPerContainer);
 
-    // Full non-veg meals pack their single veg-side container at the Veg station;
-    // Half non-veg meals pack ONLY the chicken container.
     if (!isHalf) {
-      const baseVegDal = rawCounts.dal > 0 && rawCounts.sabji === 0 ? 1 : 0;
+      const baseVegDal = dayPlan.dal > 0 && dayPlan.sabji === 0 ? 1 : 0;
       const baseVegSabji = baseVegDal === 1 ? 0 : 1;
       let nvVegDal = baseVegDal;
       let nvVegSabji = baseVegSabji;
@@ -727,15 +628,16 @@ export function computePrepMetrics(
     return acc;
   }, emptyMetrics());
 
-  // ── Carb (roti / pronthi / rice) aggregation — unchanged dynamic totals ──
-  // Skipped customers are excluded from the active-delivery count entirely.
+  // Dynamic carb tallies resolved per day
   metrics.totalMeals = customers.filter(customer => !customer.isSkipped).length;
   customers.forEach(customer => {
     if (customer.isSkipped) return;
-    if (customer.roti_count) metrics.totalRoti += customer.roti_count;
-    if (customer.pronthi_count) metrics.totalPronthi += customer.pronthi_count;
-    if (customer.rice_count && customer.rice_count !== 'None' && customer.rice_count !== '—') {
-      customer.rice_count.split('+').forEach(token => {
+    const dayPlan = resolveCustomerDayPlan(customer, dayName, isChickenDay);
+
+    if (dayPlan.roti) metrics.totalRoti += dayPlan.roti;
+    if (dayPlan.pronthi) metrics.totalPronthi += dayPlan.pronthi;
+    if (dayPlan.rice && dayPlan.rice !== 'None' && dayPlan.rice !== '—') {
+      dayPlan.rice.split('+').forEach(token => {
         const m = token.trim().match(/^(\d+)\s*(rg|lg|xl)$/i);
         if (m) {
           const qty = parseInt(m[1], 10);
@@ -749,6 +651,3 @@ export function computePrepMetrics(
 
   return metrics;
 }
-
-
-

@@ -233,6 +233,7 @@ export type DailyOverrideRow = {
   delivery_instructions: string | null;
   is_custom_curry: boolean | null;
   curry_config: string | null;
+  weekly_schedule_matrix?: string | null;
   is_skipped: boolean | null;
 };
 
@@ -248,6 +249,7 @@ const DAILY_OVERRIDE_COLUMNS = [
   'delivery_instructions',
   'is_custom_curry',
   'curry_config',
+  'weekly_schedule_matrix',
   'is_skipped',
 ] as const;
 
@@ -406,6 +408,7 @@ export async function upsertDailyOverride(
         delivery_instructions: input.delivery_instructions,
         is_custom_curry: input.is_custom_curry,
         curry_config: input.curry_config,
+        weekly_schedule_matrix: input.weekly_schedule_matrix ?? null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'customer_id,override_date' }
@@ -1320,6 +1323,7 @@ export async function saveCustomerOverride(
     delivery_instructions: config.delivery_instructions ?? null,
     is_custom_curry: config.is_custom_curry ?? null,
     curry_config: config.curry_config ?? null,
+    weekly_schedule_matrix: (config as any).weekly_schedule_matrix ?? null,
     is_skipped: false,
   };
 

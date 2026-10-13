@@ -16,8 +16,11 @@ import {
   MessageSquare,
   Sliders,
   Palette,
-  ChevronDown
+  ChevronDown,
+  Ban
 } from 'lucide-react';
+import { useGlobalSkip } from '@/app/components/GlobalSkipProvider';
+import { toLocalDateKey } from '@/app/utils/subscriptionCycle';
 
 const navItems = [
   { href: '/admin/customers', label: 'Customers', icon: Users },
@@ -43,6 +46,11 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
   const branding = useBranding();
   const logoUrl = (branding?.logo_url ?? '').trim();
   const businessName = (branding?.business_name ?? '').trim() || 'TiffinOS';
+
+  // Centralized skip surface (see app/components/GlobalSkipProvider.tsx) — the
+  // global entry point so a skip never has to be recorded from /prep's date-
+  // dependent drawer.
+  const { openSkipModal } = useGlobalSkip();
 
   return (
     <>
@@ -107,6 +115,23 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
               </Link>
             );
           })}
+
+          {/* Global Skip — one action available from every screen, independent of
+              the /prep date picker. */}
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              openSkipModal(undefined, toLocalDateKey(new Date()));
+            }}
+            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 group text-[rgb(var(--brand-sidebar-fg-soft))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]"
+          >
+            <Ban
+              className="w-[18px] h-[18px] shrink-0 text-[rgb(var(--brand-sidebar-fg-muted))] group-hover:text-[rgb(var(--brand-sidebar-fg))]"
+              strokeWidth={2}
+            />
+            <span className="truncate">Skip Delivery</span>
+          </button>
 
           {/* Settings Section with Subroutes */}
           <div className="pt-1">

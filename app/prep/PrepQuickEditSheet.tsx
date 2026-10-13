@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState, useTransition } from 'react';
-import { Zap, Calendar, RefreshCw, X, AlertTriangle, Info, CalendarOff, Clock, Undo2, Pause, Trash2, Check } from 'lucide-react';
+import { Zap, Calendar, RefreshCw, X, AlertTriangle, Info, CalendarOff, Clock, Undo2, Trash2, Check } from 'lucide-react';
 import type { MealConfigPayload } from '@/app/admin/actions';
 import { parseActiveScheduleDays } from '@/app/utils/customerPickup';
 import {
@@ -11,6 +11,7 @@ import {
   type RenewCustomerSubscriptionResult,
 } from './actions';
 import { useRouter } from 'next/navigation';
+import { useGlobalSkip } from '@/app/components/GlobalSkipProvider';
 
 // Preferred common dish exclusions in priority order, surfaced as a compact quick-toggle
 // strip instead of dumping the entire recipe catalog as a wall of pills. These are only
@@ -41,6 +42,7 @@ type QuickCustomer = {
   delivery_schedule?: string | null;
   is_custom_curry?: boolean | null;
   curry_config?: string | null;
+  weekly_schedule_matrix?: string | null;
   disliked_dishes?: string[] | null;
   pause_start_date?: string | null;
   pause_end_date?: string | null;
@@ -484,6 +486,9 @@ export default function PrepQuickEditSheet({
   catalogRecipes,
 }: Props) {
   const router = useRouter();
+  // Global skip surface (app/components/GlobalSkipProvider.tsx) — the drawer no
+  // longer owns skip state; it hands the customer + prep date to the shared modal.
+  const { openSkipModal } = useGlobalSkip();
   const [visible, setVisible] = useState(false);
   const [scope, setScope] = useState<QuickEditScope>('today');
   const [draftSkipped, setDraftSkipped] = useState<boolean>(isSkipped);
@@ -797,6 +802,7 @@ export default function PrepQuickEditSheet({
       snapshot.delivery_instructions = customer.delivery_instructions ?? null;
       snapshot.is_custom_curry = customer.is_custom_curry ?? null;
       snapshot.curry_config = customer.curry_config ?? null;
+      (snapshot as any).weekly_schedule_matrix = customer.weekly_schedule_matrix ?? null;
     }
     // Dish exclusions have no per-day storage — only carry them when they changed so a
     // "Today Only"/"Range" save never re-writes the master profile needlessly.
@@ -1087,21 +1093,19 @@ export default function PrepQuickEditSheet({
             </div>
           )}
 
-          {/* Skip action */}
+          {/* Skip action — delegates to the global skip modal (customer + prep date
+              pre-selected) instead of toggling the drawer's local skip draft. */}
           <div className="mb-4">
             <button
               type="button"
               onClick={() => {
-                setDraftSkipped(prev => !prev);
-                setFormError(null);
+                onClose();
+                openSkipModal({ id: customer.id, name: customer.full_name }, overrideDate);
               }}
-              disabled={saving || scope === 'permanent'}
-              className={`w-full h-11 rounded-xl font-bold transition-colors text-[13px] flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed ${skipActive
-                ? 'bg-amber-100 border border-amber-300 text-amber-900 hover:bg-amber-200'
-                : 'bg-white border border-gray-300 text-[#292D32] hover:bg-gray-50'
-                }`}
+              className="w-full h-11 rounded-xl font-bold transition-colors text-[13px] flex items-center justify-center gap-2 bg-white border border-gray-300 text-[#292D32] hover:bg-gray-50 cursor-pointer shadow-2xs"
             >
-              {skipActive ? <span className="flex items-center gap-1"><Undo2 className="w-3.5 h-3.5" /> Undo Skip</span> : <span className="flex items-center gap-1"><Pause className="w-3.5 h-3.5" /> Skip Delivery</span>}
+              <span className="text-amber-600">⚡</span>
+              <span>Skip Delivery / Vacation</span>
             </button>
             <p className="mt-1.5 text-[11px] text-gray-400 font-medium text-center">
               {scope === 'permanent'

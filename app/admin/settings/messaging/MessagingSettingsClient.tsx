@@ -104,8 +104,11 @@ export default function MessagingSettingsClient({
           </div>
           <div className="flex items-center gap-1.5 flex-wrap">
             {[
+              { tag: '{customer_name}', label: 'Customer Name' },
+              { tag: '{remaining_meals}', label: 'Remaining Meals' },
+              { tag: '{cycle_end_date}', label: 'Cycle End Date' },
+              { tag: '{total_credits}', label: 'Total Credits' },
               { tag: '{address}', label: 'Address' },
-              { tag: '{remaining_meals}', label: 'Remaining Balance' },
             ].map(item => (
               <button
                 key={item.tag}
