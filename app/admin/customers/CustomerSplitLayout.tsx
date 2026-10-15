@@ -23,6 +23,19 @@ import { useToast } from '@/app/components/ToastProvider';
 import { useGlobalSkip } from '@/app/components/GlobalSkipProvider';
 import CustomerMessageModal from '@/app/components/CustomerMessageModal';
 import { MessageSquare } from 'lucide-react';
+import {
+  PORTION_RG,
+  PORTION_LG,
+  PORTION_HALF_RG,
+  PORTION_HALF_LG,
+  PORTION_ROTI_DEFAULTS,
+  normalizePortionToken,
+  isHalfPortion,
+  getDefaultRotiCount,
+  parseRiceQuantities,
+  formatShortRice,
+  type DayMealPlan,
+} from '@/app/utils/mealEngine';
 
 // Preferred common dish exclusions in priority order, surfaced as a compact quick-toggle
 // strip instead of dumping the entire recipe catalog as a wall of pills. These are only
@@ -245,33 +258,6 @@ type SideCounts = {
   chicken: number;
   salad: number;
   dessert: number;
-};
-
-const PORTION_RG = 'RG';
-const PORTION_LG = 'LG';
-const PORTION_HALF_RG = 'Half RG';
-const PORTION_HALF_LG = 'Half LG';
-
-const PORTION_ROTI_DEFAULTS: Record<string, number> = {
-  [PORTION_LG]: 8,
-  [PORTION_RG]: 6,
-  [PORTION_HALF_LG]: 5,
-  [PORTION_HALF_RG]: 4,
-};
-
-const normalizePortionToken = (value: string | null | undefined): string => {
-  const v = (value || '').trim().toUpperCase().replace(/\s+/g, ' ');
-  if (v.startsWith('HALF')) {
-    return v.includes('LG') || v.includes('LARGE') ? PORTION_HALF_LG : PORTION_HALF_RG;
-  }
-  if (v === 'LG' || v === 'LARGE') return PORTION_LG;
-  if (v === 'SM' || v === 'SMALL') return PORTION_HALF_RG;
-  return PORTION_RG;
-};
-
-const isHalfPortion = (value: string | null | undefined): boolean => {
-  const p = normalizePortionToken(value);
-  return p === PORTION_HALF_RG || p === PORTION_HALF_LG;
 };
 
 const formatSideAddon = (count: number, label: string): string =>
@@ -775,18 +761,6 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   // ── 100% Granular Day-by-Day Schedule Matrix State (Mon to Fri) ──
   const MATRIX_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
-  type DayMealPlan = {
-    roti: number;
-    pronthi: number;
-    rice: string;
-    dal: number;
-    sabji: number;
-    chicken: number;
-    gravy: number;
-    salad: number;
-    dessert: number;
-  };
-
   const DEFAULT_MATRIX_DAY_PLAN: DayMealPlan = {
     roti: 6,
     pronthi: 0,
@@ -1138,9 +1112,6 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
   const totalCurryCount = dalCount + sabjiCount + gravyCount + chickenCount;
   const curryContainerLimit = isHalfPortion(portionSize) ? 1 : 2;
-
-  const getDefaultRotiCount = (portion: string): number =>
-    PORTION_ROTI_DEFAULTS[normalizePortionToken(portion)] ?? PORTION_ROTI_DEFAULTS[PORTION_RG];
 
   const isStandardNonVegProfile = (dal: number, sabji: number, gravy: number, chicken: number): boolean =>
     dal === 0 && sabji === 1 && gravy === 0 && chicken === 1;
@@ -1684,25 +1655,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const confirmUpgradeToMonthly = () => confirmUpgradePlan('monthly');
 
   const formatRiceCellText = (rawRice: string | null | undefined): string => {
-    if (!rawRice || rawRice === 'None' || rawRice === '—') return 'None';
-
-    let tokens = rawRice.toLowerCase().split('+');
-    let dynamicArray = tokens.map(token => {
-      let segment = token.replace(/\s+x\s+/g, ' ').trim();
-      if (/^\d+\s*(rg|lg|xl)$/.test(segment)) return segment;
-
-      let qtyMatch = segment.match(/^(\d+)/);
-      let qty = qtyMatch ? qtyMatch[1] : '1';
-
-      let size = 'rg';
-      if (segment.includes('xl') || segment.includes('extra')) size = 'xl';
-      else if (segment.includes('lg') || segment.includes('large')) size = 'lg';
-      else if (segment.includes('rg') || segment.includes('regular')) size = 'rg';
-
-      return `${qty} ${size}`;
-    });
-
-    return dynamicArray.join(' + ');
+    const formatted = formatShortRice(rawRice);
+    return formatted === '—' ? 'None' : formatted;
   };
 
   const cleanScheduleText = (scheduleStr: string | null | undefined): string => {
@@ -1900,22 +1854,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setIsAddingNew(true);
   };
 
-  const parseRiceIntoCounters = (riceStr: string | null | undefined) => {
-    let rg = 0, lg = 0, xl = 0;
-    if (!riceStr || riceStr === 'None' || riceStr === '—') return { rg, lg, xl };
-    const tokens = riceStr.split('+');
-    tokens.forEach(token => {
-      const match = token.trim().match(/^(\d+)\s*(rg|lg|xl)$/);
-      if (match) {
-        const qty = parseInt(match[1], 10);
-        const size = match[2];
-        if (size === 'rg') rg += qty;
-        else if (size === 'lg') lg += qty;
-        else if (size === 'xl') xl += qty;
-      }
-    });
-    return { rg, lg, xl };
-  };
+  const parseRiceIntoCounters = (riceStr: string | null | undefined) =>
+    parseRiceQuantities(riceStr);
 
   const parseSideDishAll = (instructions: string | null) => {
     const result = { dal: 0, sabji: 0, gravy: 0, chicken: 0, salad: 0, dessert: 0 };
