@@ -8,7 +8,8 @@ import {
   resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, 
   renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation, 
   getCustomerActivityLogs, addManualCustomerLog, recordCustomerPayment, 
-  getCustomerPayments, updateCustomerPayment, deleteCustomerPayment, 
+  getCustomerPayments, updateCustomerPayment, deleteCustomerPayment,
+  togglePeriodPayment,
   type CustomerActivityLog 
 } from '@/app/admin/actions';
 import { getAvailableRecipes } from '@/app/prep/actions';
@@ -18,7 +19,13 @@ import {
   parseActiveScheduleDays,
   pickupDaysForCustomer,
 } from '@/app/utils/customerPickup';
-import { calculateCycleTargetLastDay, resolveDeliveryDayNumbers, calculateStandardPlanPrice } from '@/app/utils/subscriptionCycle';
+import {
+  calculateCycleTargetLastDay,
+  resolveDeliveryDayNumbers,
+  calculateStandardPlanPrice,
+  computeCustomerPeriods,
+  type BillingPeriodInfo,
+} from '@/app/utils/subscriptionCycle';
 import { useToast } from '@/app/components/ToastProvider';
 import { useGlobalSkip } from '@/app/components/GlobalSkipProvider';
 import CustomerMessageModal from '@/app/components/CustomerMessageModal';
@@ -34,6 +41,7 @@ import {
   getDefaultRotiCount,
   parseRiceQuantities,
   formatShortRice,
+  cleanPhoneNumberForWhatsApp,
   type DayMealPlan,
 } from '@/app/utils/mealEngine';
 
@@ -1308,6 +1316,65 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   }, [editingPayment, selectedCustomer, editPaymentCycleStart, editPaymentCredits, closuresSet, skipsMap]);
 
   const editComputedEndDate = editComputedEndResult?.dateKey || null;
+
+  const customerBillingPeriods = useMemo(() => {
+    if (!selectedCustomer) return [];
+    return computeCustomerPeriods({
+      customer: {
+        id: selectedCustomer.id,
+        start_date: startDate || selectedCustomer.start_date,
+        plan_tier: planTier || selectedCustomer.plan_tier,
+        total_tiffin_credits: totalTiffinCredits || selectedCustomer.total_tiffin_credits,
+        meal_type: mealType || selectedCustomer.meal_type,
+        portion_size: portionSize || selectedCustomer.portion_size,
+        discount_type: discountType === 'none' ? null : discountType,
+        discount_value: discountValue ? Number(discountValue) : null,
+        delivery_schedule: serializeSchedule(selectedDays),
+      },
+      payments: customerPaymentsList,
+      closureDates: closuresSet,
+      customerSkips: currentCustomerSkips,
+    });
+  }, [
+    selectedCustomer,
+    startDate,
+    planTier,
+    totalTiffinCredits,
+    mealType,
+    portionSize,
+    discountType,
+    discountValue,
+    selectedDays,
+    customerPaymentsList,
+    closuresSet,
+    currentCustomerSkips,
+  ]);
+
+  const [togglingPeriodIdx, setTogglingPeriodIdx] = useState<number | null>(null);
+
+  const handleTogglePeriodPayment = async (period: BillingPeriodInfo) => {
+    if (!selectedCustomer) return;
+    setTogglingPeriodIdx(period.index);
+    try {
+      await togglePeriodPayment({
+        customerId: selectedCustomer.id,
+        startDate: period.startDate,
+        endDate: period.endDate,
+        amount: period.expectedAmount,
+        credits: period.credits,
+        isCurrentlyPaid: period.isPaid,
+        paymentId: period.paymentId,
+      });
+
+      const updatedPayments = await getCustomerPayments(selectedCustomer.id);
+      setCustomerPaymentsList(updatedPayments);
+      showToast(period.isPaid ? 'Marked cycle as unpaid' : 'Marked cycle as paid');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update payment status', 'error');
+    } finally {
+      setTogglingPeriodIdx(null);
+    }
+  };
 
   const liveSideCounts: SideCounts = {
     dal: dalCount,
@@ -4195,7 +4262,84 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             <span>Log Payment</span>
                           </button>
                         </div>
+{/* ── BILLING PERIODS & PAYMENT STATUS TRACKER ── */}
+                        <div className="space-y-2 pt-2 pb-1 border-t border-gray-100">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-black text-gray-500 uppercase tracking-wider block">
+                              Cycle History &amp; Payment Status (4 Periods)
+                            </span>
+                            <span className="text-[10px] text-gray-400 font-medium">1-Tap Status Toggle</span>
+                          </div>
 
+                          <div className="space-y-2">
+                            {customerBillingPeriods.map(period => {
+                              const cleanPhone = cleanPhoneNumberForWhatsApp(phoneNumber);
+                              const reminderMsg = `Hi ${fullName || 'there'}, this is a reminder regarding your tiffin payment of $${period.expectedAmount.toFixed(2)} CAD for the cycle ${formatShortDate(period.startDate)} to ${formatShortDate(period.endDate)} (${period.credits} meals). Please send the e-transfer at your convenience. Thank you!`;
+
+                              return (
+                                <div
+                                  key={period.startDate}
+                                  className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
+                                    period.isPaid
+                                      ? 'bg-emerald-50/40 border-emerald-200/80 text-emerald-950'
+                                      : 'bg-rose-50/50 border-rose-200/80 text-rose-950'
+                                  }`}
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs font-black tracking-tight">{period.label}</span>
+                                      <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase border ${
+                                        period.isPaid
+                                          ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                          : 'bg-rose-100 text-rose-800 border-rose-300'
+                                      }`}>
+                                        {period.isPaid ? 'PAID' : 'DUE'}
+                                      </span>
+                                    </div>
+                                    <div className="text-[11.5px] font-semibold text-gray-600 mt-0.5">
+                                      <span>{formatShortDate(period.startDate)} → {formatShortDate(period.endDate)}</span>
+                                      <span className="mx-1.5 text-gray-300">·</span>
+                                      <strong className="text-gray-900">${period.expectedAmount} CAD</strong>
+                                      <span className="text-gray-400 font-normal"> ({period.credits} meals)</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-1.5 shrink-0">
+                                    {!period.isPaid && cleanPhone && (
+                                      <a
+                                        href={`https://wa.me/${cleanPhone}?text=${encodeURIComponent(reminderMsg)}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title="Send WhatsApp payment reminder"
+                                        className="h-8 px-2.5 bg-[#25D366] hover:bg-[#20bd5a] text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                                      >
+                                        <MessageSquare className="w-3.5 h-3.5" />
+                                        <span>Reminder</span>
+                                      </a>
+                                    )}
+
+                                    <button
+                                      type="button"
+                                      disabled={togglingPeriodIdx === period.index}
+                                      onClick={() => handleTogglePeriodPayment(period)}
+                                      className={`h-8 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs border ${
+                                        period.isPaid
+                                          ? 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
+                                          : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
+                                      }`}
+                                    >
+                                      {togglingPeriodIdx === period.index
+                                        ? 'Saving...'
+                                        : period.isPaid
+                                        ? 'Mark Unpaid'
+                                        : 'Mark Paid'}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                         {/* Recent Payment Ledger */}
                         <div className="space-y-1.5 pt-1">
                           <span className="text-[11px] font-semibold text-gray-400 block uppercase">

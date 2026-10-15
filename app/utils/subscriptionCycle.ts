@@ -251,3 +251,148 @@ export function calculateStandardPlanPrice(
   // Monthly or custom credit adjustment
   return Math.round((monthly20Price / 20) * credits);
 }
+// ============================================================================
+// BILLING PERIOD TRACKER & LEDGER RESOLVER
+// ============================================================================
+
+export type BillingPeriodInfo = {
+  index: number; // 0 = current, -1 = past 1, -2 = past 2, -3 = past 3
+  label: string;
+  startDate: string;
+  endDate: string;
+  credits: number;
+  expectedAmount: number;
+  paymentId?: string | null;
+  isPaid: boolean;
+  paymentMethod?: string | null;
+  paidAt?: string | null;
+};
+
+export function computeCustomerPeriods(params: {
+  customer: {
+    id: string;
+    start_date?: string | null;
+    plan_tier?: string | null;
+    total_tiffin_credits?: number | null;
+    meal_type?: string | null;
+    portion_size?: string | null;
+    discount_type?: 'flat' | 'percent' | null;
+    discount_value?: number | null;
+    delivery_schedule?: string | null;
+  };
+  payments: Array<{
+    id: string;
+    amount: number;
+    payment_method?: string | null;
+    paid_at?: string | null;
+    billing_cycle_start?: string | null;
+    billing_cycle_end?: string | null;
+  }>;
+  closureDates?: ClosureSource;
+  customerSkips?: Set<string> | null;
+}): BillingPeriodInfo[] {
+  const { customer, payments, closureDates, customerSkips } = params;
+  if (!customer.start_date) return [];
+
+  const tier = (customer.plan_tier || 'monthly').toLowerCase() as PricingTier;
+  const creditsPerCycle =
+    customer.total_tiffin_credits && customer.total_tiffin_credits > 0
+      ? customer.total_tiffin_credits
+      : tier === 'weekly'
+      ? 5
+      : tier === 'trial'
+      ? 1
+      : 20;
+
+  const basePrice = calculateStandardPlanPrice(
+    customer.meal_type,
+    customer.portion_size,
+    tier,
+    creditsPerCycle
+  );
+
+  let discount = 0;
+  if (customer.discount_type === 'flat') {
+    discount = Number(customer.discount_value) || 0;
+  } else if (customer.discount_type === 'percent') {
+    discount = Math.round((basePrice * (Number(customer.discount_value) || 0)) / 100);
+  }
+  const finalPrice = Math.max(0, basePrice - discount);
+
+  const deliveryDays = resolveDeliveryDayNumbers(customer.delivery_schedule);
+  const curStart = customer.start_date.slice(0, 10);
+
+  const currentEndResult = calculateCycleTargetLastDay({
+    startDate: curStart,
+    totalMeals: creditsPerCycle,
+    deliveryDays,
+    closureDates,
+    customerSkips,
+  });
+
+  const currentEnd = currentEndResult?.dateKey || curStart;
+
+  const periodsData: Array<{ index: number; label: string; start: string; end: string }> = [
+    { index: 0, label: 'Current Cycle', start: curStart, end: currentEnd }
+  ];
+
+  const stepDate = (dStr: string, days: number): string => {
+    const d = new Date(`${dStr}T12:00:00`);
+    d.setDate(d.getDate() + days);
+    return toLocalDateKey(d);
+  };
+
+  let prevEnd = stepDate(curStart, -1);
+  const daysSet = deliveryDays instanceof Set ? deliveryDays : new Set(DEFAULT_DELIVERY_DAY_NUMBERS);
+
+  for (let i = 1; i <= 3; i++) {
+    let count = 0;
+    const cursor = new Date(`${prevEnd}T12:00:00`);
+    let periodStart = prevEnd;
+
+    while (count < creditsPerCycle) {
+      const dayNum = cursor.getDay();
+      const isClosure = isClosedOn(cursor, closureDates);
+      const isSkip = isCustomerSkipOn(cursor, customerSkips);
+
+      if (daysSet.has(dayNum) && !isClosure && !isSkip) {
+        count++;
+        periodStart = toLocalDateKey(cursor);
+      }
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
+    periodsData.push({
+      index: -i,
+      label: i === 1 ? 'Previous Cycle' : `${i} Cycles Ago`,
+      start: periodStart,
+      end: prevEnd,
+    });
+
+    prevEnd = stepDate(periodStart, -1);
+  }
+
+  periodsData.sort((a, b) => b.start.localeCompare(a.start));
+
+  return periodsData.map(p => {
+    const match = payments.find(pmt => {
+      if (!pmt.billing_cycle_start) return false;
+      const pmtStart = pmt.billing_cycle_start.slice(0, 10);
+      const pmtEnd = pmt.billing_cycle_end ? pmt.billing_cycle_end.slice(0, 10) : null;
+      return pmtStart === p.start || (pmtEnd && pmtEnd === p.end);
+    });
+
+    return {
+      index: p.index,
+      label: p.label,
+      startDate: p.start,
+      endDate: p.end,
+      credits: creditsPerCycle,
+      expectedAmount: finalPrice,
+      paymentId: match?.id || null,
+      isPaid: Boolean(match),
+      paymentMethod: match?.payment_method || null,
+      paidAt: match?.paid_at || null,
+    };
+  });
+}

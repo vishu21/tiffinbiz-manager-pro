@@ -1776,3 +1776,44 @@ export async function getSkipCandidates(): Promise<SkipCandidate[]> {
     return [];
   }
 }
+export async function togglePeriodPayment(payload: {
+  customerId: string;
+  startDate: string;
+  endDate: string;
+  amount: number;
+  credits: number;
+  isCurrentlyPaid: boolean;
+  paymentId?: string | null;
+}) {
+  const supabase = await createClient();
+
+  if (payload.isCurrentlyPaid && payload.paymentId) {
+    const { error } = await supabase
+      .from('customer_payments')
+      .delete()
+      .eq('id', payload.paymentId);
+
+    if (error) throw new Error(error.message);
+  } else {
+    const { error } = await supabase
+      .from('customer_payments')
+      .insert({
+        customer_id: payload.customerId,
+        amount: payload.amount,
+        payment_method: 'etransfer',
+        payment_status: 'completed',
+        paid_at: toDateKey(new Date()),
+        credits_added: payload.credits,
+        cycle_action: 'historical',
+        billing_cycle_start: payload.startDate,
+        billing_cycle_end: payload.endDate,
+        reference_note: `Period payment: ${payload.startDate} to ${payload.endDate}`,
+      });
+
+    if (error) throw new Error(error.message);
+  }
+
+  revalidatePath('/admin/customers');
+  revalidatePath('/admin/billing');
+  return { success: true };
+}
