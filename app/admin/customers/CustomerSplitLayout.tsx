@@ -3,14 +3,14 @@
 import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
 import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Undo2, History, Clock } from 'lucide-react';
-import { 
-  createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer, 
-  resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress, 
-  renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation, 
-  getCustomerActivityLogs, addManualCustomerLog, recordCustomerPayment, 
+import {
+  createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer,
+  resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress,
+  renewCustomerCycle, upgradeCustomerPlan, clearScheduledCancellation,
+  getCustomerActivityLogs, addManualCustomerLog, recordCustomerPayment,
   getCustomerPayments, updateCustomerPayment, deleteCustomerPayment,
   togglePeriodPayment,
-  type CustomerActivityLog 
+  type CustomerActivityLog
 } from '@/app/admin/actions';
 import { getAvailableRecipes } from '@/app/prep/actions';
 import {
@@ -19,6 +19,7 @@ import {
   parseActiveScheduleDays,
   pickupDaysForCustomer,
 } from '@/app/utils/customerPickup';
+import RecordPaymentModal from '@/app/components/RecordPaymentModal';
 import {
   calculateCycleTargetLastDay,
   resolveDeliveryDayNumbers,
@@ -561,15 +562,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
   // Payment recording modal & ledger states
   const [showLogPaymentModal, setShowLogPaymentModal] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<'etransfer' | 'cash' | 'card' | 'other'>('etransfer');
-  const [paymentPaidAt, setPaymentPaidAt] = useState(() => toLocalDateKey(new Date()));
-  const [paymentCredits, setPaymentCredits] = useState<number>(20);
-  const [paymentCycleAction, setPaymentCycleAction] = useState<'settle_current' | 'renew_next' | 'historical' | 'topup'>('settle_current');
-  const [paymentCycleStart, setPaymentCycleStart] = useState('');
-  const [paymentRefNote, setPaymentRefNote] = useState('');
-  const [sendWhatsAppReceipt, setSendWhatsAppReceipt] = useState(false);
-  const [isRecordingPayment, setIsRecordingPayment] = useState(false);
+
   const [customerPaymentsList, setCustomerPaymentsList] = useState<any[]>([]);
 
   // Payment editing modal states
@@ -1281,24 +1274,6 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
   const computedEndDate = computedEndResult?.dateKey || null;
 
-  // ✅ closuresSet, skipsMap, and helper functions are all initialized above this line
-  const paymentComputedEndResult = useMemo(() => {
-    if (!showLogPaymentModal || !selectedCustomer || !paymentCycleStart || !paymentCredits) return null;
-
-    const custDays = resolveDeliveryDayNumbers(selectedCustomer.delivery_schedule);
-    const skips = skipsMap.get(selectedCustomer.id);
-
-    return calculateTargetLastDay(
-      paymentCycleStart,
-      paymentCredits,
-      closuresSet,
-      skips,
-      custDays
-    );
-  }, [showLogPaymentModal, selectedCustomer, paymentCycleStart, paymentCredits, closuresSet, skipsMap]);
-
-  const paymentComputedEndDate = paymentComputedEndResult?.dateKey || null;
-
   // ✅ closuresSet, skipsMap, and resolveDeliveryDayNumbers are fully initialized above
   const editComputedEndResult = useMemo(() => {
     if (!editingPayment || !selectedCustomer || !editPaymentCycleStart || !editPaymentCredits) return null;
@@ -1978,12 +1953,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
     const standardCredits = PLAN_OPTIONS.find(o => o.key === restoredTier)?.credits ?? 20;
 
-    if (customer.total_tiffin_credits && customer.total_tiffin_credits > 0) {
-      if (restoredTier === 'monthly' && customer.total_tiffin_credits === 25) {
-        setTotalTiffinCredits(20);
-      } else {
-        setTotalTiffinCredits(customer.total_tiffin_credits);
-      }
+    // Enforce standard credit caps: Monthly = 20, Weekly = 5, Trial = 1.
+    // Holiday closures extend the date range (+1 day), they do not inflate total credits.
+    if (restoredTier === 'monthly' && (customer.total_tiffin_credits === 21 || customer.total_tiffin_credits === 25)) {
+      setTotalTiffinCredits(20);
+    } else if (customer.total_tiffin_credits && [1, 5, 20].includes(customer.total_tiffin_credits)) {
+      setTotalTiffinCredits(customer.total_tiffin_credits);
     } else {
       setTotalTiffinCredits(standardCredits);
     }
@@ -2292,9 +2267,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
     const serializedMatrix = isCustomWeekly
       ? JSON.stringify({
-          is_custom_schedule: true,
-          days: weeklyMatrix,
-        })
+        is_custom_schedule: true,
+        days: weeklyMatrix,
+      })
       : null;
 
     const payload = {
@@ -2918,11 +2893,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     key={tab}
                     type="button"
                     onClick={() => setActiveTab(tab)}
-                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
-                      isSelected
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${isSelected
                         ? activeStyle
                         : 'border border-transparent text-gray-500 hover:text-gray-900'
-                    }`}
+                      }`}
                   >
                     {tab === 'all' ? 'All' : tab === 'veg' ? 'Veg' : 'Non-Veg'}
                   </button>
@@ -2957,11 +2931,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     key={status}
                     type="button"
                     onClick={() => setStatusFilter(status)}
-                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-[10.5px] sm:text-xs font-bold transition-all cursor-pointer whitespace-nowrap capitalize ${
-                      isSelected
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-[10.5px] sm:text-xs font-bold transition-all cursor-pointer whitespace-nowrap capitalize ${isSelected
                         ? activeStyle
                         : 'border border-transparent text-gray-500 hover:text-gray-900'
-                    }`}
+                      }`}
                   >
                     {status} <span className="opacity-75 font-semibold">({statusCounts[status]})</span>
                   </button>
@@ -3018,10 +2991,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               const tierKey = (customer.plan_tier || 'monthly').toLowerCase();
               const standardAllowance = tierKey === 'weekly' ? 5 : tierKey === 'trial' ? 1 : 20;
               const total =
-                customer.total_tiffin_credits && customer.total_tiffin_credits > 0
-                  ? (tierKey === 'monthly' && customer.total_tiffin_credits === 25)
-                    ? 20
-                    : customer.total_tiffin_credits
+                tierKey === 'monthly'
+                  ? 20
+                  : tierKey === 'weekly'
+                  ? 5
+                  : tierKey === 'trial'
+                  ? 1
                   : standardAllowance;
               const custSkips = skipsMap.get(customer.id);
               const autoDays = calculateElapsedDeliveryDays(customer.start_date, closuresSet, total, custSkips);
@@ -3337,10 +3312,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               const standardAllowance = tierKey === 'weekly' ? 5 : tierKey === 'trial' ? 1 : 20;
 
                               const total =
-                                customer.total_tiffin_credits && customer.total_tiffin_credits > 0
-                                  ? (tierKey === 'monthly' && customer.total_tiffin_credits === 25)
-                                    ? 20
-                                    : customer.total_tiffin_credits
+                                tierKey === 'monthly'
+                                  ? 20
+                                  : tierKey === 'weekly'
+                                  ? 5
+                                  : tierKey === 'trial'
+                                  ? 1
                                   : standardAllowance;
 
                               const custSkips = skipsMap.get(customer.id);
@@ -3658,7 +3635,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         <>
           <div
             onClick={closePanelGracefully}
-            className={`fixed inset-0 z-20 bg-black/10 transition-opacity duration-200 ${isSlideInActive ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+            className={`fixed inset-0 z-20 bg-black/25 backdrop-blur-[1px] transition-opacity duration-200 ${isSlideInActive ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           />
 
           <div
@@ -3666,7 +3643,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             className={`fixed z-30 bg-white shadow-2xl flex flex-col transition-transform duration-300 ease-out
               inset-x-0 bottom-0 max-h-[92vh] h-[92vh] rounded-t-2xl border-t border-gray-200
               ${isSlideInActive ? 'translate-y-0' : 'translate-y-full'}
-              md:inset-x-auto md:top-0 md:right-0 md:bottom-0 md:h-full md:max-h-full md:w-[640px] lg:w-[700px] md:rounded-none md:border-t-0 md:border-l md:border-[#EEEEEE]
+              md:inset-x-auto md:top-0 md:right-0 md:bottom-0 md:h-full md:max-h-full md:w-[820px] lg:w-[880px] xl:w-[940px] md:rounded-none md:border-t-0 md:border-l md:border-[#EEEEEE]
               md:${isSlideInActive ? 'translate-x-0' : 'translate-x-full'} md:translate-y-0
             `}
           >
@@ -4192,7 +4169,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               // If no payments recorded in the ledger, status is DUE (or OVERDUE if meals exceeded)
                               const hasPayments = customerPaymentsList.length > 0;
                               const isOverdue = usedCredits > (totalTiffinCredits ?? 20);
-                              
+
                               const derivedStatus = !hasPayments
                                 ? (isOverdue ? 'overdue' : 'due')
                                 : (selectedCustomer.payment_status || 'due');
@@ -4214,55 +4191,14 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
                           <button
                             type="button"
-                            onClick={() => {
-                              const isRenewing = usedCredits >= (totalTiffinCredits || 20);
-                              const targetTier = planTier || selectedCustomer.plan_tier || 'monthly';
-                              const targetCredits = totalTiffinCredits || (targetTier === 'weekly' ? 5 : targetTier === 'trial' ? 1 : 20);
-
-                              // 1. Calculate base rate dynamically from Meal Type + Portion Size
-                              const standardBaseRate = calculateStandardPlanPrice(
-                                mealType || selectedCustomer.meal_type,
-                                portionSize || selectedCustomer.portion_size,
-                                targetTier,
-                                targetCredits
-                              );
-
-                              // 2. Deduct active discount (flat or percent)
-                              let discountDeduction = 0;
-                              if (discountType === 'flat') {
-                                discountDeduction = Number(discountValue) || 0;
-                              } else if (discountType === 'percent') {
-                                discountDeduction = Math.round((standardBaseRate * (Number(discountValue) || 0)) / 100);
-                              }
-
-                              const finalCalculatedAmount = Math.max(0, standardBaseRate - discountDeduction);
-
-                              setPaymentAmount(String(finalCalculatedAmount));
-                              setPaymentMethod('etransfer');
-                              setPaymentPaidAt(toLocalDateKey(new Date()));
-                              setPaymentCredits(targetCredits);
-                              setPaymentCycleAction(isRenewing ? 'renew_next' : 'settle_current');
-                              
-                              // If renewing next cycle, anchor start date to day after current computed end date; otherwise current start date
-                              if (isRenewing && computedEndDate) {
-                                const nextStart = new Date(`${computedEndDate}T12:00:00`);
-                                nextStart.setDate(nextStart.getDate() + 1);
-                                setPaymentCycleStart(toLocalDateKey(nextStart));
-                              } else {
-                                setPaymentCycleStart(startDate || toLocalDateKey(new Date()));
-                              }
-
-                              setPaymentRefNote('');
-                              setSendWhatsAppReceipt(Boolean(phoneNumber));
-                              setShowLogPaymentModal(true);
-                            }}
+                            onClick={() => setShowLogPaymentModal(true)}
                             className="px-3 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
                           >
                             <CreditCard className="w-3.5 h-3.5" />
                             <span>Log Payment</span>
                           </button>
                         </div>
-{/* ── BILLING PERIODS & PAYMENT STATUS TRACKER ── */}
+                        {/* ── BILLING PERIODS & PAYMENT STATUS TRACKER ── */}
                         <div className="space-y-2 pt-2 pb-1 border-t border-gray-100">
                           <div className="flex items-center justify-between">
                             <span className="text-[11px] font-black text-gray-500 uppercase tracking-wider block">
@@ -4279,20 +4215,18 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               return (
                                 <div
                                   key={period.startDate}
-                                  className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
-                                    period.isPaid
+                                  className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${period.isPaid
                                       ? 'bg-emerald-50/40 border-emerald-200/80 text-emerald-950'
                                       : 'bg-rose-50/50 border-rose-200/80 text-rose-950'
-                                  }`}
+                                    }`}
                                 >
                                   <div className="min-w-0 flex-1">
                                     <div className="flex items-center gap-2">
                                       <span className="text-xs font-black tracking-tight">{period.label}</span>
-                                      <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase border ${
-                                        period.isPaid
+                                      <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase border ${period.isPaid
                                           ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
                                           : 'bg-rose-100 text-rose-800 border-rose-300'
-                                      }`}>
+                                        }`}>
                                         {period.isPaid ? 'PAID' : 'DUE'}
                                       </span>
                                     </div>
@@ -4322,17 +4256,16 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                       type="button"
                                       disabled={togglingPeriodIdx === period.index}
                                       onClick={() => handleTogglePeriodPayment(period)}
-                                      className={`h-8 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs border ${
-                                        period.isPaid
+                                      className={`h-8 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs border ${period.isPaid
                                           ? 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
                                           : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
-                                      }`}
+                                        }`}
                                     >
                                       {togglingPeriodIdx === period.index
                                         ? 'Saving...'
                                         : period.isPaid
-                                        ? 'Mark Unpaid'
-                                        : 'Mark Paid'}
+                                          ? 'Mark Unpaid'
+                                          : 'Mark Paid'}
                                     </button>
                                   </div>
                                 </div>
@@ -4371,7 +4304,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                       </span>
                                     )}
                                   </div>
-                                  
+
                                   <div className="flex items-center gap-1.5 shrink-0">
                                     <span className="text-[10.5px] font-medium text-gray-400 mr-1">
                                       {new Date(pmt.recorded_at).toLocaleDateString('en-US', {
@@ -4380,29 +4313,29 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                       })}
                                     </span>
                                     <button
-  type="button"
-  title="Edit payment entry"
-  onClick={() => {
-    setEditingPayment(pmt);
-    setEditPaymentAmount(String(pmt.amount));
-    setEditPaymentMethod(pmt.payment_method || 'etransfer');
-    setEditPaymentCredits(pmt.credits_added || 20);
-    setEditPaymentCycleAction(pmt.cycle_action || 'settle_current');
-    setEditPaymentCycleStart(
-      pmt.billing_cycle_start 
-        ? pmt.billing_cycle_start.slice(0, 10) 
-        : (startDate || toLocalDateKey(new Date()))
-    );
-    setEditPaymentRefNote(pmt.reference_note || '');
-    setEditSendWhatsAppReceipt(false);
-  }}
-  className="p-1 rounded-md text-gray-400 hover:text-[#5D5FEF] hover:bg-indigo-50 transition-colors cursor-pointer"
->
-  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-  </svg>
-</button>
+                                      type="button"
+                                      title="Edit payment entry"
+                                      onClick={() => {
+                                        setEditingPayment(pmt);
+                                        setEditPaymentAmount(String(pmt.amount));
+                                        setEditPaymentMethod(pmt.payment_method || 'etransfer');
+                                        setEditPaymentCredits(pmt.credits_added || 20);
+                                        setEditPaymentCycleAction(pmt.cycle_action || 'settle_current');
+                                        setEditPaymentCycleStart(
+                                          pmt.billing_cycle_start
+                                            ? pmt.billing_cycle_start.slice(0, 10)
+                                            : (startDate || toLocalDateKey(new Date()))
+                                        );
+                                        setEditPaymentRefNote(pmt.reference_note || '');
+                                        setEditSendWhatsAppReceipt(false);
+                                      }}
+                                      className="p-1 rounded-md text-gray-400 hover:text-[#5D5FEF] hover:bg-indigo-50 transition-colors cursor-pointer"
+                                    >
+                                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                                      </svg>
+                                    </button>
                                     <button
                                       type="button"
                                       title="Delete payment entry"
@@ -4503,14 +4436,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           role="switch"
                           aria-checked={isCustomWeekly}
                           onClick={() => setIsCustomWeekly(prev => !prev)}
-                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
-                            isCustomWeekly ? 'bg-[#5D5FEF]' : 'bg-gray-300'
-                          }`}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${isCustomWeekly ? 'bg-[#5D5FEF]' : 'bg-gray-300'
+                            }`}
                         >
                           <span
-                            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                              isCustomWeekly ? 'translate-x-6' : 'translate-x-1'
-                            }`}
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${isCustomWeekly ? 'translate-x-6' : 'translate-x-1'
+                              }`}
                           />
                         </button>
                       </div>
@@ -4525,11 +4456,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   key={day}
                                   type="button"
                                   onClick={() => setActiveMatrixDay(day)}
-                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                                    activeMatrixDay === day
+                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeMatrixDay === day
                                       ? 'bg-[#5D5FEF] text-white shadow-2xs'
                                       : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
-                                  }`}
+                                    }`}
                                 >
                                   {day.slice(0, 3)}
                                 </button>
@@ -5927,305 +5857,36 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         </>
       )}
 
-      {/* ── ADVANCED CYCLE-AWARE PAYMENT MODAL ── */}
+      {/* ── UNIFIED CYCLE-AWARE PAYMENT MODAL ── */}
       {showLogPaymentModal && selectedCustomer && (
-        <>
-          <div
-            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs"
-            onClick={() => setShowLogPaymentModal(false)}
-          />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-            <div
-              className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-lg pointer-events-auto p-5 sm:p-6 space-y-4 max-h-[92vh] overflow-y-auto"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between pb-3 border-b border-gray-100">
-                <div>
-                  <h3 className="text-base font-black text-gray-900 tracking-tight">
-                    Record Customer Payment
-                  </h3>
-                  <div className="flex items-center gap-1.5 text-xs text-gray-500 font-medium mt-0.5">
-                    <span className="font-bold text-gray-800 capitalize">{selectedCustomer.full_name}</span>
-                    <span>•</span>
-                    <span className="uppercase text-indigo-600 font-bold">{selectedCustomer.plan_tier || 'Monthly'}</span>
-                    <span>•</span>
-                    <span>{usedCredits}/{totalTiffinCredits ?? 20} Delivered</span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowLogPaymentModal(false)}
-                  className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Grace Meals Warning */}
-              {usedCredits > (totalTiffinCredits ?? 20) && (
-                <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-center gap-2">
-                  <span className="text-base">⚠️</span>
-                  <span>
-                    Customer has consumed <strong>{usedCredits - (totalTiffinCredits ?? 20)} grace meals</strong>. Renewing will roll them forward starting at <strong>{usedCredits - (totalTiffinCredits ?? 20)}/{paymentCredits}</strong>.
-                  </span>
-                </div>
-              )}
-
-              <div className="space-y-3.5">
-                {/* 1. Cycle Action Scope (Includes Historical / Past Cycle option) */}
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                    Payment Applies To
-                  </label>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {[
-                      { key: 'settle_current', label: 'Current Cycle', desc: 'Mark active as paid' },
-                      { key: 'renew_next', label: 'Next Cycle', desc: 'Renew & reset' },
-                      { key: 'historical', label: 'Past / Old Cycle', desc: 'Log previous payment' },
-                      { key: 'topup', label: 'Top-Up Only', desc: 'Add credits' },
-                    ].map((act) => (
-                      <button
-                        key={act.key}
-                        type="button"
-                        onClick={() => {
-                          setPaymentCycleAction(act.key as any);
-                          // If selecting past cycle, give them flexibility to backdate
-                          if (act.key === 'historical' && !paymentRefNote) {
-                            setPaymentRefNote('Previous cycle payment');
-                          }
-                        }}
-                        className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
-                          paymentCycleAction === act.key
-                            ? 'bg-indigo-50/80 border-[#5D5FEF] text-indigo-900 shadow-2xs ring-1 ring-[#5D5FEF]'
-                            : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                        }`}
-                      >
-                        <span className="block text-xs font-bold leading-tight">{act.label}</span>
-                        <span className="block text-[9.5px] text-gray-400 mt-0.5 leading-tight">{act.desc}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 2. Amount, Date Money Received & Credits */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                      Amount ($ CAD)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="1"
-                      value={paymentAmount}
-                      onChange={(e) => setPaymentAmount(e.target.value)}
-                      placeholder="e.g. 220.00"
-                      className="w-full text-base font-bold px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                      Date Money Received
-                    </label>
-                    <input
-                      type="date"
-                      value={paymentPaidAt}
-                      onChange={(e) => setPaymentPaidAt(e.target.value)}
-                      className="w-full text-xs font-bold px-3 py-2.5 bg-white border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-800"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                      Credits Covered
-                    </label>
-                    <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden h-10 bg-white">
-                      <button
-                        type="button"
-                        onClick={() => setPaymentCredits((p) => Math.max(1, p - 1))}
-                        className="w-8 h-full bg-gray-50 hover:bg-gray-100 font-bold border-r border-gray-200 text-gray-600 cursor-pointer"
-                      >
-                        −
-                      </button>
-                      <input
-                        type="number"
-                        min="1"
-                        value={paymentCredits}
-                        onChange={(e) => setPaymentCredits(Math.max(1, parseInt(e.target.value) || 1))}
-                        className="w-full text-center font-bold text-sm text-gray-900 outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setPaymentCredits((p) => p + 1)}
-                        className="w-8 h-full bg-gray-50 hover:bg-gray-100 font-bold border-l border-gray-200 text-gray-600 cursor-pointer"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 3. Date Window Covered (With Holiday & Customer Skip Breakdown) */}
-                <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-2.5">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-1">
-                        Cycle Start Date
-                      </label>
-                      <input
-                        type="date"
-                        value={paymentCycleStart}
-                        onChange={(e) => setPaymentCycleStart(e.target.value)}
-                        className="w-full text-xs font-bold px-3 py-2 bg-white border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-800 shadow-2xs"
-                      />
-                    </div>
-
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
-                          Projected End
-                        </label>
-                        <span className="text-[9.5px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-100 uppercase">
-                          Auto
-                        </span>
-                      </div>
-                      <div className="w-full h-9 px-3 bg-white border border-gray-200 rounded-xl flex items-center justify-between text-xs font-bold text-gray-800 shadow-2xs">
-                        <span>{paymentComputedEndDate ? formatShortLastDay(paymentComputedEndDate) : '—'}</span>
-                        <span className="text-[10.5px] text-gray-400 font-semibold">{paymentComputedEndDate || 'Set start date'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Holiday & Customer Skip Compensation Pill */}
-                  {paymentComputedEndResult && (paymentComputedEndResult.holidayDaysSkipped > 0 || paymentComputedEndResult.customerDaysSkipped > 0) && (
-                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
-                      <span>📅</span>
-                      <span>
-                        Extended by <strong>+{paymentComputedEndResult.holidayDaysSkipped + paymentComputedEndResult.customerDaysSkipped} days</strong>
-                        {paymentComputedEndResult.customerDaysSkipped > 0 && ` (${paymentComputedEndResult.customerDaysSkipped} customer skip${paymentComputedEndResult.customerDaysSkipped > 1 ? 's' : ''})`}
-                        {paymentComputedEndResult.holidayDaysSkipped > 0 && ` (${paymentComputedEndResult.holidayDaysSkipped} holiday closure${paymentComputedEndResult.holidayDaysSkipped > 1 ? 's' : ''})`}.
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                {/* 4. Payment Method */}
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                    Payment Method
-                  </label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {(['etransfer', 'cash', 'card', 'other'] as const).map((method) => (
-                      <button
-                        key={method}
-                        type="button"
-                        onClick={() => setPaymentMethod(method)}
-                        className={`py-2 rounded-xl text-xs font-bold border transition-all uppercase cursor-pointer ${
-                          paymentMethod === method
-                            ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-xs'
-                            : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        {method}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 5. Reference Note */}
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                    Reference / Confirmation Note (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={paymentRefNote}
-                    onChange={(e) => setPaymentRefNote(e.target.value)}
-                    placeholder="e.g. Interac Ref #391823, Cash collected by driver"
-                    className="w-full text-xs font-semibold px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-800"
-                  />
-                </div>
-
-                {/* 6. WhatsApp Receipt Toggle */}
-                {phoneNumber && (
-                  <label className="flex items-center gap-2.5 p-2.5 rounded-xl border border-emerald-100 bg-emerald-50/50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={sendWhatsAppReceipt}
-                      onChange={(e) => setSendWhatsAppReceipt(e.target.checked)}
-                      className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <div className="text-xs">
-                      <span className="font-bold text-emerald-900 block">Open WhatsApp Receipt on Confirm</span>
-                      <span className="text-emerald-700 text-[10.5px]">Pre-fills a payment confirmation text to {phoneNumber}</span>
-                    </div>
-                  </label>
-                )}
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => setShowLogPaymentModal(false)}
-                  className="px-4 py-2 border border-gray-200 text-gray-600 font-bold rounded-xl text-xs hover:bg-gray-50 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={isRecordingPayment || !paymentAmount}
-                  onClick={async () => {
-                    setIsRecordingPayment(true);
-                    try {
-                      const res = await recordCustomerPayment({
-                        customerId: selectedCustomer.id,
-                        amount: Number(paymentAmount),
-                        paymentMethod,
-                        paidAt: paymentPaidAt, // Exact day cash/e-transfer was received
-                        creditsAdded: paymentCredits,
-                        cycleAction: paymentCycleAction,
-                        referenceNote: paymentRefNote.trim() || null,
-                        billingCycleStart: paymentCycleStart || null,
-                        billingCycleEnd: paymentComputedEndDate || null,
-                        markStatusAs: paymentCycleAction === 'historical' ? undefined : 'paid',
-                      });
-
-                      if (res.success && res.payment) {
-                        setCustomerPaymentsList((prev) => [res.payment, ...prev]);
-                        setSelectedCustomer({
-                          ...selectedCustomer,
-                          payment_status: 'paid',
-                          total_tiffin_credits: paymentCycleAction === 'topup' ? (selectedCustomer.total_tiffin_credits || 20) + paymentCredits : selectedCustomer.total_tiffin_credits,
-                          used_credits: paymentCycleAction === 'renew_next' ? Math.max(0, (selectedCustomer.used_credits || 0) - (selectedCustomer.total_tiffin_credits || 20)) : selectedCustomer.used_credits,
-                        });
-                        showToast(`Logged $${paymentAmount} payment for ${selectedCustomer.full_name}`);
-                        setShowLogPaymentModal(false);
-
-                        // Trigger WhatsApp receipt if enabled
-                        if (sendWhatsAppReceipt && phoneNumber) {
-                          const cleanDigits = phoneNumber.replace(/[^0-9]/g, '');
-                          const cycleDatesStr = paymentCycleStart && paymentComputedEndDate ? ` for period (${paymentCycleStart} to ${paymentComputedEndDate})` : '';
-                          const message = `Hi ${selectedCustomer.full_name}, we have received your payment of $${Number(paymentAmount).toFixed(2)} CAD via ${paymentMethod.toUpperCase()}${cycleDatesStr} covering ${paymentCredits} meals. Your balance is now settled. Thank you for choosing TiffinOS!`;
-                          window.open(`https://wa.me/${cleanDigits}?text=${encodeURIComponent(message)}`, '_blank');
-                        }
-                      }
-                    } catch (err: any) {
-                      showToast(err.message || 'Failed to record payment', 'error');
-                    } finally {
-                      setIsRecordingPayment(false);
-                    }
-                  }}
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow-xs transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  {isRecordingPayment ? 'Recording...' : 'Confirm Payment'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
+        <RecordPaymentModal
+          customer={{
+            ...selectedCustomer,
+            start_date: startDate || selectedCustomer.start_date,
+            plan_tier: planTier || selectedCustomer.plan_tier,
+            total_tiffin_credits: totalTiffinCredits || selectedCustomer.total_tiffin_credits,
+            used_credits: usedCredits,
+            meal_type: mealType || selectedCustomer.meal_type,
+            portion_size: portionSize || selectedCustomer.portion_size,
+            discount_type: discountType === 'none' ? null : discountType,
+            discount_value: discountValue ? Number(discountValue) : null,
+            delivery_schedule: serializeSchedule(selectedDays),
+            cycle_end_date: computedEndDate || selectedCustomer.cycle_end_date,
+          }}
+          onClose={() => setShowLogPaymentModal(false)}
+          onSuccess={(payment) => {
+            setCustomerPaymentsList((prev) => [payment, ...prev]);
+            setSelectedCustomer({
+              ...selectedCustomer,
+              payment_status: 'paid',
+            });
+            showToast(`Logged $${payment.amount} payment for ${selectedCustomer.full_name}`);
+          }}
+          closuresSet={closuresSet}
+          skipsMap={skipsMap}
+        />
       )}
-    {/* ── ADVANCED EDIT PAYMENT RECORD MODAL ── */}
+      {/* ── ADVANCED EDIT PAYMENT RECORD MODAL ── */}
       {editingPayment && selectedCustomer && (
         <>
           <div
@@ -6275,11 +5936,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         key={act.key}
                         type="button"
                         onClick={() => setEditPaymentCycleAction(act.key as any)}
-                        className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
-                          editPaymentCycleAction === act.key
+                        className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${editPaymentCycleAction === act.key
                             ? 'bg-indigo-50/80 border-[#5D5FEF] text-indigo-900 shadow-2xs'
                             : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                        }`}
+                          }`}
                       >
                         <span className="block text-xs font-bold leading-tight">{act.label}</span>
                         <span className="block text-[10px] text-gray-400 mt-0.5">{act.desc}</span>
@@ -6389,11 +6049,10 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         key={method}
                         type="button"
                         onClick={() => setEditPaymentMethod(method)}
-                        className={`py-2 rounded-xl text-xs font-bold border transition-all uppercase cursor-pointer ${
-                          editPaymentMethod === method
+                        className={`py-2 rounded-xl text-xs font-bold border transition-all uppercase cursor-pointer ${editPaymentMethod === method
                             ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-xs'
                             : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                        }`}
+                          }`}
                       >
                         {method}
                       </button>

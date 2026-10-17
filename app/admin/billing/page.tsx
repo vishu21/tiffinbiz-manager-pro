@@ -6,7 +6,12 @@ export const dynamic = 'force-dynamic';
 export default async function BillingPage() {
   const supabase = await createClient();
 
-  const [{ data: customers }, { data: payments }] = await Promise.all([
+  const [
+    { data: customers },
+    { data: payments },
+    { data: closures },
+    { data: skips },
+  ] = await Promise.all([
     supabase
       .from('customers')
       .select('*')
@@ -15,11 +20,23 @@ export default async function BillingPage() {
       .from('customer_payments')
       .select('*')
       .order('recorded_at', { ascending: false })
-      .limit(100),
+      .limit(200),
+    supabase
+      .from('kitchen_closures')
+      .select('closure_date'),
+    supabase
+      .from('customer_daily_overrides')
+      .select('customer_id, override_date')
+      .eq('is_skipped', true),
   ]);
 
   const customerList = customers || [];
   const paymentList = payments || [];
+  const closuresList = (closures || []).map((c: any) => c.closure_date);
+  const skipsList = (skips || []).map((s: any) => ({
+    customerId: String(s.customer_id),
+    date: String(s.override_date || '').slice(0, 10),
+  }));
 
   // Summary Metrics
   const dueCount = customerList.filter(c => {
@@ -98,7 +115,12 @@ export default async function BillingPage() {
       </div>
 
       {/* ── INTERACTIVE RECEIVABLES TABLE ── */}
-      <BillingTableClient initialCustomers={customerList} recentPayments={paymentList} />
+      <BillingTableClient
+        initialCustomers={customerList}
+        recentPayments={paymentList}
+        initialClosures={closuresList}
+        initialSkips={skipsList}
+      />
     </div>
   );
 }

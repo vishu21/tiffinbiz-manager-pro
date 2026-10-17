@@ -261,13 +261,10 @@ export default function GlobalSkipModal({
     setError(null);
   };
 
-  const addRange = () => {
-    const startKey = normalizeDateInput(rangeStart);
-    const endKey = normalizeDateInput(rangeEnd);
-    if (!startKey || !endKey) {
-      setError('Pick both a start and an end date for the range.');
-      return;
-    }
+  const applyRangeDates = (startVal: string, endVal: string) => {
+    const startKey = normalizeDateInput(startVal);
+    const endKey = normalizeDateInput(endVal);
+    if (!startKey || !endKey) return;
     if (endKey < startKey) {
       setError('The range end must be on or after the start date.');
       return;
@@ -279,6 +276,10 @@ export default function GlobalSkipModal({
     }
     setSelected(prev => Array.from(new Set([...prev, ...inRange])).sort());
     setError(null);
+  };
+
+  const addRange = () => {
+    applyRangeDates(rangeStart, rangeEnd);
   };
 
   // Live impact preview — walks the cycle twice (before / after the skip) with
@@ -348,7 +349,18 @@ export default function GlobalSkipModal({
     }
 
     // Branch 2: Standard Daily Skip or Undo Skip
-    if (selected.length === 0) {
+    let finalDates = [...selected];
+
+    if (mode === 'skip' && rangeStart && rangeEnd) {
+      const startKey = normalizeDateInput(rangeStart);
+      const endKey = normalizeDateInput(rangeEnd);
+      if (startKey && endKey && endKey >= startKey) {
+        const inRange = deliveryDatesInRange(startKey, endKey, scheduleForDates);
+        finalDates = Array.from(new Set([...finalDates, ...inRange])).sort();
+      }
+    }
+
+    if (finalDates.length === 0) {
       setError(mode === 'skip' ? 'Pick at least one date to skip.' : 'Pick at least one skip to undo.');
       return;
     }
@@ -357,7 +369,7 @@ export default function GlobalSkipModal({
       try {
         const result = await recordCustomerSkip({
           customerId: activeTarget.id,
-          skipDates: selected,
+          skipDates: finalDates,
           isSkipped: mode === 'skip',
           reason: reason.trim() || undefined,
         });
@@ -631,7 +643,13 @@ export default function GlobalSkipModal({
                     type="date"
                     value={rangeStart}
                     max={rangeEnd || undefined}
-                    onChange={event => setRangeStart(event.target.value)}
+                    onChange={event => {
+                      const next = event.target.value;
+                      setRangeStart(next);
+                      if (next && rangeEnd) {
+                        applyRangeDates(next, rangeEnd);
+                      }
+                    }}
                     className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-[12px] font-semibold text-gray-700 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
                   />
                   <span className="text-[12px] font-bold text-gray-400">→</span>
@@ -639,14 +657,20 @@ export default function GlobalSkipModal({
                     type="date"
                     value={rangeEnd}
                     min={rangeStart || undefined}
-                    onChange={event => setRangeEnd(event.target.value)}
+                    onChange={event => {
+                      const next = event.target.value;
+                      setRangeEnd(next);
+                      if (rangeStart && next) {
+                        applyRangeDates(rangeStart, next);
+                      }
+                    }}
                     className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-[12px] font-semibold text-gray-700 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
                   />
                   <button
                     type="button"
                     onClick={addRange}
                     disabled={!rangeStart || !rangeEnd}
-                    className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50"
+                    className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-[12px] font-bold text-amber-800 transition-colors hover:bg-amber-100 disabled:opacity-50"
                   >
                     Add range
                   </button>

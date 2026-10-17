@@ -28,6 +28,12 @@ export const toLocalDateKey = (date: Date): string => {
   return `${y}-${m}-${d}`;
 };
 
+export const formatShortDate = (dateKey: string): string => {
+  const date = new Date(`${dateKey}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return dateKey;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
 // Accepts 'YYYY-MM-DD', 'MM/DD/YYYY' (the admin form's typed format) or a full
 // timestamp and returns a normalized 'YYYY-MM-DD' key (null when unusable).
 export const normalizeDateKey = (value: string | null | undefined): string | null => {
@@ -295,10 +301,11 @@ export function computeCustomerPeriods(params: {
   if (!customer.start_date) return [];
 
   const tier = (customer.plan_tier || 'monthly').toLowerCase() as PricingTier;
+  
+  // Standard plan capacity: Monthly = 20, Weekly = 5, Trial = 1.
+  // Closures & skips extend the date window; they NEVER add extra meals.
   const creditsPerCycle =
-    customer.total_tiffin_credits && customer.total_tiffin_credits > 0
-      ? customer.total_tiffin_credits
-      : tier === 'weekly'
+    tier === 'weekly'
       ? 5
       : tier === 'trial'
       ? 1

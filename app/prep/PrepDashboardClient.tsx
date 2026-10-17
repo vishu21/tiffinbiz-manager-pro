@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback, useRef, useTransition, useSyncExternalStore } from 'react';
-import { Printer, CalendarOff, AlertTriangle, UtensilsCrossed, Settings2, Scale, Soup, Flame, Leaf, MapPin, Truck, Pause, Undo2, Check, Ban, Search, Folder, FileText, Package, Wheat, Zap, Loader2 } from 'lucide-react';
+import { Printer, CalendarOff, AlertTriangle, UtensilsCrossed, Settings2, Scale, Soup, Flame, Leaf, MapPin, Truck, Pause, Undo2, Check, Ban, Search, Folder, FileText, Package, Wheat, Zap, Loader2, X } from 'lucide-react';
 import { startGlobalProgress, stopGlobalProgress } from '@/app/components/ui/GlobalProgressBar';
 import {
   fetchDailyMenu,
@@ -181,14 +181,15 @@ const calculateTargetLastDay = (
   deliverySchedule?: string | null,
   closureDates?: Set<string> | Map<string, string> | null,
   customerSkips?: Set<string> | null,
-): string | null =>
-  computeCycleEndDate({
+): string | null => {
+  return computeCycleEndDate({
     startDate: startDateStr,
     totalMeals,
     deliveryDays: resolveDeliveryDayNumbers(deliverySchedule),
     closureDates,
     customerSkips,
   });
+};
 
 const resolveCustomerTotalMeals = (customer: Customer): number => {
   const dbCredits = customer.total_tiffin_credits ?? customer.total_credits;
@@ -233,6 +234,8 @@ const getDeliveryScheduleStatus = (
   activeDay: string,
   dateKey: string,
   hasDeliveryLog: boolean = false,
+  closureDates?: Set<string> | Map<string, string> | null,
+  customerSkips?: Set<string> | null,
 ): 'active' | 'pending_renewal' | 'lapsed' | false => {
   const subStatus = (customer.subscription_status || 'active').toLowerCase();
   if (subStatus === 'cancelled') return false;
@@ -268,21 +271,24 @@ const getDeliveryScheduleStatus = (
 
   if (!dayMatches) return false;
 
-  const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
-  const totalMeals = resolveCustomerTotalMeals(customer);
-  const computedEnd = !explicitEnd && customer.start_date
-    ? calculateTargetLastDay(
-        customer.start_date,
-        totalMeals,
-        customer.delivery_schedule
-      )
-    : null;
-  const effectiveEnd = explicitEnd || computedEnd;
-
   const scheduledCancel = customer.scheduled_cancel_date;
   if (scheduledCancel && dateKey > scheduledCancel) {
     return false;
   }
+
+  // Always compute the real compensated end date using closures and customer skips!
+  const totalMeals = resolveCustomerTotalMeals(customer);
+  const computedEnd = customer.start_date
+    ? calculateTargetLastDay(
+        customer.start_date,
+        totalMeals,
+        customer.delivery_schedule,
+        closureDates,
+        customerSkips
+      )
+    : null;
+
+  const effectiveEnd = computedEnd || (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null);
 
   if (effectiveEnd) {
     if (dateKey <= effectiveEnd) {
@@ -926,6 +932,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   const [isLapsedTrayOpen, setIsLapsedTrayOpen] = useState(false);
   const [skipRanges, setSkipRanges] = useState<Record<string, CustomerSkipWindow>>({});
   const [upcomingSkipsMap, setUpcomingSkipsMap] = useState<Map<string, string[]>>(new Map());
+  const [allSkipsMap, setAllSkipsMap] = useState<Map<string, Set<string>>>(new Map());
+  const [undoPromptCustomer, setUndoPromptCustomer] = useState<{
+    id: string;
+    name: string;
+    range: CustomerSkipWindow;
+  } | null>(null);
   const [kitchenBaseAddress, setKitchenBaseAddress] = useState<string>(
     'Unit 42, 3270 Singleton Ave, London, ON N6L 0E5'
   );
@@ -1229,13 +1241,30 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
   // successful save, so /prep counts + active skip ranges refresh without a hard
   // browser reload.
   useEffect(() => {
-    const handleSkipSynced = () => {
+    const handleSkipSynced = async () => {
       router.refresh();
-      // Silently refresh daily overrides and active skip ranges for the selected date
       void refreshDailyOverrides(selectedDateKey);
       getCustomerActiveSkipRanges(selectedDateKey).then(ranges => {
         if (ranges) setSkipRanges(ranges);
       });
+      const { createClient } = await import('@/utils/supabase/client');
+      const supabase = createClient();
+      const { data } = await supabase
+        .from('customer_daily_overrides')
+        .select('customer_id, override_date')
+        .eq('is_skipped', true);
+      if (data) {
+        const sMap = new Map<string, Set<string>>();
+        data.forEach((row: any) => {
+          const cid = String(row.customer_id);
+          const sDate = String(row.override_date || '').slice(0, 10);
+          if (cid && sDate) {
+            if (!sMap.has(cid)) sMap.set(cid, new Set());
+            sMap.get(cid)!.add(sDate);
+          }
+        });
+        setAllSkipsMap(sMap);
+      }
     };
 
     window.addEventListener('tiffin:skip-synced', handleSkipSynced);
@@ -1296,6 +1325,78 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           err instanceof Error ? err.message : 'Could not update the skip. Please try again.'
         );
         console.error('[Prep] Daily skip toggle failed:', err);
+      }
+    });
+  };
+
+  const handleUndoSkipRange = async (customerId: string, scope: 'today' | 'all') => {
+    const range = skipRanges[customerId];
+    if (scope === 'today' || !range || range.count <= 1) {
+      handleToggleSkip(customerId, false);
+      return;
+    }
+
+    setQuickSaveError(null);
+    startSkipTransition(async () => {
+      try {
+        const { createClient } = await import('@/utils/supabase/client');
+        const supabase = createClient();
+
+        // 1. Delete all skipped overrides in this date range directly from Supabase
+        await supabase
+          .from('customer_daily_overrides')
+          .delete()
+          .eq('customer_id', customerId)
+          .gte('override_date', range.start)
+          .lte('override_date', range.end)
+          .eq('is_skipped', true);
+
+        // 2. Also run recordCustomerSkip to recalculate cycle_end_date and log audit trail
+        const { recordCustomerSkip } = await import('@/app/admin/actions');
+        const start = new Date(`${range.start}T12:00:00`);
+        const end = new Date(`${range.end}T12:00:00`);
+        const allDates: string[] = [];
+        const cur = new Date(start);
+
+        while (cur <= end) {
+          if (cur.getDay() !== 0 && cur.getDay() !== 6) {
+            allDates.push(toLocalDateKey(cur));
+          }
+          cur.setDate(cur.getDate() + 1);
+        }
+
+        await recordCustomerSkip({
+          customerId,
+          skipDates: allDates,
+          isSkipped: false,
+        });
+
+        // 3. Immediately clear local states so badges vanish without needing page refresh
+        setSkipRanges(prev => {
+          const next = { ...prev };
+          delete next[customerId];
+          return next;
+        });
+
+        setUpcomingSkipsMap(prev => {
+          const next = new Map(prev);
+          next.delete(customerId);
+          return next;
+        });
+
+        setAllSkipsMap(prev => {
+          const next = new Map(prev);
+          const currentSet = next.get(customerId);
+          if (currentSet) {
+            allDates.forEach(d => currentSet.delete(d));
+          }
+          return next;
+        });
+
+        window.dispatchEvent(new Event('tiffin:skip-synced'));
+        router.refresh();
+      } catch (err: any) {
+        setQuickSaveError(err.message || 'Failed to undo multi-day skip');
       }
     });
   };
@@ -1454,7 +1555,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
           futureDateList.push(toLocalDateKey(f));
         }
 
-        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes, skipRangesData, settingsRes, upcomingSkipsRes] = await Promise.all([
+        const [overrideRes, menuData, selectionData, snapshotData, deliveryLogsRes, skipRangesData, settingsRes, upcomingSkipsRes, allSkipsRes] = await Promise.all([
           getDailyOverrides(selectedDateKey),
           fetchDailyMenu(selectedDateKey),
           getDailyMenuSelection(selectedDateKey),
@@ -1467,7 +1568,24 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             .select('customer_id, override_date, is_skipped')
             .eq('is_skipped', true)
             .in('override_date', futureDateList),
+          supabase
+            .from('customer_daily_overrides')
+            .select('customer_id, override_date')
+            .eq('is_skipped', true),
         ]);
+
+        if (allSkipsRes?.data) {
+          const sMap = new Map<string, Set<string>>();
+          allSkipsRes.data.forEach((row: any) => {
+            const cid = String(row.customer_id);
+            const sDate = String(row.override_date || '').slice(0, 10);
+            if (cid && sDate) {
+              if (!sMap.has(cid)) sMap.set(cid, new Set());
+              sMap.get(cid)!.add(sDate);
+            }
+          });
+          setAllSkipsMap(sMap);
+        }
 
         if (skipRangesData) {
           setSkipRanges(skipRangesData);
@@ -1742,20 +1860,31 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
 
     resolvedCustomers.forEach(customer => {
       const hasLog = deliveryLoggedIds.has(customer.id);
-      const status = getDeliveryScheduleStatus(customer, activeDay, selectedDateKey, hasLog);
+      const custSkips = allSkipsMap.get(customer.id);
+      
+      // Pass closuresMap and custSkips directly into status calculation!
+      const status = getDeliveryScheduleStatus(
+        customer,
+        activeDay,
+        selectedDateKey,
+        hasLog,
+        closuresMap,
+        custSkips
+      );
       if (!status) return;
 
-      const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
       const totalMeals = resolveCustomerTotalMeals(customer);
-      const computedEnd = !explicitEnd && customer.start_date
+      const computedEnd = customer.start_date
         ? calculateTargetLastDay(
             customer.start_date,
             totalMeals,
             customer.delivery_schedule,
-            closuresMap
+            closuresMap,
+            custSkips
           )
         : null;
-      const effectiveEnd = explicitEnd || computedEnd || '';
+
+      const effectiveEnd = computedEnd || (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : '');
 
       const startDate = customer.start_date ? customer.start_date.slice(0, 10) : null;
       const isPastCycleRecord = hasLog && startDate && selectedDateKey < startDate;
@@ -2813,18 +2942,19 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                   }
                 }
 
-                const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
-                const custSkips = customerSkipsMap.get(customer.id);
-                const computedEnd = !explicitEnd && customer.start_date
+                const custSkips = allSkipsMap.get(customer.id);
+                const totalMealsConstrained = resolveCustomerTotalMeals(customer);
+                const computedEnd = customer.start_date
                   ? calculateTargetLastDay(
                       customer.start_date,
-                      totalMeals,
+                      totalMealsConstrained,
                       customer.delivery_schedule,
                       closuresMap,
                       custSkips
                     )
                   : null;
-                const effectiveTargetEnd = explicitEnd || computedEnd;
+
+                const effectiveTargetEnd = computedEnd || (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null);
 
                 const isLastDay =
                   !customer.isSkipped &&
@@ -3020,7 +3150,16 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleToggleSkip(customer.id, false);
+                            const range = skipRanges[customer.id];
+                            if (range && range.count > 1) {
+                              setUndoPromptCustomer({
+                                id: customer.id,
+                                name: customer.full_name,
+                                range,
+                              });
+                            } else {
+                              handleToggleSkip(customer.id, false);
+                            }
                           }}
                           className="text-[11px] font-bold text-amber-800 bg-white border border-amber-300 px-2.5 py-1 rounded hover:bg-amber-50 cursor-pointer shrink-0"
                         >
@@ -3110,18 +3249,19 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       }
                     }
 
-                    const explicitEnd = customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null;
-                    const custSkips = customerSkipsMap.get(customer.id);
-                    const computedEnd = !explicitEnd && customer.start_date
+                    const custSkips = allSkipsMap.get(customer.id);
+                    const totalMealsConstrained = resolveCustomerTotalMeals(customer);
+                    const computedEnd = customer.start_date
                       ? calculateTargetLastDay(
                           customer.start_date,
-                          totalMeals,
+                          totalMealsConstrained,
                           customer.delivery_schedule,
                           closuresMap,
                           custSkips
                         )
                       : null;
-                    const effectiveTargetEnd = explicitEnd || computedEnd;
+
+                    const effectiveTargetEnd = computedEnd || (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null);
 
                     const isLastDay =
                       !customer.isSkipped &&
@@ -3309,25 +3449,25 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                               };
 
                               return (
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-100/90 text-amber-900 border border-amber-300 text-[11px] font-bold leading-none shadow-2xs">
+                                <div className="flex items-center justify-between gap-1.5 max-w-full">
+                                  <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-amber-100/90 text-amber-900 border border-amber-300 text-[11px] font-bold leading-none shadow-2xs truncate min-w-0">
                                     <Ban className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2.5} />
-                                    <span className="font-black uppercase tracking-wider">SKIPPED</span>
+                                    <span className="font-black uppercase tracking-wider shrink-0">SKIPPED</span>
                                     {range && range.count > 1 ? (
                                       <>
-                                        <span className="text-amber-400">·</span>
-                                        <span>
-                                          {range.count} Days ({formatRangeDay(range.start)} → {formatRangeDay(range.end)})
+                                        <span className="text-amber-400 shrink-0">·</span>
+                                        <span className="truncate">
+                                          {range.count}d ({formatRangeDay(range.start)}–{formatRangeDay(range.end)})
                                         </span>
-                                        <span className="text-amber-400">·</span>
-                                        <span className="text-emerald-800 font-black">
+                                        <span className="text-amber-400 shrink-0">·</span>
+                                        <span className="text-emerald-800 font-black whitespace-nowrap shrink-0">
                                           Resumes {formatRangeDay(range.resumes)}
                                         </span>
                                       </>
                                     ) : (
                                       <>
-                                        <span className="text-amber-400">·</span>
-                                        <span className="font-medium text-amber-800">1 Day Only</span>
+                                        <span className="text-amber-400 shrink-0">·</span>
+                                        <span className="font-medium text-amber-800 shrink-0">1 Day Only</span>
                                       </>
                                     )}
                                   </div>
@@ -3336,10 +3476,19 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                                     type="button"
                                     onClick={event => {
                                       event.stopPropagation();
-                                      handleToggleSkip(customer.id, false);
+                                      const range = skipRanges[customer.id];
+                                      if (range && range.count > 1) {
+                                        setUndoPromptCustomer({
+                                          id: customer.id,
+                                          name: customer.full_name,
+                                          range,
+                                        });
+                                      } else {
+                                        handleToggleSkip(customer.id, false);
+                                      }
                                     }}
                                     disabled={isSkipPending}
-                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-amber-300 bg-white text-amber-800 text-[10.5px] font-bold tracking-wide hover:bg-amber-50 transition-colors whitespace-nowrap leading-none disabled:opacity-60 disabled:cursor-wait cursor-pointer"
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-amber-300 bg-white text-amber-800 text-[10.5px] font-bold tracking-wide hover:bg-amber-50 transition-colors whitespace-nowrap leading-none disabled:opacity-60 disabled:cursor-wait cursor-pointer shrink-0"
                                   >
                                     <Undo2 className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2} />
                                     <span>Undo</span>
@@ -3601,6 +3750,89 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
         activeDay={activeDay}
         kitchenAddress={kitchenBaseAddress}
       />
+      {/* ── MULTI-DAY SKIP UNDO PROMPT MODAL ── */}
+      {undoPromptCustomer && (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs"
+            onClick={() => setUndoPromptCustomer(null)}
+          />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+            <div
+              className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-sm pointer-events-auto p-5 space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+                <div>
+                  <h3 className="text-sm font-black text-gray-900 tracking-tight">Undo Delivery Skip</h3>
+                  <p className="text-xs text-gray-500 font-medium">
+                    {undoPromptCustomer.name} has a{' '}
+                    <strong className="text-amber-700">
+                      {undoPromptCustomer.range.count}-day skip
+                    </strong>{' '}
+                    active.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setUndoPromptCustomer(null)}
+                  className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  disabled={isSkipPending}
+                  onClick={() => {
+                    const cId = undoPromptCustomer.id;
+                    setUndoPromptCustomer(null);
+                    handleUndoSkipRange(cId, 'today');
+                  }}
+                  className="w-full p-3 rounded-xl border border-gray-200 hover:border-amber-400 hover:bg-amber-50/50 text-left transition-all cursor-pointer group"
+                >
+                  <div className="font-bold text-xs text-gray-800 group-hover:text-amber-900">
+                    Resume Today Only ({formatShortDate(selectedDateKey)})
+                  </div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">
+                    Cook for today, but keep the remaining skip days intact.
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSkipPending}
+                  onClick={() => {
+                    const cId = undoPromptCustomer.id;
+                    setUndoPromptCustomer(null);
+                    handleUndoSkipRange(cId, 'all');
+                  }}
+                  className="w-full p-3 rounded-xl border border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50 hover:border-emerald-400 text-left transition-all cursor-pointer group"
+                >
+                  <div className="font-bold text-xs text-emerald-900">
+                    Cancel Entire {undoPromptCustomer.range.count}-Day Vacation
+                  </div>
+                  <div className="text-[11px] text-emerald-700 mt-0.5">
+                    Customer returned early. Restore all scheduled deliveries and readjust cycle end date.
+                  </div>
+                </button>
+              </div>
+
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setUndoPromptCustomer(null)}
+                  className="px-3 py-1.5 text-xs font-bold text-gray-500 hover:bg-gray-100 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

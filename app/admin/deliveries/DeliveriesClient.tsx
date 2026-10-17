@@ -5,7 +5,13 @@ import { useRouter } from 'next/navigation';
 import PrepDatePicker from '@/app/components/PrepDatePicker';
 import { getDeliveryDateData, saveRouteAndPropagateFuture } from './actions';
 import { formatDeliveryMessage } from '@/app/utils/messageTemplate';
-import { resolveCustomerDayPlan } from '@/app/prep/prepCalculations';
+import {
+  resolveCustomerDayPlan,
+  formatBreadDisplay,
+  formatShortRice,
+  formatStreetOnlyAddress,
+  cleanPhoneNumberForWhatsApp,
+} from '@/app/utils/mealEngine';
 import {
   Package,
   BookOpen,
@@ -198,30 +204,7 @@ const calculateElapsedDeliveryDays = (
   return count;
 };
 
-const formatStreetOnlyAddress = (address: string | null | undefined): string => {
-  if (!address) return '';
-  const parts = address.split(',').map(p => p.trim()).filter(Boolean);
 
-  const streetParts = parts.filter(part => {
-    const p = part.toLowerCase();
-    const isCity = p === 'london' || p === 'woodstock' || p === 'st. thomas' || p === 'st thomas';
-    const isProvince = p === 'on' || p === 'ontario' || p === 'qc' || p === 'canada';
-    const isPostal = /^[a-z]\d[a-z]\s?\d[a-z]\d$/i.test(part);
-    return !isCity && !isProvince && !isPostal;
-  });
-
-  const baseStreet = streetParts.length > 0 ? streetParts.join(', ') : parts[0];
-  return baseStreet.replace(/\s+(london|woodstock|st\.?\s*thomas)$/i, '').trim();
-};
-
-function cleanPhoneNumberForWhatsApp(phone: string | null | undefined): string {
-  if (!phone) return '';
-  let digits = phone.replace(/\D/g, '');
-  if (digits.length === 10) {
-    digits = `1${digits}`;
-  }
-  return digits;
-}
 
 /**
  * Safely constructs a valid Google Maps navigation URL for desktop and mobile apps:
@@ -1312,13 +1295,12 @@ export default function DeliveriesClient({
                               <div className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500">
                                 <span>📦 Pack:</span>
                                 <span className="font-bold text-gray-800">
-                                  {dayPlan.roti > 0 ? `${dayPlan.roti} Roti` : 'No Roti'}
-                                  {dayPlan.pronthi > 0 ? ` + ${dayPlan.pronthi} Pronthi` : ''}
+                                  {formatBreadDisplay(dayPlan.roti, dayPlan.pronthi)}
                                 </span>
                                 {dayPlan.rice && dayPlan.rice !== 'None' && dayPlan.rice !== '—' && (
                                   <>
                                     <span>·</span>
-                                    <span className="font-bold text-blue-700">Rice: {dayPlan.rice}</span>
+                                    <span className="font-bold text-blue-700">Rice: {formatShortRice(dayPlan.rice)}</span>
                                   </>
                                 )}
                               </div>
