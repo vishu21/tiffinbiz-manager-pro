@@ -2,6 +2,7 @@
 
 import { createClient } from '@/utils/supabase/server';
 import { revalidatePath } from 'next/cache';
+import { recordCustomerSkip } from '@/app/admin/actions';
 
 type CreditCustomer = {
   id: string;
@@ -48,6 +49,8 @@ export async function renewPlan(customerId: string) {
   }
 
   revalidatePath('/admin/deliveries');
+  revalidatePath('/admin/customers');
+  revalidatePath('/prep');
 }
 
 const todayIso = () => new Date().toISOString().split('T')[0];
@@ -92,6 +95,7 @@ export async function markDelivered(customerId: string, targetDate?: string) {
   if (!inserted) {
     revalidatePath('/admin/deliveries');
     revalidatePath('/admin/customers');
+    revalidatePath('/prep');
     return;
   }
 
@@ -120,6 +124,7 @@ export async function markDelivered(customerId: string, targetDate?: string) {
 
   revalidatePath('/admin/deliveries');
   revalidatePath('/admin/customers');
+  revalidatePath('/prep');
 }
 
 export async function logSkip(customerId: string, targetDate?: string) {
@@ -130,30 +135,22 @@ export async function logSkip(customerId: string, targetDate?: string) {
   if (!inserted) {
     revalidatePath('/admin/deliveries');
     revalidatePath('/admin/customers');
+    revalidatePath('/prep');
     return;
   }
 
-  const { data: current } = await supabase
-    .from('customers')
-    .select('skipped_days_count')
-    .eq('id', customerId)
-    .single<{ skipped_days_count: number | null }>();
-
-  if (!current) throw new Error('Customer not found');
-
-  const next = (current.skipped_days_count || 0) + 1;
-  const { error: updateError } = await supabase
-    .from('customers')
-    .update({ skipped_days_count: next })
-    .eq('id', customerId);
-
-  if (updateError) {
-    console.error('Log skip error:', updateError);
-    throw new Error(updateError.message);
-  }
+  // Record skip in customer_daily_overrides, extend cycle_end_date by +1 delivery day,
+  // and increment skipped_days_count centrally
+  await recordCustomerSkip({
+    customerId,
+    skipDates: [dateKey],
+    isSkipped: true,
+    reason: 'Skipped during delivery run',
+  });
 
   revalidatePath('/admin/deliveries');
   revalidatePath('/admin/customers');
+  revalidatePath('/prep');
 }
 
 export async function undoTodayDispatchAction(customerId: string, targetDate?: string) {
@@ -170,6 +167,7 @@ export async function undoTodayDispatchAction(customerId: string, targetDate?: s
   if (!log) {
     revalidatePath('/admin/deliveries');
     revalidatePath('/admin/customers');
+    revalidatePath('/prep');
     return;
   }
 
@@ -202,23 +200,12 @@ export async function undoTodayDispatchAction(customerId: string, targetDate?: s
       throw new Error(updateError.message);
     }
   } else {
-    const { data: current } = await supabase
-      .from('customers')
-      .select('skipped_days_count')
-      .eq('id', customerId)
-      .single<{ skipped_days_count: number | null }>();
-
-    if (!current) throw new Error('Customer not found');
-
-    const next = Math.max(0, (current.skipped_days_count || 0) - 1);
-    const { error: updateError } = await supabase
-      .from('customers')
-      .update({ skipped_days_count: next })
-      .eq('id', customerId);
-    if (updateError) {
-      console.error('Undo skip error:', updateError);
-      throw new Error(updateError.message);
-    }
+    // Clear the skip override and shift the cycle_end_date back by 1 day
+    await recordCustomerSkip({
+      customerId,
+      skipDates: [dateKey],
+      isSkipped: false,
+    });
   }
 
   const { error: deleteError } = await supabase
@@ -234,6 +221,7 @@ export async function undoTodayDispatchAction(customerId: string, targetDate?: s
 
   revalidatePath('/admin/deliveries');
   revalidatePath('/admin/customers');
+  revalidatePath('/prep');
 }
 
 export async function saveDeliveryRouteOrder(
@@ -267,9 +255,6 @@ export async function saveDeliveryRouteOrder(
   }
 }
 
-/**
- * Saves route for `dateKey` AND forwards the updated sequence to future uncompleted dates.
- */
 export async function saveRouteAndPropagateFuture(
   dateKey: string,
   stopOrder: string[],
@@ -278,7 +263,6 @@ export async function saveRouteAndPropagateFuture(
   try {
     const supabase = await createClient();
 
-    // 1. Save for the current date
     await supabase
       .from('daily_delivery_routes')
       .upsert(
@@ -290,7 +274,6 @@ export async function saveRouteAndPropagateFuture(
         { onConflict: 'delivery_date' }
       );
 
-    // 2. Identify uncompleted future dates
     const futureDate = new Date(`${dateKey}T12:00:00`);
     const futureDateKeys: string[] = [];
 
@@ -310,7 +293,6 @@ export async function saveRouteAndPropagateFuture(
     const completedSet = new Set((completedDates || []).map((r: any) => r.delivery_date));
     const datesToOverwrite = futureDateKeys.filter(dk => !completedSet.has(dk));
 
-    // Overwrite future uncompleted days so they stay aligned with today's master sequence
     if (datesToOverwrite.length > 0) {
       const upsertRows = datesToOverwrite.map(dk => ({
         delivery_date: dk,
@@ -349,14 +331,12 @@ export async function getDeliveryDateData(dateKey: string) {
   try {
     const supabase = await createClient();
 
-    // 1. Fetch saved manual route order for this specific date
     const { data: routeRow } = await supabase
       .from('daily_delivery_routes')
       .select('stop_order')
       .eq('delivery_date', dateKey)
       .maybeSingle();
 
-    // 2. Fetch logged deliveries using the correct column name: 'event'
     const { data: logs, error: logsError } = await supabase
       .from('customer_deliveries')
       .select('customer_id, event')
@@ -373,7 +353,6 @@ export async function getDeliveryDateData(dateKey: string) {
 
     let routeOrder: string[] = parseStopOrder(routeRow?.stop_order);
 
-    // 3. If deliveries were completed, the actual delivered sequence takes precedence
     if (todayLogs.length > 0) {
       const deliveredIds = todayLogs.map(l => l.customerId);
       if (deliveredIds.length >= routeOrder.length) {
@@ -381,7 +360,6 @@ export async function getDeliveryDateData(dateKey: string) {
       }
     }
 
-    // 4. Inherit route from the most recent active delivery day if this day has no route yet
     if (routeOrder.length === 0) {
       const { data: prevRoutes } = await supabase
         .from('daily_delivery_routes')

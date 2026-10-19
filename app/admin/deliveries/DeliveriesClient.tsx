@@ -777,6 +777,7 @@ export default function DeliveriesClient({
 
     try {
       await logSkip(customerId, selectedDateKey);
+      window.dispatchEvent(new Event('tiffin:skip-synced'));
       router.refresh();
     } catch (err) {
       setActiveLogs(prev => prev.filter(l => l.customerId !== customerId));
@@ -786,7 +787,7 @@ export default function DeliveriesClient({
     }
   };
 
-  const handleUndo = async (customerId: string) => {
+const handleUndo = async (customerId: string) => {
     setBusyId(customerId);
     setErrorMsg('');
 
@@ -794,6 +795,7 @@ export default function DeliveriesClient({
 
     try {
       await undoTodayDispatchAction(customerId, selectedDateKey);
+      window.dispatchEvent(new Event('tiffin:skip-synced'));
       router.refresh();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to undo action');

@@ -4,6 +4,7 @@ import React, { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, MessageSquare, CreditCard } from 'lucide-react';
 import RecordPaymentModal from '@/app/components/RecordPaymentModal';
+import CustomerMessageModal, { type CustomerMessageTarget } from '@/app/components/CustomerMessageModal';
 import {
   calculateCycleTargetLastDay,
   resolveDeliveryDayNumbers,
@@ -27,6 +28,7 @@ export default function BillingTableClient({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'due' | 'overdue' | 'paid'>('all');
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
+  const [messagingTarget, setMessagingTarget] = useState<CustomerMessageTarget | null>(null);
 
   const closuresSet = useMemo(() => new Set(initialClosures), [initialClosures]);
   const skipsMap = useMemo(() => {
@@ -152,11 +154,6 @@ export default function BillingTableClient({
                 const total = c.total_tiffin_credits ?? 20;
                 const cleanPhone = cleanPhoneNumberForWhatsApp(c.phone_number);
 
-                const period = c.currentPeriod;
-                const reminderMsg = period
-                  ? `Hi ${c.full_name}, this is a reminder regarding your tiffin payment of $${period.expectedAmount.toFixed(2)} CAD for the cycle ${formatShortDate(period.startDate)} to ${formatShortDate(period.endDate)} (${period.credits} meals). Please send Interac e-Transfer to payments@tiffin.ca. Thank you!`
-                  : `Hi ${c.full_name}, your ${c.plan_tier || 'Monthly'} tiffin renewal is due. Please send Interac e-Transfer to payments@tiffin.ca. Thank you!`;
-
                 return (
                   <tr key={c.id} className="hover:bg-gray-50/80 transition-colors">
                     <td className="pl-4 py-3 font-bold text-gray-900 capitalize truncate">
@@ -202,15 +199,28 @@ export default function BillingTableClient({
                     <td className="pr-4 py-3 text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1.5">
                         {cleanPhone && c.calculatedStatus !== 'paid' && (
-                          <a
-                            href={`https://wa.me/${cleanPhone}?text=${encodeURIComponent(reminderMsg)}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title="Ping WhatsApp Reminder"
-                            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors"
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMessagingTarget({
+                                id: c.id,
+                                full_name: c.full_name,
+                                phone_number: c.phone_number,
+                                remaining_meals: Math.max(0, total - used),
+                                total_credits: total,
+                                cycle_end_date: c.dynamicEndDate,
+                                cycle_dates: c.currentPeriod
+                                  ? `${formatShortDate(c.currentPeriod.startDate)} → ${formatShortDate(c.currentPeriod.endDate)}`
+                                  : undefined,
+                                amount: c.currentPeriod?.expectedAmount ?? 250,
+                                plan_tier: c.plan_tier || 'Monthly',
+                              })
+                            }
+                            title="Edit & Send Billing Notice"
+                            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors cursor-pointer"
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
-                          </a>
+                          </button>
                         )}
                         <button
                           type="button"
@@ -241,6 +251,16 @@ export default function BillingTableClient({
           }}
           closuresSet={closuresSet}
           skipsMap={skipsMap}
+        />
+      )}
+
+      {/* ── SHARED UNIFIED CUSTOMER MESSAGE MODAL ── */}
+      {messagingTarget && (
+        <CustomerMessageModal
+          open={Boolean(messagingTarget)}
+          customer={messagingTarget}
+          initialPreset="balance"
+          onClose={() => setMessagingTarget(null)}
         />
       )}
     </div>

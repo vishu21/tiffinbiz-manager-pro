@@ -1,241 +1,221 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
-import { MessageSquare, Phone, X, Send, Copy, Check } from 'lucide-react';
-import { formatDeliveryMessage } from '@/app/utils/messageTemplate';
-import { addManualCustomerLog } from '@/app/admin/actions';
-import { useToast } from '@/app/components/ToastProvider';
+import React, { useState, useEffect } from 'react';
+import { MessageSquare, X, Copy, Send, Check } from 'lucide-react';
+import { cleanPhoneNumberForWhatsApp } from '@/app/utils/mealEngine';
+
+export type CustomerMessageTarget = {
+  id: string;
+  full_name: string;
+  phone_number?: string | null;
+  remaining_meals?: number;
+  total_credits?: number;
+  cycle_end_date?: string | null;
+  cycle_dates?: string | null;
+  amount?: number | string;
+  plan_tier?: string | null;
+  payment_email?: string;
+};
 
 interface CustomerMessageModalProps {
   open: boolean;
   onClose: () => void;
-  customer: {
-    id: string;
-    full_name: string;
-    phone_number?: string | null;
-    delivery_address?: string | null;
-    remaining_meals?: number;
-    cycle_end_date?: string | null;
-    total_credits?: number | null;
-  };
-  customTemplates?: Array<{ id: string; title: string; template: string }>;
-}
-
-export function cleanPhoneDigits(phone: string | null | undefined): string {
-  if (!phone) return '';
-  let digits = phone.replace(/\D/g, '');
-  if (digits.length === 10) digits = `1${digits}`;
-  return digits;
+  customer: CustomerMessageTarget | null;
+  initialPreset?: 'meals' | 'termProgress' | 'cycleEnd' | 'balance' | 'renewal';
 }
 
 export default function CustomerMessageModal({
   open,
   onClose,
   customer,
-  customTemplates = [],
+  initialPreset = 'balance',
 }: CustomerMessageModalProps) {
-  const { showToast } = useToast();
-  const [selectedTemplateKey, setSelectedTemplateKey] = useState<string>('remaining');
+  const [activePreset, setActivePreset] = useState<'meals' | 'cycleEnd' | 'balance' | 'renewal' | 'termProgress'>(initialPreset);
+  const [messageText, setMessageText] = useState('');
   const [copied, setCopied] = useState(false);
+  const [templates, setTemplates] = useState({
+    msg_meals_remaining: 'Hi {customer_name}, you currently have {remaining_meals} meals remaining in your cycle.',
+    msg_term_progress: 'Hi {customer_name}, you have {remaining_meals} out of {total_credits} tiffins remaining in your current {plan_tier} term ending on {cycle_end_date}.',
+    msg_cycle_end: 'Hi {customer_name}, your current delivery cycle runs until {cycle_end_date}.',
+    msg_balance_summary: 'Hi {customer_name}, this is your balance summary: ${amount} CAD is due for {cycle_dates} ({remaining_meals} meals left). Please send Interac e-Transfer to {payment_email}. Thank you!',
+    msg_renewal: 'Hi {customer_name}, your {plan_tier} plan ends on {cycle_end_date}. Please let us know if you would like to renew or make adjustments for next cycle. Thank you!',
+  });
 
-  const cleanPhone = useMemo(() => cleanPhoneDigits(customer.phone_number), [customer.phone_number]);
-  const isSmsPreferred = Boolean(customer.phone_number && /^SMS:/i.test(customer.phone_number.trim()));
+  // Reset preset selection when modal opens
+  useEffect(() => {
+    if (open) {
+      setActivePreset(initialPreset);
+    }
+  }, [open, initialPreset]);
 
-  const templates = useMemo(() => {
-    return [
-      {
-        key: 'remaining',
-        label: '🔢 Meals Remaining',
-        text: 'Hi {customer_name}, you currently have {remaining_meals} meals remaining in your active tiffin plan.',
-      },
-      {
-        key: 'end_date',
-        label: '📅 Cycle End Date',
-        text: 'Hi {customer_name}, your current tiffin cycle is scheduled through {cycle_end_date}.',
-      },
-      {
-        key: 'summary',
-        label: '📋 Full Balance Summary',
-        text: 'Hi {customer_name}, you have {remaining_meals} meals remaining. Your cycle runs until {cycle_end_date}.',
-      },
-      {
-        key: 'renewal',
-        label: '💳 Renewal Notice',
-        text: 'Hi {customer_name}, your cycle finishes on {cycle_end_date}. Please let us know if you would like to renew your service for the next cycle!',
-      },
-      ...customTemplates.map(t => ({
-        key: t.id,
-        label: t.title,
-        text: t.template,
-      })),
-    ];
-  }, [customTemplates]);
+  // Fetch real app_settings presets
+  useEffect(() => {
+    let isCurrent = true;
+    (async () => {
+      try {
+        const { createClient } = await import('@/utils/supabase/client');
+        const supabase = createClient();
+        const { data } = await supabase
+          .from('app_settings')
+          .select('msg_meals_remaining, msg_term_progress, msg_cycle_end, msg_balance_summary, msg_renewal')
+          .eq('id', 'default')
+          .maybeSingle();
 
-  const resolvedInitialText = useMemo(() => {
-    const tpl = templates.find(t => t.key === selectedTemplateKey)?.text || templates[0].text;
-    return formatDeliveryMessage(tpl, {
-      customer_name: customer.full_name,
-      address: customer.delivery_address || '',
-      remaining_meals: customer.remaining_meals ?? 0,
-      cycle_end_date: customer.cycle_end_date || 'N/A',
-      total_credits: customer.total_credits ?? 20,
-    });
-  }, [selectedTemplateKey, templates, customer]);
+        if (isCurrent && data) {
+          setTemplates(prev => ({
+            msg_meals_remaining: data.msg_meals_remaining || prev.msg_meals_remaining,
+            msg_term_progress: data.msg_term_progress || prev.msg_term_progress,
+            msg_cycle_end: data.msg_cycle_end || prev.msg_cycle_end,
+            msg_balance_summary: data.msg_balance_summary || prev.msg_balance_summary,
+            msg_renewal: data.msg_renewal || prev.msg_renewal,
+          }));
+        }
+      } catch (err) {
+        console.error('[CustomerMessageModal] Failed to load message templates:', err);
+      }
+    })();
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
 
-  const [messageDraft, setMessageDraft] = useState<string>(resolvedInitialText);
-
-  // Sync draft when template changes
-  const handleSelectTemplate = (key: string) => {
-    setSelectedTemplateKey(key);
-    const tpl = templates.find(t => t.key === key)?.text || '';
-    setMessageDraft(
-      formatDeliveryMessage(tpl, {
-        customer_name: customer.full_name,
-        address: customer.delivery_address || '',
-        remaining_meals: customer.remaining_meals ?? 0,
-        cycle_end_date: customer.cycle_end_date || 'N/A',
-        total_credits: customer.total_credits ?? 20,
-      })
-    );
+  const compile = (templateStr: string) => {
+    if (!customer) return '';
+    return templateStr
+      .replace(/{customer_name}/g, customer.full_name || '')
+      .replace(/{remaining_meals}/g, String(customer.remaining_meals ?? 0))
+      .replace(/{total_credits}/g, String(customer.total_credits ?? 20))
+      .replace(/{cycle_end_date}/g, customer.cycle_end_date || '—')
+      .replace(/{cycle_dates}/g, customer.cycle_dates || customer.cycle_end_date || 'Current Cycle')
+      .replace(/{amount}/g, typeof customer.amount === 'number' ? customer.amount.toFixed(2) : String(customer.amount || '250.00'))
+      .replace(/{plan_tier}/g, customer.plan_tier || 'Monthly')
+      .replace(/{payment_email}/g, customer.payment_email || 'payments@tiffin.ca');
   };
 
-  if (!open) return null;
+  useEffect(() => {
+    if (!customer || !open) return;
+    let raw = templates.msg_balance_summary;
+    if (activePreset === 'meals') raw = templates.msg_meals_remaining;
+    if (activePreset === 'termProgress') raw = templates.msg_term_progress;
+    if (activePreset === 'cycleEnd') raw = templates.msg_cycle_end;
+    if (activePreset === 'renewal') raw = templates.msg_renewal;
 
-  const handleSend = async (channel: 'whatsapp' | 'sms') => {
-    if (!cleanPhone) {
-      showToast('No phone number on file', 'error');
-      return;
-    }
+    setMessageText(compile(raw));
+  }, [customer, open, activePreset, templates]);
 
-    // 1. Log communication audit entry
-    void addManualCustomerLog({
-      customerId: customer.id,
-      summary: `Sent message (${channel.toUpperCase()}): "${messageDraft.slice(0, 80)}..."`,
-      actionType: 'NOTE',
-      date: new Date().toISOString().slice(0, 10),
-    });
+  if (!open || !customer) return null;
 
-    // 2. Open communication link
-    if (channel === 'whatsapp') {
-      window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageDraft)}`, '_blank');
-    } else {
-      window.location.href = `sms:${cleanPhone}?&body=${encodeURIComponent(messageDraft)}`;
-    }
-
-    showToast(`Opening ${channel === 'whatsapp' ? 'WhatsApp' : 'SMS'} composer...`);
-    onClose();
-  };
+  const cleanPhone = cleanPhoneNumberForWhatsApp(customer.phone_number);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(messageDraft);
+    navigator.clipboard.writeText(messageText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    showToast('Copied to clipboard');
+  };
+
+  const handleSendWhatsApp = () => {
+    if (!cleanPhone) return;
+    window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(messageText)}`, '_blank');
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-2xs">
-      <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-lg overflow-hidden flex flex-col space-y-4 p-5 animate-in fade-in zoom-in-95">
-        
-        {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-          <div>
-            <h3 className="text-base font-black text-gray-900 tracking-tight flex items-center gap-2">
-              <MessageSquare className="w-4 h-4 text-[#5D5FEF]" />
-              <span>Send Customer Update</span>
-            </h3>
-            <p className="text-xs text-gray-500 font-medium mt-0.5">
-              To <strong className="text-gray-800">{customer.full_name}</strong> {cleanPhone ? `(${customer.phone_number})` : '(No phone)'}
-            </p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs font-sans">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+
+        {/* Modal Header */}
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-[#00D1B2]/10 text-[#00D1B2] flex items-center justify-center font-bold">
+              <MessageSquare className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-slate-900 tracking-tight">Send Customer Update</h3>
+              <p className="text-[11.5px] text-slate-500 font-semibold">
+                To <strong className="text-slate-800 capitalize">{customer.full_name}</strong> ({customer.phone_number || 'No phone'})
+              </p>
+            </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Template Selector Strip */}
-        <div>
-          <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-            Select Inquiry / Message Template
-          </label>
-          <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1">
-            {templates.map(t => (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => handleSelectTemplate(t.key)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                  selectedTemplateKey === t.key
-                    ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-xs'
-                    : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Editable Message Box */}
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider">
-              Message Text (Editable)
+        {/* Modal Body */}
+        <div className="p-6 space-y-4">
+          <div>
+            <label className="block text-[11px] font-black uppercase text-slate-400 tracking-wider mb-1.5">
+              Select Inquiry / Message Template
             </label>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer"
-            >
-              {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-              <span>{copied ? 'Copied' : 'Copy'}</span>
-            </button>
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { key: 'meals' as const, label: '🍱 Meals Remaining' },
+                { key: 'termProgress' as const, label: '📊 Term Progress' },
+                { key: 'cycleEnd' as const, label: '📅 Cycle End Date' },
+                { key: 'balance' as const, label: '💳 Full Balance Summary' },
+                { key: 'renewal' as const, label: '⏳ Renewal Notice' },
+              ].map((preset) => (
+                <button
+                  key={preset.key}
+                  type="button"
+                  onClick={() => setActivePreset(preset.key)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                    activePreset === preset.key
+                      ? 'bg-[#00D1B2] text-white border-[#00D1B2] shadow-xs'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <textarea
-            rows={4}
-            value={messageDraft}
-            onChange={e => setMessageDraft(e.target.value)}
-            className="w-full text-xs font-medium p-3 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-800 leading-relaxed bg-slate-50/50 resize-none"
-          />
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[11px] font-black uppercase text-slate-400 tracking-wider">
+                Message Text (Editable)
+              </label>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="text-xs font-bold text-[#5D5FEF] hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copied ? 'Copied' : 'Copy'}</span>
+              </button>
+            </div>
+            <textarea
+              rows={5}
+              value={messageText}
+              onChange={e => setMessageText(e.target.value)}
+              className="w-full p-3 text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-[#5D5FEF] outline-none leading-relaxed text-slate-800"
+            />
+          </div>
         </div>
 
-        {/* Footer Actions */}
-        <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+        {/* Modal Footer */}
+        <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex items-center justify-between">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 border border-gray-200 text-gray-600 font-bold rounded-xl text-xs hover:bg-gray-50 cursor-pointer"
+            className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200/60 rounded-xl transition-colors cursor-pointer"
           >
             Cancel
           </button>
 
-          <div className="flex items-center gap-2">
-            {isSmsPreferred ? (
-              <button
-                type="button"
-                onClick={() => handleSend('sms')}
-                disabled={!cleanPhone}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-xs disabled:opacity-40 cursor-pointer"
-              >
-                <Phone className="w-3.5 h-3.5" />
-                <span>Send SMS</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => handleSend('whatsapp')}
-                disabled={!cleanPhone}
-                className="px-4 py-2 bg-[#25D366] hover:bg-[#20bd5a] text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-xs disabled:opacity-40 cursor-pointer"
-              >
-                <MessageSquare className="w-3.5 h-3.5" />
-                <span>Send via WhatsApp</span>
-              </button>
-            )}
-          </div>
+          <button
+            type="button"
+            disabled={!cleanPhone}
+            onClick={handleSendWhatsApp}
+            className="px-5 py-2.5 bg-[#25D366] hover:bg-[#20bd5a] text-white font-black text-xs rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer disabled:opacity-40"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>Send via WhatsApp</span>
+          </button>
         </div>
 
       </div>

@@ -119,12 +119,15 @@ export default function GlobalSkipProvider({ children }: { children: React.React
 }
 
 /** Reads the global skip surface. Must be used inside `<GlobalSkipProvider>`. */
-export function useGlobalSkip(): GlobalSkipContextValue {
+export function useGlobalSkip() {
   const context = useContext(GlobalSkipContext);
   if (!context) {
-    throw new Error(
-      'useGlobalSkip must be used within <GlobalSkipProvider> (see app/layout.tsx)'
-    );
+    // Return safe fallback so SSR and edge layout transitions don't crash
+    return {
+      openSkipModal: () => console.warn('[useGlobalSkip] Called outside GlobalSkipProvider'),
+      closeSkipModal: () => {},
+      isModalOpen: false,
+    };
   }
   return context;
 }
