@@ -76,6 +76,7 @@ interface CustomerMessageModalProps {
   onClose: () => void;
   customer: CustomerMessageTarget | null;
   initialPresetId?: string;
+  initialPreset?: string;
 }
 
 export default function CustomerMessageModal({
@@ -83,7 +84,9 @@ export default function CustomerMessageModal({
   onClose,
   customer,
   initialPresetId,
+  initialPreset,
 }: CustomerMessageModalProps) {
+  const targetPresetId = initialPresetId || (initialPreset === 'balance' ? 'balance_summary' : initialPreset);
   const [presets, setPresets] = useState<CustomTemplate[]>(FALLBACK_CUSTOMER_PRESETS);
   const [activePresetId, setActivePresetId] = useState<string>('');
   const [defaultPaymentEmail, setDefaultPaymentEmail] = useState<string>('payments@tiffin.ca');
@@ -134,15 +137,15 @@ export default function CustomerMessageModal({
   // Initialize selected preset
   useEffect(() => {
     if (presets.length > 0) {
-      if (initialPresetId && presets.some(p => p.id === initialPresetId)) {
-        setActivePresetId(initialPresetId);
+      if (targetPresetId && presets.some(p => p.id === targetPresetId)) {
+        setActivePresetId(targetPresetId);
       } else if (quickPills.length > 0) {
         setActivePresetId(quickPills[0].id);
       } else {
         setActivePresetId(presets[0].id);
       }
     }
-  }, [open, initialPresetId, presets]);
+  }, [open, targetPresetId, presets]);
 
   const formatShortDate = (dateStr: string | null | undefined): string => {
     if (!dateStr) return '';

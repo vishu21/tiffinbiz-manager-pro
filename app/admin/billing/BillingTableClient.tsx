@@ -263,7 +263,7 @@ export default function BillingTableClient({
         <CustomerMessageModal
           open={Boolean(messagingTarget)}
           customer={messagingTarget}
-          initialPreset="balance"
+          initialPresetId="balance_summary"
           onClose={() => setMessagingTarget(null)}
         />
       )}
