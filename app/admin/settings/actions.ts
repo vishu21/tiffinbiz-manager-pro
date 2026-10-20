@@ -7,6 +7,21 @@ export type CustomTemplate = {
   id: string;
   title: string;
   template: string;
+  tag?: string;
+  is_pinned?: boolean;
+};
+
+export type PlanTierPricing = {
+  base_veg: number;
+  non_veg_addon: number;
+  large_addon: number;
+  half_discount: number;
+};
+
+export type PlanPricingMatrix = {
+  monthly: PlanTierPricing;
+  weekly: PlanTierPricing;
+  trial: PlanTierPricing;
 };
 
 export type AppSettingsPayload = {
@@ -19,13 +34,44 @@ export type AppSettingsPayload = {
   friday_message_template?: string;
   friday_double_pack_template?: string;
   custom_message_templates?: CustomTemplate[];
-  // Administrative message presets
-  msg_meals_remaining?: string;
-  msg_cycle_end?: string;
-  msg_balance_summary?: string;
-  msg_renewal?: string;
-  msg_term_progress?: string; // <--- ADD THIS
+  customer_message_templates?: CustomTemplate[];
+  payment_email?: string;
+  plan_pricing_matrix?: PlanPricingMatrix;
 };
+
+// DO NOT EXPORT THIS - 'use server' files can only export async functions
+const DEFAULT_CUSTOMER_PRESETS: CustomTemplate[] = [
+  {
+    id: 'meals_remaining',
+    title: 'Meals Remaining',
+    tag: 'INQUIRY',
+    template: 'Hi {customer_name}, you currently have {remaining_meals} meals remaining in your cycle.',
+  },
+  {
+    id: 'cycle_end',
+    title: 'Cycle End Date',
+    tag: 'SCHEDULE',
+    template: 'Hi {customer_name}, your current delivery cycle runs until {cycle_end_date}.',
+  },
+  {
+    id: 'balance_summary',
+    title: 'Full Balance Summary (Billing Due)',
+    tag: 'BILLING DUE',
+    template: 'Hi {customer_name}, this is your balance summary: ${amount} CAD is due for {cycle_dates} ({remaining_meals} meals left). Please send Interac e-Transfer to {payment_email}. Thank you!',
+  },
+  {
+    id: 'renewal',
+    title: 'Cycle Renewal Notice',
+    tag: 'RENEWAL',
+    template: 'Hi {customer_name}, your {plan_tier} plan ends on {cycle_end_date}. Please let us know if you would like to renew or make adjustments for next cycle. Thank you!',
+  },
+  {
+    id: 'term_progress',
+    title: 'Term Tiffins Remaining',
+    tag: 'TERM PROGRESS',
+    template: 'Hi {customer_name}, you have {remaining_meals} out of {total_credits} tiffins remaining in your current {plan_tier} term ending on {cycle_end_date}.',
+  },
+];
 
 const DEFAULT_SETTINGS: AppSettingsPayload = {
   delivery_message_template: 'Hi {customer_name}, your tiffin has been delivered! Enjoy your meal!',
@@ -35,16 +81,12 @@ const DEFAULT_SETTINGS: AppSettingsPayload = {
   friday_double_pack_template:
     'Hello {customer_name}, your tiffins have been delivered! Today includes 2 tiffins for Friday and Saturday. Please refrigerate the Saturday meal. Have a great weekend!',
   custom_message_templates: [],
+  customer_message_templates: DEFAULT_CUSTOMER_PRESETS,
   kitchen_name: 'Singleton Kitchen Hub',
   kitchen_address: 'Unit 42, 3270 Singleton Ave, London, ON N6L 0E5',
   kitchen_lat: 42.9238,
   kitchen_lng: -81.2782,
-  msg_meals_remaining: 'Hi {customer_name}, you currently have {remaining_meals} meals remaining in your cycle.',
-  msg_cycle_end: 'Hi {customer_name}, your current delivery cycle runs until {cycle_end_date}.',
-  msg_balance_summary: 'Hi {customer_name}, this is your balance summary: ${amount} CAD is due for {cycle_dates} ({remaining_meals} meals left). Please send Interac e-Transfer to {payment_email}. Thank you!',
-  msg_renewal: 'Hi {customer_name}, your {plan_tier} plan ends on {cycle_end_date}. Please let us know if you would like to renew or make adjustments for next cycle. Thank you!',
-msg_term_progress:
-    'Hi {customer_name}, you have {remaining_meals} out of {total_credits} tiffins remaining in your current {plan_tier} term ending on {cycle_end_date}.',
+  payment_email: 'payments@tiffin.ca',
 };
 
 export async function getAppSettings(): Promise<AppSettingsPayload> {
@@ -65,15 +107,15 @@ export async function getAppSettings(): Promise<AppSettingsPayload> {
       friday_message_template: data.friday_message_template || DEFAULT_SETTINGS.friday_message_template,
       friday_double_pack_template: data.friday_double_pack_template || DEFAULT_SETTINGS.friday_double_pack_template,
       custom_message_templates: data.custom_message_templates || [],
+      customer_message_templates:
+        Array.isArray(data.customer_message_templates) && data.customer_message_templates.length > 0
+          ? data.customer_message_templates
+          : DEFAULT_CUSTOMER_PRESETS,
       kitchen_name: data.kitchen_name || DEFAULT_SETTINGS.kitchen_name,
       kitchen_address: data.kitchen_address || DEFAULT_SETTINGS.kitchen_address,
       kitchen_lat: typeof data.kitchen_lat === 'number' ? data.kitchen_lat : DEFAULT_SETTINGS.kitchen_lat,
       kitchen_lng: typeof data.kitchen_lng === 'number' ? data.kitchen_lng : DEFAULT_SETTINGS.kitchen_lng,
-      // Load stored admin presets (with fallback to defaults)
-      msg_meals_remaining: data.msg_meals_remaining || DEFAULT_SETTINGS.msg_meals_remaining,
-      msg_cycle_end: data.msg_cycle_end || DEFAULT_SETTINGS.msg_cycle_end,
-      msg_balance_summary: data.msg_balance_summary || DEFAULT_SETTINGS.msg_balance_summary,
-      msg_renewal: data.msg_renewal || DEFAULT_SETTINGS.msg_renewal,
+      payment_email: data.payment_email || DEFAULT_SETTINGS.payment_email,
     };
   } catch (err) {
     console.error('[getAppSettings] error:', err);
@@ -111,15 +153,12 @@ export async function saveAppSettings(settings: AppSettingsPayload): Promise<{ s
       friday_message_template: settings.friday_message_template ?? null,
       friday_double_pack_template: settings.friday_double_pack_template ?? null,
       custom_message_templates: settings.custom_message_templates ?? [],
+      customer_message_templates: settings.customer_message_templates ?? DEFAULT_CUSTOMER_PRESETS,
       kitchen_name: settings.kitchen_name ?? null,
       kitchen_address: settings.kitchen_address ?? null,
       kitchen_lat: settings.kitchen_lat ?? null,
       kitchen_lng: settings.kitchen_lng ?? null,
-      msg_meals_remaining: settings.msg_meals_remaining ?? null,
-      msg_cycle_end: settings.msg_cycle_end ?? null,
-      msg_balance_summary: settings.msg_balance_summary ?? null,
-      msg_renewal: settings.msg_renewal ?? null,
-      msg_term_progress: settings.msg_term_progress ?? null,
+      payment_email: settings.payment_email ?? DEFAULT_SETTINGS.payment_email,
       updated_at: new Date().toISOString(),
     });
 

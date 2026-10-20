@@ -2,7 +2,7 @@
 
 import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
 import { useRouter } from 'next/navigation';
-import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Undo2, History, Clock } from 'lucide-react';
+import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Undo2, History, Clock, ChevronDown, ChevronUp } from 'lucide-react';
 import {
   createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer,
   resumeCustomer, reactivateCustomer, updateCancellationDetails, searchAddress,
@@ -607,6 +607,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [isPanelRendered, setIsPanelRendered] = useState(false);
   const [isSlideInActive, setIsSlideInActive] = useState(false);
   const [isAccordionExpanded, setIsAccordionExpanded] = useState(false);
+  const [isBillingExpanded, setIsBillingExpanded] = useState(false);
   const [isEditingParams, setIsEditingParams] = useState(false);
 
   const [addressSuggestions, setAddressSuggestions] = useState<string[]>([]);
@@ -1106,6 +1107,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [tthSabji, setTthSabji] = useState(1);
   const [tthChicken, setTthChicken] = useState(0);
   const [tthGravy, setTthGravy] = useState(0);
+  const [customPlanPrice, setCustomPlanPrice] = useState<string>('');
+  const [deliveryFeePerDay, setDeliveryFeePerDay] = useState<string>('0');
+  const [addonFeePerDay, setAddonFeePerDay] = useState<string>('0');
   const [discountType, setDiscountType] = useState<'none' | 'flat' | 'percent'>('none');
   const [discountValue, setDiscountValue] = useState('');
   const [discountNote, setDiscountNote] = useState('');
@@ -1205,6 +1209,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     if (selectedCustomer || isAddingNew) {
       setIsPanelRendered(true);
       setIsAccordionExpanded(false);
+      setIsBillingExpanded(false);
       setIsEditingParams(false);
       setAddressSuggestions([]);
       setIsReferralMenuOpen(false);
@@ -1302,6 +1307,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
         total_tiffin_credits: totalTiffinCredits || selectedCustomer.total_tiffin_credits,
         meal_type: mealType || selectedCustomer.meal_type,
         portion_size: portionSize || selectedCustomer.portion_size,
+        custom_plan_price: customPlanPrice.trim() !== '' ? Number(customPlanPrice) : null,
+        delivery_fee_per_day: Number(deliveryFeePerDay) || 0,
+        addon_fee_per_day: Number(addonFeePerDay) || 0,
         discount_type: discountType === 'none' ? null : discountType,
         discount_value: discountValue ? Number(discountValue) : null,
         delivery_schedule: serializeSchedule(selectedDays),
@@ -1317,6 +1325,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     totalTiffinCredits,
     mealType,
     portionSize,
+    customPlanPrice,
+    deliveryFeePerDay,
+    addonFeePerDay,
     discountType,
     discountValue,
     selectedDays,
@@ -1884,6 +1895,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setDislikeInput('');
     setIsDislikeMenuOpen(false);
     setDeliveryNotes('');
+    setCustomPlanPrice('');
+    setDeliveryFeePerDay('0');
+    setAddonFeePerDay('0');
     setDiscountType('none');
     setDiscountValue('');
     setDiscountNote('');
@@ -2145,6 +2159,15 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
     setDislikedDishes(Array.isArray(customer.disliked_dishes) ? customer.disliked_dishes : []);
     setDislikeInput('');
 
+    setCustomPlanPrice(
+      (customer as any).custom_plan_price != null ? String((customer as any).custom_plan_price) : ''
+    );
+    setDeliveryFeePerDay(
+      (customer as any).delivery_fee_per_day != null ? String((customer as any).delivery_fee_per_day) : '0'
+    );
+    setAddonFeePerDay(
+      (customer as any).addon_fee_per_day != null ? String((customer as any).addon_fee_per_day) : '0'
+    );
     setDiscountType(
       customer.discount_type === 'flat' || customer.discount_type === 'percent'
         ? customer.discount_type
@@ -2300,6 +2323,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           curry_config: hasCustomSides ? curryConfigForSave : null,
         }
         : {}),
+      custom_plan_price: customPlanPrice.trim() !== '' ? Number(customPlanPrice) : null,
+      delivery_fee_per_day: Number(deliveryFeePerDay) || 0,
+      addon_fee_per_day: Number(addonFeePerDay) || 0,
       ...(discountConfigured || hasStoredDiscount
         ? {
           discount_type: discountType === 'none' ? null : discountType,
@@ -4157,16 +4183,192 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       </div>
                     </div>
 
-                    {/* FINANCIAL BILLING & PAYMENT STATUS CARD */}
+                    {/* ── 4. PLAN RATE, CYCLE CHARGE & DISCOUNT SECTION ── */}
+                    <div className="p-4 bg-white border border-gray-200 rounded-2xl shadow-2xs space-y-3.5">
+                      <div className="flex items-center justify-between pb-2 border-b border-gray-100 flex-wrap gap-2">
+                        <div>
+                          <span className="text-xs font-black text-gray-900 uppercase tracking-wide">
+                            Plan Rate &amp; Charge Amount
+                          </span>
+                          <p className="text-[11px] text-gray-400 font-medium mt-0.5">
+                            Amount charged for this customer&apos;s subscription cycle.
+                          </p>
+                        </div>
+
+                        {/* Live Total Badge */}
+                        {(() => {
+                          const autoBase = customerBillingPeriods[0]?.expectedAmount ?? (planTier === 'trial' ? 14 : planTier === 'weekly' ? 65 : 250);
+                          const effectiveRate = customPlanPrice !== '' ? Number(customPlanPrice) : autoBase;
+
+                          return (
+                            <div className="px-3 py-1 bg-emerald-50 border border-emerald-200 rounded-xl text-right">
+                              <span className="text-[9.5px] uppercase font-bold text-emerald-700 block">Charging Customer</span>
+                              <span className="text-sm font-black text-emerald-950">${effectiveRate.toFixed(2)} CAD</span>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* Daily Recurring Surcharges (Distance / Extra Sides) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pb-2 border-b border-gray-100">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-[11px] font-bold text-gray-600 uppercase">
+                              🚗 Delivery Surcharge ($/day)
+                            </label>
+                            {Number(deliveryFeePerDay) > 0 && (
+                              <span className="text-[10.5px] font-bold text-emerald-700">
+                                +${(Number(deliveryFeePerDay) * (totalTiffinCredits ?? 20)).toFixed(2)} / cycle
+                              </span>
+                            )}
+                          </div>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">$</span>
+                            <input
+                              type="number"
+                              step="0.25"
+                              min="0"
+                              value={deliveryFeePerDay}
+                              onChange={(e) => setDeliveryFeePerDay(e.target.value)}
+                              placeholder="0.00"
+                              className="w-full h-10 pl-7 pr-3 text-xs font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-[11px] font-bold text-gray-600 uppercase">
+                              🥗 Add-on Surcharge ($/day)
+                            </label>
+                            {Number(addonFeePerDay) > 0 && (
+                              <span className="text-[10.5px] font-bold text-emerald-700">
+                                +${(Number(addonFeePerDay) * (totalTiffinCredits ?? 20)).toFixed(2)} / cycle
+                              </span>
+                            )}
+                          </div>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">$</span>
+                            <input
+                              type="number"
+                              step="0.25"
+                              min="0"
+                              value={addonFeePerDay}
+                              onChange={(e) => setAddonFeePerDay(e.target.value)}
+                              placeholder="0.00"
+                              className="w-full h-10 pl-7 pr-3 text-xs font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                        {/* Custom Price Field */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
+                              Manual Override ($ CAD)
+                            </label>
+                            {customPlanPrice !== '' && (
+                              <button
+                                type="button"
+                                onClick={() => setCustomPlanPrice('')}
+                                className="text-[10px] font-bold text-indigo-600 hover:underline"
+                              >
+                                Reset to Auto
+                              </button>
+                            )}
+                          </div>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={customPlanPrice}
+                              onChange={(e) => setCustomPlanPrice(e.target.value)}
+                              placeholder={`Auto ($${customerBillingPeriods[0]?.expectedAmount ?? 250})`}
+                              className="w-full h-11 px-3 text-sm font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900 placeholder:font-normal placeholder:text-gray-400"
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400 pointer-events-none">
+                              CAD
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Discount Mode Selector */}
+                        <div>
+                          <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-1.5">
+                            Discount Type
+                          </label>
+                          <div className="grid grid-cols-3 gap-1.5 h-11">
+                            {([
+                              { key: 'none', label: 'None' },
+                              { key: 'flat', label: '$ Flat' },
+                              { key: 'percent', label: '% Off' },
+                            ] as const).map(opt => (
+                              <button
+                                key={opt.key}
+                                type="button"
+                                onClick={() => setDiscountType(opt.key)}
+                                className={`rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                                  discountType === opt.key
+                                    ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
+                                    : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Expanded Discount Inputs */}
+                      {discountType !== 'none' && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                          <div>
+                            <label className="block text-[10.5px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                              {discountType === 'flat' ? 'Flat Deduction ($)' : 'Percentage Off (%)'}
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              step={discountType === 'percent' ? '1' : '0.01'}
+                              value={discountValue}
+                              onChange={(e) => setDiscountValue(e.target.value)}
+                              placeholder={discountType === 'flat' ? 'e.g. 15.00' : 'e.g. 10'}
+                              className="w-full h-10 px-3 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-xs font-bold text-gray-800"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10.5px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                              Promo Note / Reason
+                            </label>
+                            <input
+                              type="text"
+                              value={discountNote}
+                              onChange={(e) => setDiscountNote(e.target.value)}
+                              placeholder="e.g. Referral discount, promo..."
+                              className="w-full h-10 px-3 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-xs font-semibold text-gray-800"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* FINANCIAL BILLING & PAYMENT STATUS CARD (COLLAPSIBLE - DEFAULT COLLAPSED) */}
                     {!isAddingNew && selectedCustomer && (
-                      <div className="bg-[#FAF9FE] border border-[#5D5FEF]/20 rounded-2xl p-4 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      <div className="bg-[#FAF9FE] border border-[#5D5FEF]/20 rounded-2xl overflow-hidden shadow-2xs transition-all">
+                        {/* Interactive Clickable Header Bar */}
+                        <div
+                          onClick={() => setIsBillingExpanded(prev => !prev)}
+                          className="p-4 flex items-center justify-between cursor-pointer hover:bg-[#F4F3FC] transition-colors select-none"
+                        >
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
                               Billing &amp; Balance
                             </span>
                             {(() => {
-                              // If no payments recorded in the ledger, status is DUE (or OVERDUE if meals exceeded)
                               const hasPayments = customerPaymentsList.length > 0;
                               const isOverdue = usedCredits > (totalTiffinCredits ?? 20);
 
@@ -4187,179 +4389,204 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 </span>
                               );
                             })()}
+
+                            {!isBillingExpanded && (
+                              <span className="text-[11px] font-semibold text-gray-500">
+                                • {customerBillingPeriods.length} cycles ({customerBillingPeriods.filter(p => !p.isPaid).length} due)
+                              </span>
+                            )}
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={() => setShowLogPaymentModal(true)}
-                            className="px-3 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
-                          >
-                            <CreditCard className="w-3.5 h-3.5" />
-                            <span>Log Payment</span>
-                          </button>
-                        </div>
-                        {/* ── BILLING PERIODS & PAYMENT STATUS TRACKER ── */}
-                        <div className="space-y-2 pt-2 pb-1 border-t border-gray-100">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[11px] font-black text-gray-500 uppercase tracking-wider block">
-                              Cycle History &amp; Payment Status (4 Periods)
-                            </span>
-                            <span className="text-[10px] text-gray-400 font-medium">1-Tap Status Toggle</span>
-                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShowLogPaymentModal(true);
+                              }}
+                              className="px-3 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <CreditCard className="w-3.5 h-3.5" />
+                              <span>Log Payment</span>
+                            </button>
 
-                          <div className="space-y-2">
-                            {customerBillingPeriods.map(period => {
-                              const cleanPhone = cleanPhoneNumberForWhatsApp(phoneNumber);
-                              const reminderMsg = `Hi ${fullName || 'there'}, this is a reminder regarding your tiffin payment of $${period.expectedAmount.toFixed(2)} CAD for the cycle ${formatShortDate(period.startDate)} to ${formatShortDate(period.endDate)} (${period.credits} meals). Please send the e-transfer at your convenience. Thank you!`;
-
-                              return (
-                                <div
-                                  key={period.startDate}
-                                  className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${period.isPaid
-                                      ? 'bg-emerald-50/40 border-emerald-200/80 text-emerald-950'
-                                      : 'bg-rose-50/50 border-rose-200/80 text-rose-950'
-                                    }`}
-                                >
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs font-black tracking-tight">{period.label}</span>
-                                      <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase border ${period.isPaid
-                                          ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                          : 'bg-rose-100 text-rose-800 border-rose-300'
-                                        }`}>
-                                        {period.isPaid ? 'PAID' : 'DUE'}
-                                      </span>
-                                    </div>
-                                    <div className="text-[11.5px] font-semibold text-gray-600 mt-0.5">
-                                      <span>{formatShortDate(period.startDate)} → {formatShortDate(period.endDate)}</span>
-                                      <span className="mx-1.5 text-gray-300">·</span>
-                                      <strong className="text-gray-900">${period.expectedAmount} CAD</strong>
-                                      <span className="text-gray-400 font-normal"> ({period.credits} meals)</span>
-                                    </div>
-                                  </div>
-
-                                  <div className="flex items-center gap-1.5 shrink-0">
-                                    {!period.isPaid && cleanPhone && (
-                                      <a
-                                        href={`https://wa.me/${cleanPhone}?text=${encodeURIComponent(reminderMsg)}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        title="Send WhatsApp payment reminder"
-                                        className="h-8 px-2.5 bg-[#25D366] hover:bg-[#20bd5a] text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
-                                      >
-                                        <MessageSquare className="w-3.5 h-3.5" />
-                                        <span>Reminder</span>
-                                      </a>
-                                    )}
-
-                                    <button
-                                      type="button"
-                                      disabled={togglingPeriodIdx === period.index}
-                                      onClick={() => handleTogglePeriodPayment(period)}
-                                      className={`h-8 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs border ${period.isPaid
-                                          ? 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
-                                          : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
-                                        }`}
-                                    >
-                                      {togglingPeriodIdx === period.index
-                                        ? 'Saving...'
-                                        : period.isPaid
-                                          ? 'Mark Unpaid'
-                                          : 'Mark Paid'}
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                        {/* Recent Payment Ledger */}
-                        <div className="space-y-1.5 pt-1">
-                          <span className="text-[11px] font-semibold text-gray-400 block uppercase">
-                            Payment Ledger ({customerPaymentsList.length})
-                          </span>
-                          {customerPaymentsList.length === 0 ? (
-                            <div className="p-3 bg-white border border-gray-100 rounded-xl text-center text-xs text-gray-400 italic">
-                              No payments recorded for this customer yet.
+                            <div className="w-7 h-7 rounded-lg bg-white border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-800 transition-colors">
+                              {isBillingExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                             </div>
-                          ) : (
-                            <div className="max-h-36 overflow-y-auto space-y-1.5 divide-y divide-gray-50 bg-white border border-gray-200/80 rounded-xl p-2.5">
-                              {customerPaymentsList.map((pmt) => (
-                                <div key={pmt.id} className="flex items-center justify-between text-xs py-2 px-1 hover:bg-gray-50/80 rounded-lg transition-colors group">
-                                  <div className="min-w-0 pr-2">
-                                    <div className="flex items-center gap-1.5 font-bold text-gray-800">
-                                      <span>${Number(pmt.amount).toFixed(2)} CAD</span>
-                                      <span className="text-[9.5px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600 font-bold uppercase">
-                                        {pmt.payment_method}
-                                      </span>
-                                      {pmt.credits_added && (
-                                        <span className="text-[9.5px] px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded font-semibold">
-                                          {pmt.credits_added} meals
+                          </div>
+                        </div>
+
+                        {/* Collapsible Content */}
+                        {isBillingExpanded && (
+                          <div className="px-4 pb-4 space-y-3 pt-3 border-t border-[#5D5FEF]/15">
+                            {/* ── BILLING PERIODS & PAYMENT STATUS TRACKER ── */}
+                            <div className="space-y-2 pt-1 pb-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-black text-gray-500 uppercase tracking-wider block">
+                                  Cycle History &amp; Payment Status ({customerBillingPeriods.length} Periods)
+                                </span>
+                                <span className="text-[10px] text-gray-400 font-medium">1-Tap Status Toggle</span>
+                              </div>
+
+                              <div className="space-y-2">
+                                {customerBillingPeriods.map(period => {
+                                  const cleanPhone = cleanPhoneNumberForWhatsApp(phoneNumber);
+                                  const reminderMsg = `Hi ${fullName || 'there'}, this is a reminder regarding your tiffin payment of $${period.expectedAmount.toFixed(2)} CAD for the cycle ${formatShortDate(period.startDate)} to ${formatShortDate(period.endDate)} (${period.credits} meals). Please send the e-transfer at your convenience. Thank you!`;
+
+                                  return (
+                                    <div
+                                      key={period.startDate}
+                                      className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
+                                        period.isPaid
+                                          ? 'bg-emerald-50/40 border-emerald-200/80 text-emerald-950'
+                                          : 'bg-rose-50/50 border-rose-200/80 text-rose-950'
+                                      }`}
+                                    >
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-xs font-black tracking-tight">{period.label}</span>
+                                          <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase border ${
+                                            period.isPaid
+                                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                              : 'bg-rose-100 text-rose-800 border-rose-300'
+                                          }`}>
+                                            {period.isPaid ? 'PAID' : 'DUE'}
+                                          </span>
+                                        </div>
+                                        <div className="text-[11.5px] font-semibold text-gray-600 mt-0.5">
+                                          <span>{formatShortDate(period.startDate)} → {formatShortDate(period.endDate)}</span>
+                                          <span className="mx-1.5 text-gray-300">·</span>
+                                          <strong className="text-gray-900">${period.expectedAmount} CAD</strong>
+                                          <span className="text-gray-400 font-normal"> ({period.credits} meals)</span>
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        {!period.isPaid && cleanPhone && (
+                                          <a
+                                            href={`https://wa.me/${cleanPhone}?text=${encodeURIComponent(reminderMsg)}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            title="Send WhatsApp payment reminder"
+                                            className="h-8 px-2.5 bg-[#25D366] hover:bg-[#20bd5a] text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+                                          >
+                                            <MessageSquare className="w-3.5 h-3.5" />
+                                            <span>Reminder</span>
+                                          </a>
+                                        )}
+
+                                        <button
+                                          type="button"
+                                          disabled={togglingPeriodIdx === period.index}
+                                          onClick={() => handleTogglePeriodPayment(period)}
+                                          className={`h-8 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs border ${
+                                            period.isPaid
+                                              ? 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
+                                              : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
+                                          }`}
+                                        >
+                                          {togglingPeriodIdx === period.index
+                                            ? 'Saving...'
+                                            : period.isPaid
+                                              ? 'Mark Unpaid'
+                                              : 'Mark Paid'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Recent Payment Ledger */}
+                            <div className="space-y-1.5 pt-2 border-t border-gray-200/60">
+                              <span className="text-[11px] font-semibold text-gray-400 block uppercase">
+                                Payment Ledger ({customerPaymentsList.length})
+                              </span>
+                              {customerPaymentsList.length === 0 ? (
+                                <div className="p-3 bg-white border border-gray-100 rounded-xl text-center text-xs text-gray-400 italic">
+                                  No payments recorded for this customer yet.
+                                </div>
+                              ) : (
+                                <div className="max-h-36 overflow-y-auto space-y-1.5 divide-y divide-gray-50 bg-white border border-gray-200/80 rounded-xl p-2.5">
+                                  {customerPaymentsList.map((pmt) => (
+                                    <div key={pmt.id} className="flex items-center justify-between text-xs py-2 px-1 hover:bg-gray-50/80 rounded-lg transition-colors group">
+                                      <div className="min-w-0 pr-2">
+                                        <div className="flex items-center gap-1.5 font-bold text-gray-800">
+                                          <span>${Number(pmt.amount).toFixed(2)} CAD</span>
+                                          <span className="text-[9.5px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600 font-bold uppercase">
+                                            {pmt.payment_method}
+                                          </span>
+                                          {pmt.credits_added && (
+                                            <span className="text-[9.5px] px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded font-semibold">
+                                              {pmt.credits_added} meals
+                                            </span>
+                                          )}
+                                        </div>
+                                        {pmt.reference_note && (
+                                          <span className="text-[11px] text-gray-400 block truncate mt-0.5">
+                                            {pmt.reference_note}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        <span className="text-[10.5px] font-medium text-gray-400 mr-1">
+                                          {new Date(pmt.recorded_at).toLocaleDateString('en-US', {
+                                            month: 'short',
+                                            day: 'numeric',
+                                          })}
                                         </span>
-                                      )}
+                                        <button
+                                          type="button"
+                                          title="Edit payment entry"
+                                          onClick={() => {
+                                            setEditingPayment(pmt);
+                                            setEditPaymentAmount(String(pmt.amount));
+                                            setEditPaymentMethod(pmt.payment_method || 'etransfer');
+                                            setEditPaymentCredits(pmt.credits_added || 20);
+                                            setEditPaymentCycleAction(pmt.cycle_action || 'settle_current');
+                                            setEditPaymentCycleStart(
+                                              pmt.billing_cycle_start
+                                                ? pmt.billing_cycle_start.slice(0, 10)
+                                                : (startDate || toLocalDateKey(new Date()))
+                                            );
+                                            setEditPaymentRefNote(pmt.reference_note || '');
+                                            setEditSendWhatsAppReceipt(false);
+                                          }}
+                                          className="p-1 rounded-md text-gray-400 hover:text-[#5D5FEF] hover:bg-indigo-50 transition-colors cursor-pointer"
+                                        >
+                                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                                          </svg>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          title="Delete payment entry"
+                                          onClick={async () => {
+                                            if (confirm(`Delete $${pmt.amount} payment record?`)) {
+                                              try {
+                                                await deleteCustomerPayment(pmt.id, selectedCustomer.id);
+                                                setCustomerPaymentsList(prev => prev.filter(p => p.id !== pmt.id));
+                                                showToast('Payment entry removed');
+                                              } catch (err: any) {
+                                                showToast(err.message || 'Failed to delete payment', 'error');
+                                              }
+                                            }
+                                          }}
+                                          className="p-1 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
                                     </div>
-                                    {pmt.reference_note && (
-                                      <span className="text-[11px] text-gray-400 block truncate mt-0.5">
-                                        {pmt.reference_note}
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <div className="flex items-center gap-1.5 shrink-0">
-                                    <span className="text-[10.5px] font-medium text-gray-400 mr-1">
-                                      {new Date(pmt.recorded_at).toLocaleDateString('en-US', {
-                                        month: 'short',
-                                        day: 'numeric',
-                                      })}
-                                    </span>
-                                    <button
-                                      type="button"
-                                      title="Edit payment entry"
-                                      onClick={() => {
-                                        setEditingPayment(pmt);
-                                        setEditPaymentAmount(String(pmt.amount));
-                                        setEditPaymentMethod(pmt.payment_method || 'etransfer');
-                                        setEditPaymentCredits(pmt.credits_added || 20);
-                                        setEditPaymentCycleAction(pmt.cycle_action || 'settle_current');
-                                        setEditPaymentCycleStart(
-                                          pmt.billing_cycle_start
-                                            ? pmt.billing_cycle_start.slice(0, 10)
-                                            : (startDate || toLocalDateKey(new Date()))
-                                        );
-                                        setEditPaymentRefNote(pmt.reference_note || '');
-                                        setEditSendWhatsAppReceipt(false);
-                                      }}
-                                      className="p-1 rounded-md text-gray-400 hover:text-[#5D5FEF] hover:bg-indigo-50 transition-colors cursor-pointer"
-                                    >
-                                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                      </svg>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      title="Delete payment entry"
-                                      onClick={async () => {
-                                        if (confirm(`Delete $${pmt.amount} payment record?`)) {
-                                          try {
-                                            await deleteCustomerPayment(pmt.id, selectedCustomer.id);
-                                            setCustomerPaymentsList(prev => prev.filter(p => p.id !== pmt.id));
-                                            showToast('Payment entry removed');
-                                          } catch (err: any) {
-                                            showToast(err.message || 'Failed to delete payment', 'error');
-                                          }
-                                        }
-                                      }}
-                                      className="p-1 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
-                                  </div>
+                                  ))}
                                 </div>
-                              ))}
+                              )}
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -5076,60 +5303,6 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           placeholder="e.g. Less spicy, No onions, Extra napkins..."
                           className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none resize-none focus:border-blue-500 text-gray-700 font-sans leading-relaxed"
                         />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Discount</label>
-                        <div className="flex gap-2">
-                          {([
-                            { key: 'none', label: 'No Discount' },
-                            { key: 'flat', label: '$ Flat' },
-                            { key: 'percent', label: '% Off' },
-                          ] as const).map(opt => (
-                            <button
-                              key={opt.key}
-                              type="button"
-                              onClick={() => setDiscountType(opt.key)}
-                              className={`flex-1 h-9 px-3 rounded-lg text-xs font-semibold border transition-all ${discountType === opt.key
-                                ? 'bg-blue-50 border-blue-500 text-blue-700'
-                                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                                }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
-
-                        {discountType !== 'none' && (
-                          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <div>
-                              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                                {discountType === 'flat' ? 'Discount Amount ($)' : 'Discount Percentage (%)'}
-                              </label>
-                              <input
-                                type="number"
-                                min={0}
-                                step={discountType === 'percent' ? '1' : '0.01'}
-                                value={discountValue}
-                                onChange={(e) => setDiscountValue(e.target.value)}
-                                placeholder={discountType === 'flat' ? 'e.g. 2.50' : 'e.g. 10'}
-                                className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
-                              />
-                            </div>
-                            <div>
-                              <label className="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                                Promo / Reason
-                              </label>
-                              <input
-                                type="text"
-                                value={discountNote}
-                                onChange={(e) => setDiscountNote(e.target.value)}
-                                placeholder="e.g. First order promo, referral..."
-                                className="w-full px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-blue-500 text-sm text-gray-700"
-                              />
-                            </div>
-                          </div>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -6146,26 +6319,44 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       )}
 
       {/* ── ON-DEMAND CUSTOMER INQUIRY / MESSAGING MODAL ── */}
-      {messagingCustomer && (
-        <CustomerMessageModal
-          open={Boolean(messagingCustomer)}
-          onClose={() => setMessagingCustomer(null)}
-          customer={{
-            id: messagingCustomer.id,
-            full_name: messagingCustomer.full_name,
-            phone_number: messagingCustomer.phone_number,
-            delivery_address: messagingCustomer.delivery_address,
-            remaining_meals: Math.max(
-              0,
-              (messagingCustomer.total_tiffin_credits ?? 20) - (messagingCustomer.used_credits ?? 0)
-            ),
-            cycle_end_date: messagingCustomer.cycle_end_date
-              ? messagingCustomer.cycle_end_date.slice(0, 10)
-              : null,
-            total_credits: messagingCustomer.total_tiffin_credits ?? 20,
-          }}
-        />
-      )}
+      {messagingCustomer && (() => {
+        const tier = (messagingCustomer.plan_tier || 'monthly').toLowerCase();
+        const baseRate = tier === 'trial' ? 14 : tier === 'weekly' ? 65 : 250;
+        const discountVal = messagingCustomer.discount_value || 0;
+        const computedDiscounted = messagingCustomer.discount_type === 'flat'
+          ? Math.max(0, baseRate - discountVal)
+          : messagingCustomer.discount_type === 'percent'
+          ? Math.max(0, Math.round(baseRate * (1 - discountVal / 100)))
+          : baseRate;
+
+        // Use custom price override if set, otherwise auto discounted price
+        const finalCharge = (messagingCustomer as any).custom_plan_price != null
+          ? Number((messagingCustomer as any).custom_plan_price)
+          : computedDiscounted;
+
+        return (
+          <CustomerMessageModal
+            open={Boolean(messagingCustomer)}
+            onClose={() => setMessagingCustomer(null)}
+            customer={{
+              id: messagingCustomer.id,
+              full_name: messagingCustomer.full_name,
+              phone_number: messagingCustomer.phone_number,
+              start_date: messagingCustomer.start_date || null,
+              remaining_meals: Math.max(
+                0,
+                (messagingCustomer.total_tiffin_credits ?? 20) - (messagingCustomer.used_credits ?? 0)
+              ),
+              cycle_end_date: messagingCustomer.cycle_end_date
+                ? messagingCustomer.cycle_end_date.slice(0, 10)
+                : null,
+              total_credits: messagingCustomer.total_tiffin_credits ?? 20,
+              amount: finalCharge,
+              plan_tier: messagingCustomer.plan_tier || 'Monthly',
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

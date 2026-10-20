@@ -188,7 +188,7 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                   }`}
                 >
                   <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">Driver Messaging</span>
+                  <span className="truncate">Messaging & Templates</span>
                 </Link>
 
                 <Link

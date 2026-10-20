@@ -10,6 +10,7 @@ import {
   resolveDeliveryDayNumbers,
   computeCustomerPeriods,
   formatShortDate,
+  type PlanPricingMatrix,
 } from '@/app/utils/subscriptionCycle';
 import { cleanPhoneNumberForWhatsApp } from '@/app/utils/mealEngine';
 
@@ -18,11 +19,13 @@ export default function BillingTableClient({
   recentPayments,
   initialClosures = [],
   initialSkips = [],
+  pricingMatrix = null,
 }: {
   initialCustomers: any[];
   recentPayments: any[];
   initialClosures?: string[];
   initialSkips?: Array<{ customerId: string; date: string }>;
+  pricingMatrix?: PlanPricingMatrix | null;
 }) {
   const router = useRouter();
   const [searchTerm, setSearchTerm] = useState('');
@@ -66,6 +69,7 @@ export default function BillingTableClient({
         payments: recentPayments.filter(p => p.customer_id === c.id),
         closureDates: closuresSet,
         customerSkips: custSkips,
+        pricingMatrix,
       });
 
       const currentPeriod = periods.find(p => p.index === 0);

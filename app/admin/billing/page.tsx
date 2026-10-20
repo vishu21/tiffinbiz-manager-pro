@@ -11,6 +11,7 @@ export default async function BillingPage() {
     { data: payments },
     { data: closures },
     { data: skips },
+    { data: settings },
   ] = await Promise.all([
     supabase
       .from('customers')
@@ -28,6 +29,11 @@ export default async function BillingPage() {
       .from('customer_daily_overrides')
       .select('customer_id, override_date')
       .eq('is_skipped', true),
+    supabase
+      .from('app_settings')
+      .select('plan_pricing_matrix')
+      .eq('id', 'default')
+      .maybeSingle(),
   ]);
 
   const customerList = customers || [];
@@ -120,6 +126,7 @@ export default async function BillingPage() {
         recentPayments={paymentList}
         initialClosures={closuresList}
         initialSkips={skipsList}
+        pricingMatrix={settings?.plan_pricing_matrix || null}
       />
     </div>
   );

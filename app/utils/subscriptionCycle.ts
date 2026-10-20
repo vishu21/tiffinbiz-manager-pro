@@ -210,52 +210,82 @@ export const resolvePlanTierForCredits = (
 
 export type PricingTier = 'trial' | 'weekly' | 'monthly';
 
-export const BASE_MONTHLY_PRICES: Record<string, Record<string, number>> = {
-  veg: {
-    'RG': 220,
-    'LG': 250,
-    'HALF RG': 140,
-    'HALF LG': 165,
-  },
-  'non-veg': {
-    'RG': 250,
-    'LG': 280,
-    'HALF RG': 155,
-    'HALF LG': 180,
-  },
+export type PlanTierPricing = {
+  veg_rg: number;
+  veg_lg: number;
+  nv_rg: number;
+  nv_lg: number;
+};
+export type TierPrices = PlanTierPricing;
+
+export type PlanPricingMatrix = {
+  monthly: PlanTierPricing;
+  weekly: PlanTierPricing;
+  trial: PlanTierPricing;
+};
+
+export const DEFAULT_PRICING_MATRIX: PlanPricingMatrix = {
+  monthly: { veg_rg: 220, veg_lg: 250, nv_rg: 250, nv_lg: 280 },
+  weekly:  { veg_rg: 60,  veg_lg: 70,  nv_rg: 70,  nv_lg: 80 },
+  trial:   { veg_rg: 13,  veg_lg: 15,  nv_rg: 15,  nv_lg: 17 },
 };
 
 export function calculateStandardPlanPrice(
-  mealType: string | null | undefined,
-  portionSize: string | null | undefined,
+  mealTypeOrCustomer: string | null | undefined | {
+    meal_type?: string | null;
+    portion_size?: string | null;
+    plan_tier?: string | null;
+    custom_plan_price?: number | null;
+    delivery_fee_per_day?: number | null;
+    addon_fee_per_day?: number | null;
+  },
+  portionSize?: string | null | undefined,
   planTier: PricingTier = 'monthly',
-  credits: number = 20
+  credits: number = 20,
+  pricingMatrix?: PlanPricingMatrix | null,
+  deliveryFeePerDay: number = 0,
+  addonFeePerDay: number = 0
 ): number {
+  if (typeof mealTypeOrCustomer === 'object' && mealTypeOrCustomer !== null) {
+    if (mealTypeOrCustomer.custom_plan_price != null && Number(mealTypeOrCustomer.custom_plan_price) > 0) {
+      return Number(mealTypeOrCustomer.custom_plan_price);
+    }
+    return calculateStandardPlanPrice(
+      mealTypeOrCustomer.meal_type,
+      mealTypeOrCustomer.portion_size,
+      (mealTypeOrCustomer.plan_tier as PricingTier) || 'monthly',
+      credits,
+      pricingMatrix,
+      Number(mealTypeOrCustomer.delivery_fee_per_day || 0),
+      Number(mealTypeOrCustomer.addon_fee_per_day || 0)
+    );
+  }
+
+  const mealType = mealTypeOrCustomer;
   const isNonVeg = (mealType || '').toLowerCase().includes('non');
-  const typeKey = isNonVeg ? 'non-veg' : 'veg';
+  const size = (portionSize || 'RG').trim().toUpperCase();
+  const isLarge = size.includes('LG') || size.includes('LARGE');
 
-  const rawPortion = (portionSize || 'RG').trim().toUpperCase();
-  let normalizedPortion = 'RG';
-  if (rawPortion.includes('HALF') && (rawPortion.includes('LG') || rawPortion.includes('LARGE'))) {
-    normalizedPortion = 'HALF LG';
-  } else if (rawPortion.includes('HALF') || rawPortion.includes('SM') || rawPortion.includes('SMALL')) {
-    normalizedPortion = 'HALF RG';
-  } else if (rawPortion.includes('LG') || rawPortion.includes('LARGE')) {
-    normalizedPortion = 'LG';
+  const matrix = pricingMatrix || DEFAULT_PRICING_MATRIX;
+  const tierConfig = matrix[planTier] || matrix.monthly;
+
+  let basePrice: number;
+  if (isNonVeg) {
+    basePrice = isLarge ? tierConfig.nv_lg : tierConfig.nv_rg;
+  } else {
+    basePrice = isLarge ? tierConfig.veg_lg : tierConfig.veg_rg;
   }
 
-  const monthly20Price = BASE_MONTHLY_PRICES[typeKey][normalizedPortion] ?? 220;
-
-  // Scale if Weekly (5 meals), Trial (1 meal), or custom credit count
-  if (planTier === 'weekly' || credits === 5) {
-    return Math.round((monthly20Price / 20) * 5);
-  }
-  if (planTier === 'trial' || credits === 1) {
-    return Math.round(monthly20Price / 20);
+  // Scale base price if custom meal credits differ from standard tier count
+  const standardTierCredits = planTier === 'weekly' ? 5 : planTier === 'trial' ? 1 : 20;
+  if (credits !== standardTierCredits && standardTierCredits > 0) {
+    basePrice = Math.round((basePrice / standardTierCredits) * credits);
   }
 
-  // Monthly or custom credit adjustment
-  return Math.round((monthly20Price / 20) * credits);
+  // Multiply per-day recurring surcharges by total credits in this cycle
+  const extraDailyTotal = (Number(deliveryFeePerDay || 0) + Number(addonFeePerDay || 0)) * credits;
+
+  return Math.round(basePrice + extraDailyTotal);
 }
 // ============================================================================
 // BILLING PERIOD TRACKER & LEDGER RESOLVER
@@ -282,6 +312,9 @@ export function computeCustomerPeriods(params: {
     total_tiffin_credits?: number | null;
     meal_type?: string | null;
     portion_size?: string | null;
+    custom_plan_price?: number | null; // <--- allow manual override
+    delivery_fee_per_day?: number | null;
+    addon_fee_per_day?: number | null;
     discount_type?: 'flat' | 'percent' | null;
     discount_value?: number | null;
     delivery_schedule?: string | null;
@@ -296,14 +329,13 @@ export function computeCustomerPeriods(params: {
   }>;
   closureDates?: ClosureSource;
   customerSkips?: Set<string> | null;
+  pricingMatrix?: PlanPricingMatrix | null;
 }): BillingPeriodInfo[] {
-  const { customer, payments, closureDates, customerSkips } = params;
+  const { customer, payments, closureDates, customerSkips, pricingMatrix } = params;
   if (!customer.start_date) return [];
 
   const tier = (customer.plan_tier || 'monthly').toLowerCase() as PricingTier;
   
-  // Standard plan capacity: Monthly = 20, Weekly = 5, Trial = 1.
-  // Closures & skips extend the date window; they NEVER add extra meals.
   const creditsPerCycle =
     tier === 'weekly'
       ? 5
@@ -311,20 +343,30 @@ export function computeCustomerPeriods(params: {
       ? 1
       : 20;
 
-  const basePrice = calculateStandardPlanPrice(
-    customer.meal_type,
-    customer.portion_size,
-    tier,
-    creditsPerCycle
-  );
+  let finalPrice: number;
 
-  let discount = 0;
-  if (customer.discount_type === 'flat') {
-    discount = Number(customer.discount_value) || 0;
-  } else if (customer.discount_type === 'percent') {
-    discount = Math.round((basePrice * (Number(customer.discount_value) || 0)) / 100);
+  // If customer has an explicit manual charge, use it directly
+  if (customer.custom_plan_price != null && Number(customer.custom_plan_price) > 0) {
+    finalPrice = Number(customer.custom_plan_price);
+  } else {
+    const basePrice = calculateStandardPlanPrice(
+      customer.meal_type,
+      customer.portion_size,
+      tier,
+      creditsPerCycle,
+      pricingMatrix,
+      Number(customer.delivery_fee_per_day || 0),
+      Number(customer.addon_fee_per_day || 0)
+    );
+
+    let discount = 0;
+    if (customer.discount_type === 'flat') {
+      discount = Number(customer.discount_value) || 0;
+    } else if (customer.discount_type === 'percent') {
+      discount = Math.round((basePrice * (Number(customer.discount_value) || 0)) / 100);
+    }
+    finalPrice = Math.max(0, basePrice - discount);
   }
-  const finalPrice = Math.max(0, basePrice - discount);
 
   const deliveryDays = resolveDeliveryDayNumbers(customer.delivery_schedule);
   const curStart = customer.start_date.slice(0, 10);

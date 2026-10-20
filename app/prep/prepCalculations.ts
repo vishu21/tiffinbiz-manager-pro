@@ -193,29 +193,51 @@ export function computePrepMetrics(
     const dislikesDal = exclusion.dislikesDal;
     const dislikesSabji = exclusion.dislikesSabji;
 
-    let finalDal = dayPlan.dal;
-    let finalSabji = dayPlan.sabji;
+    let finalDal = 0;
+    let finalSabji = 0;
     let swappedTo: 'dal' | 'sabji' | null = null;
 
-    if (!isChickenDay || !isNonVeg) {
+    // ─────────────────────────────────────────────────────────────────────────
+    // A. VEG DAYS / NON-CHICKEN DAYS (Tuesday, Thursday, Weekends)
+    // Chicken is IDLE. Both Veg & Non-Veg customers receive standard curries.
+    // ─────────────────────────────────────────────────────────────────────────
+    if (!isChickenDay) {
       if (isHalf) {
-        const prefersSabji = dayPlan.sabji > 0 && dayPlan.dal === 0;
-        const assignedSabji = prefersSabji ? 1 : 0;
-        const assignedDal = prefersSabji ? 0 : 1;
+        // Half portion rule: 1 Sabji, 0 Dal (unless custom instructions explicitly say Dal)
+        const wantsDalOnly = (dayPlan.dal > 0 && dayPlan.sabji === 0) || 
+          /\b(only dal|1 dal|daal only)\b/i.test(customer.delivery_instructions || '');
 
-        if (dislikesSabji && !dislikesDal && assignedSabji > 0) {
+        finalDal = wantsDalOnly ? 1 : 0;
+        finalSabji = wantsDalOnly ? 0 : 1;
+
+        if (dislikesSabji && !dislikesDal && finalSabji > 0) {
           finalDal = 1;
           finalSabji = 0;
           swappedTo = 'dal';
-        } else if (dislikesDal && !dislikesSabji && assignedDal > 0) {
+        } else if (dislikesDal && !dislikesSabji && finalDal > 0) {
           finalSabji = 1;
           finalDal = 0;
           swappedTo = 'sabji';
-        } else {
-          finalDal = assignedDal;
-          finalSabji = assignedSabji;
         }
       } else {
+        // Full portion rule: Everyone (Veg + Non-Veg) gets 1 Dal + 1 Sabji.
+        // Only deviate if the customer has explicit instructions for "2x Sabji" or "2x Dal" / "No Dal" / "No Sabji".
+        const rawNotes = `${customer.delivery_instructions || ''} ${customer.notes || ''}`.toLowerCase();
+        const wantsDoubleSabji = /\b(2x sabji|both sabji|no dal|no daal)\b/.test(rawNotes);
+        const wantsDoubleDal = /\b(2x dal|both dal|2x daal|both daal|no sabji)\b/.test(rawNotes);
+
+        if (wantsDoubleSabji) {
+          finalDal = 0;
+          finalSabji = 2;
+        } else if (wantsDoubleDal) {
+          finalDal = 2;
+          finalSabji = 0;
+        } else {
+          finalDal = 1;
+          finalSabji = 1;
+        }
+
+        // Dish dislike substitutions
         if (dislikesSabji && !dislikesDal && finalSabji > 0) {
           finalDal += finalSabji;
           finalSabji = 0;
@@ -233,23 +255,30 @@ export function computePrepMetrics(
       return acc;
     }
 
-    // Chicken day routing for Non-Veg customer
+    // ─────────────────────────────────────────────────────────────────────────
+    // B. CHICKEN DAYS (Monday, Wednesday, Friday)
+    // ─────────────────────────────────────────────────────────────────────────
     const chickenContainers = dayPlan.chicken;
     const gravyContainers = dayPlan.gravy;
 
-    if (chickenContainers + gravyContainers === 0) {
-      const baseDal = dayPlan.dal || 1;
-      const baseSabji = dayPlan.sabji || 1;
-
-      if (dislikesSabji && !dislikesDal) {
-        finalDal = baseDal + baseSabji;
-        swappedTo = 'dal';
-      } else if (dislikesDal && !dislikesSabji) {
-        finalSabji = baseDal + baseSabji;
-        swappedTo = 'sabji';
+    if (!isNonVeg || (chickenContainers + gravyContainers === 0)) {
+      // Standard Veg Customer on Chicken Day
+      if (isHalf) {
+        finalDal = 0;
+        finalSabji = 1;
       } else {
-        finalDal = baseDal;
-        finalSabji = baseSabji;
+        finalDal = dayPlan.dal || 1;
+        finalSabji = dayPlan.sabji || 1;
+      }
+
+      if (dislikesSabji && !dislikesDal && finalSabji > 0) {
+        finalDal += finalSabji;
+        finalSabji = 0;
+        swappedTo = 'dal';
+      } else if (dislikesDal && !dislikesSabji && finalDal > 0) {
+        finalSabji += finalDal;
+        finalDal = 0;
+        swappedTo = 'sabji';
       }
 
       recordDishSwap(acc, swappedTo, exclusion, finalDal + finalSabji > 0);
@@ -258,6 +287,7 @@ export function computePrepMetrics(
       return acc;
     }
 
+    // Active Non-Veg Customer on Chicken Day
     addChicken(acc, size, chickenContainers, ozPerContainer, legsPerContainer);
     addGravy(acc, size, gravyContainers, ozPerContainer);
 
