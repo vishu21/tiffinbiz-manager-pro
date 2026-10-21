@@ -255,25 +255,25 @@ export default function SettingsClient({
                             GPS Origin:
                           </span>
                           <div className="flex items-center gap-2">
-                            <span className="text-gray-400 font-mono">Lat:</span>
-                            <input
-                              type="number"
-                              step="0.0001"
-                              value={settings.kitchen_lat}
-                              onChange={e => setSettings(prev => ({ ...prev, kitchen_lat: parseFloat(e.target.value) || 0 }))}
-                              className="w-28 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono font-bold"
-                            />
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-gray-400 font-mono">Lng:</span>
-                            <input
-                              type="number"
-                              step="0.0001"
-                              value={settings.kitchen_lng}
-                              onChange={e => setSettings(prev => ({ ...prev, kitchen_lng: parseFloat(e.target.value) || 0 }))}
-                              className="w-28 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono font-bold"
-                            />
-                          </div>
+  <span className="text-gray-400 font-mono">Lat:</span>
+  <input
+    type="number"
+    step="0.0001"
+    value={settings.kitchen_lat ?? ''}
+    onChange={e => setSettings(prev => ({ ...prev, kitchen_lat: parseFloat(e.target.value) || 0 }))}
+    className="w-28 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono font-bold"
+  />
+</div>
+<div className="flex items-center gap-2">
+  <span className="text-gray-400 font-mono">Lng:</span>
+  <input
+    type="number"
+    step="0.0001"
+    value={settings.kitchen_lng ?? ''}
+    onChange={e => setSettings(prev => ({ ...prev, kitchen_lng: parseFloat(e.target.value) || 0 }))}
+    className="w-28 px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-mono font-bold"
+  />
+</div>
                         </div>
                       )}
                     </div>
@@ -295,10 +295,14 @@ export default function SettingsClient({
                       <p className="text-[11px] text-gray-500 leading-snug break-words">{settings.kitchen_address || 'No address set'}</p>
                     </div>
 
-                    <div className="flex items-center justify-between text-[11px] text-gray-500 font-mono bg-white/70 px-3 py-2 rounded-lg border border-gray-100">
-                      <span>Coordinates:</span>
-                      <strong className="text-gray-800 font-sans">{settings.kitchen_lat.toFixed(4)}, {settings.kitchen_lng.toFixed(4)}</strong>
-                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-gray-500 font-mono bg-white p-2.5 rounded-xl border border-gray-100">
+  <span>Coordinates:</span>
+  <strong className="text-gray-800 font-sans">
+    {typeof settings.kitchen_lat === 'number' && typeof settings.kitchen_lng === 'number'
+      ? `${settings.kitchen_lat.toFixed(4)}, ${settings.kitchen_lng.toFixed(4)}`
+      : 'Not calibrated'}
+  </strong>
+</div>
 
                     <a
                       href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings.kitchen_address)}`}
