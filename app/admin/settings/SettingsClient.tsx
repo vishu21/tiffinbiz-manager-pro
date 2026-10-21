@@ -41,7 +41,7 @@ export default function SettingsClient({
   const isDirty = JSON.stringify(settings) !== JSON.stringify(savedBaseline);
 
   const handleLookupCoordinates = async () => {
-    if (!settings.kitchen_address.trim()) return;
+    if (!settings.kitchen_address?.trim()) return;
     setIsGeocoding(true);
     setGeocodeSuccess(false);
     const coords = await geocodeKitchenAddress(settings.kitchen_address);
