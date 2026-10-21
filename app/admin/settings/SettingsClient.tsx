@@ -305,14 +305,14 @@ export default function SettingsClient({
 </div>
 
                     <a
-                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings.kitchen_address)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full h-8 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
-                    >
-                      <ExternalLink className="w-3 h-3 text-gray-400" />
-                      <span>Preview in Google Maps</span>
-                    </a>
+  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings.kitchen_address || '')}`}
+  target="_blank"
+  rel="noopener noreferrer"
+  className="w-full h-8 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
+>
+  <ExternalLink className="w-3 h-3 text-gray-400" />
+  <span>Preview in Google Maps</span>
+</a>
                   </div>
                 </div>
               </div>
