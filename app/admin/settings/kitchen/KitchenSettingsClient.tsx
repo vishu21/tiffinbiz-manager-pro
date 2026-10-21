@@ -32,10 +32,11 @@ export default function KitchenSettingsClient({
   const isDirty = JSON.stringify(settings) !== JSON.stringify(savedBaseline);
 
   const handleLookupCoordinates = async () => {
-    if (!settings.kitchen_address.trim()) return;
-    setIsGeocoding(true);
-    setGeocodeSuccess(false);
-    const coords = await geocodeKitchenAddress(settings.kitchen_address);
+  const address = settings.kitchen_address?.trim();
+  if (!address) return;
+  setIsGeocoding(true);
+  setGeocodeSuccess(false);
+  const coords = await geocodeKitchenAddress(address);
     setIsGeocoding(false);
     if (coords) {
       setSettings(prev => ({
@@ -177,11 +178,15 @@ export default function KitchenSettingsClient({
 
             <div className="flex items-center justify-between text-[11px] text-gray-500 font-mono bg-white/70 px-3 py-2 rounded-lg border border-gray-100">
               <span>Coordinates:</span>
-              <strong className="text-gray-800 font-sans">{settings.kitchen_lat.toFixed(4)}, {settings.kitchen_lng.toFixed(4)}</strong>
+              <strong className="text-gray-800 font-sans">
+  {typeof settings.kitchen_lat === 'number' && typeof settings.kitchen_lng === 'number'
+    ? `${settings.kitchen_lat.toFixed(4)}, ${settings.kitchen_lng.toFixed(4)}`
+    : 'Not calibrated'}
+</strong>
             </div>
 
             <a
-              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings.kitchen_address)}`}
+              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings.kitchen_address || '')}`}
               target="_blank"
               rel="noopener noreferrer"
               className="w-full h-8 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
