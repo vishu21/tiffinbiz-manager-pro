@@ -389,9 +389,23 @@ const parseStoredContact = (
 const formatContactValue = (channel: ContactChannel, rawValue: string): string => {
   const value = rawValue.trim();
   if (!value) return '';
+
+  // Extract digits only
+  let digits = value.replace(/\D/g, '');
+
+  // If accidentally prefixed with 92 on a 10-digit local Canadian number
+  if (digits.length === 12 && digits.startsWith('92')) {
+    digits = digits.slice(2);
+  }
+
+  // Standardize 10-digit North American phone format: (XXX) XXX-XXXX
+  const formattedPhone = digits.length === 10
+    ? `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
+    : value;
+
   if (channel === 'messenger') return `FB: ${value}`;
-  if (channel === 'phone') return `SMS: ${value}`;
-  return `WA: ${value}`;
+  if (channel === 'phone') return `SMS: ${formattedPhone}`;
+  return `WA: ${formattedPhone}`;
 };
 
 const getDietaryRank = (mealType: string | null | undefined): number => {

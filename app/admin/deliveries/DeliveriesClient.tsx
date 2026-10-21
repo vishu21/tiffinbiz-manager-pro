@@ -787,7 +787,7 @@ export default function DeliveriesClient({
     }
   };
 
-const handleUndo = async (customerId: string) => {
+  const handleUndo = async (customerId: string) => {
     setBusyId(customerId);
     setErrorMsg('');
 
@@ -1056,8 +1056,8 @@ const handleUndo = async (customerId: string) => {
                     target="_blank"
                     rel="noopener noreferrer"
                     className={`flex-1 h-11 px-3.5 rounded-xl text-xs sm:text-[13px] font-black shadow-xs transition-all flex items-center justify-between gap-2 min-w-0 cursor-pointer ${activeRun.isFinished
-                        ? 'bg-slate-800 hover:bg-slate-900 text-white'
-                        : 'bg-[#5D5FEF] hover:bg-[#4D4FD9] active:bg-[#3D3FB9] text-white'
+                      ? 'bg-slate-800 hover:bg-slate-900 text-white'
+                      : 'bg-[#5D5FEF] hover:bg-[#4D4FD9] active:bg-[#3D3FB9] text-white'
                       }`}
                   >
                     <div className="flex items-center gap-2 min-w-0">
@@ -1106,8 +1106,8 @@ const handleUndo = async (customerId: string) => {
                                 rel="noopener noreferrer"
                                 onClick={() => setShowRunsMenu(false)}
                                 className={`p-2.5 rounded-xl flex items-center justify-between gap-2 transition-colors cursor-pointer ${run.id === activeRun.id && !run.isFinished
-                                    ? 'bg-indigo-50/80 border border-indigo-200'
-                                    : 'hover:bg-gray-50'
+                                  ? 'bg-indigo-50/80 border border-indigo-200'
+                                  : 'hover:bg-gray-50'
                                   }`}
                               >
                                 <div className="min-w-0 flex-1">
@@ -1191,15 +1191,23 @@ const handleUndo = async (customerId: string) => {
                             )}
                           </div>
 
-                          {c.phone_number && (
-                            <a
-                              href={`tel:${c.phone_number}`}
-                              title="Call customer"
-                              className="h-7 w-7 rounded-lg bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors shrink-0"
-                            >
-                              <Phone className="w-3.5 h-3.5 text-gray-600" />
-                            </a>
-                          )}
+                          {c.phone_number && (() => {
+                            // Strip "WA:", "SMS:", "FB:", etc. so letters aren't translated to dial pad numbers (e.g. W=9, A=2)
+                            const cleanDigits = c.phone_number.replace(/^(WA|SMS|PHONE|FB|TEL):\s*/i, '').replace(/\D/g, '');
+                            if (!cleanDigits) return null;
+
+                            const dialNumber = cleanDigits.length === 10 ? `+1${cleanDigits}` : cleanDigits;
+
+                            return (
+                              <a
+                                href={`tel:${dialNumber}`}
+                                title="Call customer"
+                                className="h-7 w-7 rounded-lg bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors shrink-0"
+                              >
+                                <Phone className="w-3.5 h-3.5 text-gray-600" />
+                              </a>
+                            );
+                          })()}
                         </div>
 
                         {c.delivery_address ? (
@@ -1576,10 +1584,10 @@ const handleUndo = async (customerId: string) => {
                     onDragOver={(e) => handleDragOver(e, i)}
                     onDrop={() => handleDrop(i)}
                     className={`px-3 py-2.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${isDragging
-                        ? 'opacity-40 bg-gray-50 border-dashed border-indigo-400 scale-[0.98]'
-                        : isDragOver
-                          ? 'border-indigo-600 bg-indigo-50/70 border-2'
-                          : 'bg-white border-gray-200/80 hover:border-gray-300'
+                      ? 'opacity-40 bg-gray-50 border-dashed border-indigo-400 scale-[0.98]'
+                      : isDragOver
+                        ? 'border-indigo-600 bg-indigo-50/70 border-2'
+                        : 'bg-white border-gray-200/80 hover:border-gray-300'
                       }`}
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
