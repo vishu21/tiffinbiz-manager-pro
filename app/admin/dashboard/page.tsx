@@ -27,7 +27,7 @@ export default async function DashboardPage() {
     // Today's delivery activity logs (completed deliveries)
     supabase
       .from('customer_deliveries')
-      .select('customer_id, delivery_date')
+      .select('customer_id, delivery_date, status')
       .eq('delivery_date', todayKey),
 
     // Active kitchen holidays / closures
@@ -76,7 +76,11 @@ export default async function DashboardPage() {
     <DashboardClient
       todayKey={todayKey}
       initialCustomers={customersRes.data || []}
-      todayDeliveries={deliveriesRes.data || []}
+      todayDeliveries={(deliveriesRes.data || []).map((d: any) => ({
+        customer_id: d.customer_id,
+        delivery_date: d.delivery_date,
+        status: d.status || 'delivered',
+      }))}
       closures={closuresRes.data || []}
       upcomingOverrides={overridesRes.data || []}
       todayMenu={menuRes.data || null}
