@@ -40,7 +40,7 @@ export default function ActionButton({
     <button
       {...props}
       disabled={isDisabled}
-      className={`inline-flex items-center justify-center gap-1.5 transition-all select-none ${
+      className={`inline-flex items-center justify-center gap-1.5 transition-all duration-150 select-none outline-none focus-visible:ring-2 focus-visible:ring-offset-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
         loading ? 'cursor-wait opacity-80' : isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'
       } ${className}`}
     >

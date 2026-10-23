@@ -235,7 +235,7 @@ _(Chicken Curry Mon/Wed/Fri • Veg Sabji Tue/Thu)_
         {/* Modal Header */}
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-[#00D1B2]/10 text-[#00D1B2] flex items-center justify-center font-bold">
+            <div className="w-8 h-8 rounded-xl bg-[#5D5FEF]/10 text-[#5D5FEF] flex items-center justify-center font-bold">
               <MessageSquare className="w-4 h-4" />
             </div>
             <div>
@@ -248,7 +248,7 @@ _(Chicken Curry Mon/Wed/Fri • Veg Sabji Tue/Thu)_
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 cursor-pointer"
+            className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             <X className="w-4 h-4" />
           </button>
@@ -262,7 +262,7 @@ _(Chicken Curry Mon/Wed/Fri • Veg Sabji Tue/Thu)_
                 Select Message Preset
               </label>
               {isDropdownActive && activeDropdownPreset && (
-                <span className="text-[10.5px] font-bold text-[#00D1B2] bg-[#00D1B2]/10 px-2 py-0.5 rounded-full">
+                <span className="text-[10.5px] font-bold text-[#5D5FEF] bg-[#5D5FEF]/10 px-2 py-0.5 rounded-full">
                   ✓ Active: {activeDropdownPreset.title}
                 </span>
               )}
@@ -275,10 +275,10 @@ _(Chicken Curry Mon/Wed/Fri • Veg Sabji Tue/Thu)_
                   key={preset.id}
                   type="button"
                   onClick={() => setActivePresetId(preset.id)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  className={`h-8 px-3 rounded-xl text-xs font-bold border transition-all duration-150 cursor-pointer flex items-center gap-1.5 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50 ${
                     activePresetId === preset.id
-                      ? 'bg-[#00D1B2] text-white border-[#00D1B2] shadow-xs'
-                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 shadow-2xs'
                   }`}
                 >
                   <span>{preset.title}</span>
@@ -302,10 +302,10 @@ _(Chicken Curry Mon/Wed/Fri • Veg Sabji Tue/Thu)_
                   <select
                     value={isDropdownActive ? activePresetId : ''}
                     onChange={(e) => setActivePresetId(e.target.value)}
-                    className={`h-[30px] pl-3 pr-7 rounded-xl text-xs font-bold border transition-all cursor-pointer appearance-none outline-none ${
+                    className={`h-8 pl-3 pr-7 rounded-xl text-xs font-bold border transition-all duration-150 cursor-pointer appearance-none outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
                       isDropdownActive
-                        ? 'bg-[#00D1B2] text-white border-[#00D1B2] shadow-xs'
-                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                        ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 shadow-2xs'
                     }`}
                   >
                     <option value="" disabled className="text-slate-400 bg-white">
@@ -333,7 +333,7 @@ _(Chicken Curry Mon/Wed/Fri • Veg Sabji Tue/Thu)_
               <button
                 type="button"
                 onClick={handleCopy}
-                className="text-xs font-bold text-[#5D5FEF] hover:underline flex items-center gap-1 cursor-pointer"
+                className="h-8 px-2 text-xs font-bold text-[#5D5FEF] hover:underline flex items-center gap-1 transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copied ? 'Copied' : 'Copy'}</span>
@@ -353,7 +353,7 @@ _(Chicken Curry Mon/Wed/Fri • Veg Sabji Tue/Thu)_
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200/60 rounded-xl transition-colors cursor-pointer"
+            className="h-10 px-4 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-xl shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             Cancel
           </button>
@@ -362,7 +362,7 @@ _(Chicken Curry Mon/Wed/Fri • Veg Sabji Tue/Thu)_
             type="button"
             disabled={!cleanPhone}
             onClick={handleSendWhatsApp}
-            className="px-5 py-2.5 bg-[#25D366] hover:bg-[#20bd5a] text-white font-black text-xs rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer disabled:opacity-40"
+            className="h-10 px-5 py-2 bg-[#25D366] hover:bg-[#20bd5a] text-white font-bold text-xs rounded-xl shadow-2xs border border-transparent transition-all duration-150 flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             <Send className="w-3.5 h-3.5" />
             <span>Send via WhatsApp</span>

@@ -68,7 +68,7 @@ export default async function DriverDashboard() {
               )}
             </div>
 
-            <button className="mt-4 w-full rounded-lg bg-green-600 py-2 text-sm font-bold text-white active:bg-green-700">
+            <button className="mt-4 w-full h-11 rounded-xl bg-emerald-600 px-5 text-sm font-bold text-white shadow-2xs border border-transparent transition-all duration-150 hover:bg-emerald-700 active:bg-emerald-700 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1">
               Mark as Delivered
             </button>
           </div>

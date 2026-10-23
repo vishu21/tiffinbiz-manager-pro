@@ -28,7 +28,7 @@ import {
   getRecipesWithIngredients,
   type RecipeWithIngredients,
 } from '@/app/admin/recipes/actions';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import type { MealConfigPayload } from '@/app/admin/actions';
 import PrepQuickEditSheet, { type QuickEditSaveRequest } from './PrepQuickEditSheet';
@@ -37,7 +37,7 @@ import { computeCycleEndDate, resolveDeliveryDayNumbers } from '@/app/utils/subs
 import { computePrepMetrics, resolveSideAddons, getDishDislikeAlert, resolveCustomerDayPlan } from './prepCalculations';
 import DriverDispatchModal from './components/DriverDispatchModal';
 
-const noopSubscribe = () => () => {};
+const noopSubscribe = () => () => { };
 
 type Customer = {
   id: string;
@@ -280,12 +280,12 @@ const getDeliveryScheduleStatus = (
   const totalMeals = resolveCustomerTotalMeals(customer);
   const computedEnd = customer.start_date
     ? calculateTargetLastDay(
-        customer.start_date,
-        totalMeals,
-        customer.delivery_schedule,
-        closureDates,
-        customerSkips
-      )
+      customer.start_date,
+      totalMeals,
+      customer.delivery_schedule,
+      closureDates,
+      customerSkips
+    )
     : null;
 
   const effectiveEnd = computedEnd || (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null);
@@ -753,8 +753,14 @@ const describeTodayOverride = (
 
 const STANDARD_CURRY_TOKEN = /\b(?:1|one)\s*x?\s*(?:dal|daal|sabji|chicken|gravy)\b/gi;
 
-const stripStandardMealText = (text: string): string =>
-  String(text || '')
+const stripStandardMealText = (text: string): string => {
+  // If the text contains custom multipliers (like 2x Chicken or 2x Dal),
+  // preserve the full string so we don't accidentally remove "+ 1 Sabji"!
+  if (/\b\d+x\s*(?:chicken|gravy|dal|sabji)/i.test(text)) {
+    return text.trim();
+  }
+
+  return String(text || '')
     .replace(/\(weekly\)/gi, ' ')
     .replace(STANDARD_CURRY_TOKEN, ' ')
     .replace(/(\d+)?\s*x?\s*(salad|dessert)\b/gi, (match, count) =>
@@ -764,6 +770,7 @@ const stripStandardMealText = (text: string): string =>
     .replace(/[+·|,]/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
+};
 
 const isStandardOnlyNote = (part: string): boolean =>
   stripStandardMealText(part).replace(/[\s()+.\-]/g, '') === '';
@@ -788,6 +795,34 @@ const formatSidesBadge = (salad: number, dessert: number): string => {
   if (dessert > 0) parts.push(dessert > 1 ? `${dessert}D` : 'D');
 
   return parts.length > 0 ? parts.join('+') : '—';
+};
+
+const getDayMatrixAlert = (
+  customer: Customer,
+  activeDay: string,
+  isChickenDay: boolean
+): string | null => {
+  const dayPlan = resolveCustomerDayPlan(customer, activeDay, isChickenDay);
+  const isNonVeg = String(customer.meal_type || '').toLowerCase().includes('non');
+
+  // Baseline default expectations:
+  // Non-Veg on Chicken Day: 1 Chicken + 1 Sabji (0 Dal, 0 Gravy)
+  // Non-Veg on Veg Day / Regular Veg: 1 Dal + 1 Sabji (0 Chicken, 0 Gravy)
+  const isStandard = isNonVeg && isChickenDay
+    ? dayPlan.chicken === 1 && dayPlan.sabji === 1 && dayPlan.dal === 0 && dayPlan.gravy === 0
+    : dayPlan.dal === 1 && dayPlan.sabji === 1 && dayPlan.chicken === 0 && dayPlan.gravy === 0;
+
+  if (isStandard) return null;
+
+  // Whenever a customer deviates from standard, output the ENTIRE container breakdown
+  // so packers know every curry to pack (e.g., "2x Chicken + 1 Sabji")
+  const parts: string[] = [];
+  if (dayPlan.chicken > 0) parts.push(dayPlan.chicken > 1 ? `${dayPlan.chicken}x Chicken` : '1 Chicken');
+  if (dayPlan.gravy > 0) parts.push(dayPlan.gravy > 1 ? `${dayPlan.gravy}x Gravy` : '1 Gravy');
+  if (dayPlan.dal > 0) parts.push(dayPlan.dal > 1 ? `${dayPlan.dal}x Dal` : '1 Dal');
+  if (dayPlan.sabji > 0) parts.push(dayPlan.sabji > 1 ? `${dayPlan.sabji}x Sabji` : '1 Sabji');
+
+  return parts.length > 0 ? parts.join(' + ') : 'No sides';
 };
 
 const buildAlertSummary = (input: {
@@ -881,6 +916,9 @@ const buildAlertSummary = (input: {
 type QuickSaveRequest = QuickEditSaveRequest;
 
 export default function PrepDashboardClient({ initialCustomers }: { initialCustomers: Customer[] }) {
+  const searchParams = useSearchParams();
+  const urlCustomerId = searchParams.get('customer') || searchParams.get('id') || '';
+
   const isMounted = useSyncExternalStore(
     noopSubscribe,
     () => true,
@@ -985,10 +1023,11 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     };
   }, [closuresMap, selectedDateKey]);
 
-  const openQuickEdit = (customer: Customer) => {
+ const openQuickEdit = (customer: Customer) => {
     setQuickEditCustomer(customer);
     setQuickSaveError(null);
   };
+
 
   const handleQuickSave = (request: QuickSaveRequest) => {
     if (!quickEditCustomer) return;
@@ -1471,8 +1510,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     if (details.migrationRecommended) {
       setPersistenceWarning(
         'Renewal saved. Lifetime counters (lifetime_deliveries / renewal_count) are not ' +
-          'being recorded yet — apply supabase/migrations/00023_add_lifetime_counters.sql ' +
-          'to enable lifetime history.'
+        'being recorded yet — apply supabase/migrations/00023_add_lifetime_counters.sql ' +
+        'to enable lifetime history.'
       );
     } else {
       setPersistenceWarning(null);
@@ -1854,6 +1893,27 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     return byId;
   }, [mergedCustomers]);
 
+  // Deep-link effect: Safe to reference resolvedCustomers here
+  useEffect(() => {
+    if (!urlCustomerId || !isMounted) return;
+
+    const targetCustomer = resolvedCustomers.find(c => c.id === urlCustomerId);
+    if (targetCustomer) {
+      openQuickEdit(targetCustomer);
+
+      setTimeout(() => {
+        const el = document.getElementById(`prep-row-${urlCustomerId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('bg-indigo-50/70', 'ring-2', 'ring-indigo-300');
+          setTimeout(() => {
+            el.classList.remove('bg-indigo-50/70', 'ring-2', 'ring-indigo-300');
+          }, 3500);
+        }
+      }, 250);
+    }
+  }, [urlCustomerId, isMounted, resolvedCustomers]);
+
   const { visibleManifestCustomers, lapsedCustomers } = useMemo(() => {
     const manifestList: Customer[] = [];
     const lapsedList: Customer[] = [];
@@ -1861,7 +1921,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
     resolvedCustomers.forEach(customer => {
       const hasLog = deliveryLoggedIds.has(customer.id);
       const custSkips = allSkipsMap.get(customer.id);
-      
+
       // Pass closuresMap and custSkips directly into status calculation!
       const status = getDeliveryScheduleStatus(
         customer,
@@ -1876,12 +1936,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       const totalMeals = resolveCustomerTotalMeals(customer);
       const computedEnd = customer.start_date
         ? calculateTargetLastDay(
-            customer.start_date,
-            totalMeals,
-            customer.delivery_schedule,
-            closuresMap,
-            custSkips
-          )
+          customer.start_date,
+          totalMeals,
+          customer.delivery_schedule,
+          closuresMap,
+          custSkips
+        )
         : null;
 
       const effectiveEnd = computedEnd || (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : '');
@@ -2115,7 +2175,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 type="button"
                 onClick={() => changeWeek('prev')}
                 title="Previous Week"
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+                className="w-7 h-7 flex items-center justify-center rounded-xl hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-all shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 ‹
               </button>
@@ -2132,10 +2192,9 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                       type="button"
                       onClick={() => setSelectedDate(item.dateObj)}
                       title={isClosed ? `Kitchen Closed: ${closuresMap.get(item.dateKey)}` : undefined}
-                      className={`px-2 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer relative flex items-center gap-0.5
-                        ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
-                        ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
-                        ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs ring-2 ring-amber-300' : ''}
+                      className={`px-2 py-1 text-xs font-bold rounded-xl transition-all cursor-pointer relative flex items-center gap-0.5 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
+                        ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-2xs' : ''}
+                        ${isSelected && isClosed ? 'bg-amber-500 text-white font-bold shadow-2xs ring-2 ring-amber-300' : ''}
                         ${!isSelected && isClosed ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200' : ''}
                         ${!isSelected && !isClosed && isWeekend ? 'text-gray-400 opacity-40 hover:opacity-80' : ''}
                         ${!isSelected && !isClosed && !isWeekend ? 'text-gray-600 hover:bg-white hover:text-gray-900' : ''}
@@ -2157,7 +2216,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 type="button"
                 onClick={() => changeWeek('next')}
                 title="Next Week"
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-colors shrink-0"
+                className="w-7 h-7 flex items-center justify-center rounded-xl hover:bg-gray-200/70 text-gray-600 font-bold text-sm cursor-pointer transition-all shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 ›
               </button>
@@ -2178,7 +2237,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             <button
               type="button"
               onClick={() => window.print()}
-              className="h-9 inline-flex items-center gap-1.5 px-3 border border-gray-200 rounded-xl shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-colors shrink-0"
+              className="h-9 inline-flex items-center gap-1.5 px-3 border border-gray-200 rounded-xl shadow-2xs text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 hover:border-gray-300 cursor-pointer transition-all shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               <Printer className="w-4 h-4" />
               <span className="hidden sm:inline">Print</span>
@@ -2240,9 +2299,8 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
       </div>
 
       {/* DASHBOARD GRID WORKSPACE */}
-      <div className={`relative flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 print:flex-none print:h-auto print:overflow-visible print:p-3 transition-opacity duration-150 ${
-        isDateSwitching ? 'opacity-30 pointer-events-none select-none' : 'opacity-100'
-      }`}>
+      <div className={`relative flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 print:flex-none print:h-auto print:overflow-visible print:p-3 transition-opacity duration-150 ${isDateSwitching ? 'opacity-30 pointer-events-none select-none' : 'opacity-100'
+        }`}>
         {isDateSwitching && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-white/40 backdrop-blur-[1px] print:hidden">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-gray-200 shadow-md text-xs font-bold text-gray-700">
@@ -2398,9 +2456,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     const todayOverrideLabel = hasTodayOverride
                       ? `Today: ${todayDeviation}`
                       : null;
+                    const matrixRule = getDayMatrixAlert(customer, activeDay, isChickenDay);
                     const customRule = hasTodayOverride
                       ? null
-                      : getCustomInstructionsText(customer);
+                      : (matrixRule || getCustomInstructionsText(customer));
                     const rawNotes = [
                       customer.dietary_notes,
                       customer.notes,
@@ -2555,7 +2614,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             </div>
             <Link
               href="/admin/closures"
-              className="shrink-0 text-center px-3.5 py-1.5 rounded-lg bg-white hover:bg-amber-50 text-amber-900 font-bold text-xs shadow-xs transition-colors"
+              className="shrink-0 text-center px-3.5 py-1.5 rounded-xl bg-white hover:bg-amber-50 text-amber-900 font-bold text-xs shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               Manage in Kitchen Holidays →
             </Link>
@@ -2573,7 +2632,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               type="button"
               onClick={() => void handleReloadSchema()}
               disabled={schemaReloading}
-              className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[11.5px] font-bold transition-colors disabled:opacity-60 disabled:cursor-wait whitespace-nowrap self-end sm:self-auto"
+              className="shrink-0 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition-all disabled:opacity-60 disabled:cursor-wait whitespace-nowrap self-end sm:self-auto duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               {schemaReloading ? 'Reloading…' : 'Reload schema & retry'}
             </button>
@@ -2690,7 +2749,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 <div className="flex items-center gap-2">
                   <a
                     href="/admin/recipes"
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded transition-colors"
+                    className="inline-flex items-center gap-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] px-2 py-0.5 rounded-xl transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     <Settings2 className="w-3.5 h-3.5" /> Manage Recipes
                   </a>
@@ -2903,7 +2962,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
               <button
                 type="button"
                 onClick={() => setIsDispatchModalOpen(true)}
-                className="inline-flex items-center gap-1 text-[11px] sm:text-[11.5px] font-bold text-white bg-[#D97746] hover:bg-[#c46535] px-2.5 sm:px-3 py-1.5 rounded-lg shadow-2xs transition-all cursor-pointer shrink-0 whitespace-nowrap"
+                className="inline-flex items-center gap-1 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 px-2.5 sm:px-3 py-1.5 rounded-xl shadow-2xs transition-all cursor-pointer shrink-0 whitespace-nowrap duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 <MapPin className="w-3.5 h-3.5 shrink-0" />
                 <span>Dispatch</span>
@@ -2946,12 +3005,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 const totalMealsConstrained = resolveCustomerTotalMeals(customer);
                 const computedEnd = customer.start_date
                   ? calculateTargetLastDay(
-                      customer.start_date,
-                      totalMealsConstrained,
-                      customer.delivery_schedule,
-                      closuresMap,
-                      custSkips
-                    )
+                    customer.start_date,
+                    totalMealsConstrained,
+                    customer.delivery_schedule,
+                    closuresMap,
+                    custSkips
+                  )
                   : null;
 
                 const effectiveTargetEnd = computedEnd || (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null);
@@ -2970,7 +3029,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 const hasTodayOverride = todayDeviation !== null && todayDeviation !== 'one-time change';
                 const todayOverrideLabel = hasTodayOverride ? `Today: ${todayDeviation}` : null;
 
-                const customInstruction = hasTodayOverride ? null : getCustomInstructionsText(customer);
+                const matrixRule = getDayMatrixAlert(customer, activeDay, isChickenDay);
+                const customInstruction = hasTodayOverride
+                  ? null
+                  : (matrixRule || getCustomInstructionsText(customer));
                 const sideInstruction = (customer.delivery_instructions || '').trim();
                 const strippedSideInstruction =
                   sideInstruction !== '' && sideInstruction !== 'None' && sideInstruction !== '—'
@@ -3161,7 +3223,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                               handleToggleSkip(customer.id, false);
                             }
                           }}
-                          className="text-[11px] font-bold text-amber-800 bg-white border border-amber-300 px-2.5 py-1 rounded hover:bg-amber-50 cursor-pointer shrink-0"
+                          className="text-xs font-bold text-amber-800 bg-white border border-amber-300 px-2.5 py-1 rounded-xl hover:bg-amber-50 cursor-pointer shrink-0 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                           Undo
                         </button>
@@ -3253,12 +3315,12 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     const totalMealsConstrained = resolveCustomerTotalMeals(customer);
                     const computedEnd = customer.start_date
                       ? calculateTargetLastDay(
-                          customer.start_date,
-                          totalMealsConstrained,
-                          customer.delivery_schedule,
-                          closuresMap,
-                          custSkips
-                        )
+                        customer.start_date,
+                        totalMealsConstrained,
+                        customer.delivery_schedule,
+                        closuresMap,
+                        custSkips
+                      )
                       : null;
 
                     const effectiveTargetEnd = computedEnd || (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null);
@@ -3271,6 +3333,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     return (
                       <tr
                         key={customer.id}
+                        id={`prep-row-${customer.id}`}
                         onClick={() => openQuickEdit(customer)}
                         className={`cursor-pointer transition-colors h-11 break-inside-avoid print:bg-white print:cursor-default ${customer.isExpiredRenewalPending
                           ? 'bg-amber-50/40 hover:bg-amber-50/70 border-l-4 border-l-amber-400 opacity-80 print:hidden'
@@ -3488,7 +3551,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                                       }
                                     }}
                                     disabled={isSkipPending}
-                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-amber-300 bg-white text-amber-800 text-[10.5px] font-bold tracking-wide hover:bg-amber-50 transition-colors whitespace-nowrap leading-none disabled:opacity-60 disabled:cursor-wait cursor-pointer shrink-0"
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-xl border border-amber-300 bg-white text-amber-800 text-xs font-bold tracking-wide hover:bg-amber-50 transition-all whitespace-nowrap leading-none disabled:opacity-60 disabled:cursor-wait cursor-pointer shrink-0 duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                   >
                                     <Undo2 className="w-3.5 h-3.5 text-amber-700 shrink-0" strokeWidth={2} />
                                     <span>Undo</span>
@@ -3517,9 +3580,10 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                               ? `Today: ${todayDeviation}`
                               : null;
 
+                            const matrixRule = getDayMatrixAlert(customer, activeDay, isChickenDay);
                             const customInstruction = hasTodayOverride
                               ? null
-                              : getCustomInstructionsText(customer);
+                              : (matrixRule || getCustomInstructionsText(customer));
 
                             const sideInstruction = (customer.delivery_instructions || '').trim();
                             const hasSideInstruction =
@@ -3655,7 +3719,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
             <button
               type="button"
               onClick={() => setIsLapsedTrayOpen(prev => !prev)}
-              className="w-full px-4 sm:px-5 py-3 bg-amber-50/60 hover:bg-amber-100/60 flex items-center justify-between text-left transition-colors cursor-pointer"
+              className="w-full px-4 sm:px-5 py-3 bg-amber-50/60 hover:bg-amber-100/60 flex items-center justify-between text-left transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               <div className="flex items-center gap-2.5">
                 <Folder className="w-4 h-4" />
@@ -3699,7 +3763,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                         e.stopPropagation();
                         openQuickEdit(customer);
                       }}
-                      className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-md shadow-xs transition-colors self-start sm:self-auto"
+                      className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-2xs transition-all self-start sm:self-auto duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                     >
                       + Reactivate / Extend
                     </button>
@@ -3776,7 +3840,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 <button
                   type="button"
                   onClick={() => setUndoPromptCustomer(null)}
-                  className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer"
+                  className="p-1 rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -3791,7 +3855,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     setUndoPromptCustomer(null);
                     handleUndoSkipRange(cId, 'today');
                   }}
-                  className="w-full p-3 rounded-xl border border-gray-200 hover:border-amber-400 hover:bg-amber-50/50 text-left transition-all cursor-pointer group"
+                  className="w-full p-3 rounded-xl border border-gray-200 hover:border-amber-400 hover:bg-amber-50/50 text-left transition-all cursor-pointer group duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   <div className="font-bold text-xs text-gray-800 group-hover:text-amber-900">
                     Resume Today Only ({formatShortDate(selectedDateKey)})
@@ -3809,7 +3873,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                     setUndoPromptCustomer(null);
                     handleUndoSkipRange(cId, 'all');
                   }}
-                  className="w-full p-3 rounded-xl border border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50 hover:border-emerald-400 text-left transition-all cursor-pointer group"
+                  className="w-full p-3 rounded-xl border border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50 hover:border-emerald-400 text-left transition-all cursor-pointer group duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   <div className="font-bold text-xs text-emerald-900">
                     Cancel Entire {undoPromptCustomer.range.count}-Day Vacation
@@ -3824,7 +3888,7 @@ export default function PrepDashboardClient({ initialCustomers }: { initialCusto
                 <button
                   type="button"
                   onClick={() => setUndoPromptCustomer(null)}
-                  className="px-3 py-1.5 text-xs font-bold text-gray-500 hover:bg-gray-100 rounded-lg cursor-pointer"
+                  className="px-3 py-1.5 text-xs font-bold text-gray-500 hover:bg-gray-100 rounded-xl cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   Cancel
                 </button>

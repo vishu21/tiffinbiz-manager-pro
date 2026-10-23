@@ -151,7 +151,7 @@ export default function DriverDispatchModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-2 text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+            className="w-8 h-8 rounded-xl flex items-center justify-center text-stone-400 hover:bg-stone-100 hover:text-stone-700 transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <X className="w-4 h-4" />
           </button>
@@ -180,10 +180,10 @@ export default function DriverDispatchModal({
               <button
                 type="button"
                 onClick={() => setIsManualMode(!isManualMode)}
-                className={`shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg border transition-colors ${
+                className={`shrink-0 h-8 px-3 text-xs font-bold rounded-xl border shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
                   isManualMode
-                    ? 'bg-amber-600 text-white border-amber-600'
-                    : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-100'
+                    ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                    : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50'
                 }`}
               >
                 {isManualMode ? <span className="flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Done Reordering</span> : <span className="flex items-center gap-1"><Pencil className="w-3.5 h-3.5" /> Manual Order</span>}
@@ -200,7 +200,7 @@ export default function DriverDispatchModal({
                   <button
                     type="button"
                     onClick={resetToAuto}
-                    className="text-[11px] font-semibold text-amber-700 hover:text-amber-900 underline"
+                    className="h-8 px-2 text-xs font-bold text-amber-700 hover:text-amber-900 underline transition-all duration-150 cursor-pointer rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Reset to Shortest Path
                   </button>
@@ -228,7 +228,7 @@ export default function DriverDispatchModal({
                           type="button"
                           disabled={idx === 0}
                           onClick={() => moveStopUp(idx)}
-                          className="w-6 h-6 flex items-center justify-center rounded border border-stone-200 text-stone-600 hover:bg-stone-100 disabled:opacity-25"
+                          className="w-7 h-7 flex items-center justify-center rounded-xl border border-stone-200 bg-white text-stone-600 hover:bg-stone-100 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           title="Move earlier"
                         >
                           ▲
@@ -237,7 +237,7 @@ export default function DriverDispatchModal({
                           type="button"
                           disabled={idx === orderedStops.length - 1}
                           onClick={() => moveStopDown(idx)}
-                          className="w-6 h-6 flex items-center justify-center rounded border border-stone-200 text-stone-600 hover:bg-stone-100 disabled:opacity-25"
+                          className="w-7 h-7 flex items-center justify-center rounded-xl border border-stone-200 bg-white text-stone-600 hover:bg-stone-100 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           title="Move later"
                         >
                           ▼
@@ -277,7 +277,7 @@ export default function DriverDispatchModal({
                   href={run.mapsUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-1.5 rounded-lg bg-[#D97746] px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#c46535] active:scale-95 transition-all"
+                  className="h-8 px-3 flex items-center gap-1.5 rounded-xl bg-amber-600 text-xs font-bold text-white shadow-2xs border border-transparent hover:bg-amber-700 active:scale-95 transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <MapPin className="w-4 h-4" /> Open in Google Maps
                 </a>
@@ -310,7 +310,7 @@ export default function DriverDispatchModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg bg-stone-100 px-4 py-2 text-xs font-semibold text-stone-700 hover:bg-stone-200"
+            className="h-10 px-4 py-2 rounded-xl bg-white border border-stone-200 text-xs font-bold text-stone-700 hover:bg-stone-50 shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             Close
           </button>

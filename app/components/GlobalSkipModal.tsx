@@ -424,7 +424,7 @@ export default function GlobalSkipModal({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+            className="w-8 h-8 flex items-center justify-center rounded-xl text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -452,7 +452,7 @@ export default function GlobalSkipModal({
                     setPickedId(null);
                     setChangingCustomer(true);
                   }}
-                  className="shrink-0 rounded-lg border border-gray-200 bg-white px-2.5 py-1 text-[11.5px] font-bold text-gray-600 transition-colors hover:bg-gray-100"
+                  className="shrink-0 rounded-xl border border-gray-200 bg-white px-2.5 py-1 text-xs font-bold text-gray-600 transition-all hover:bg-gray-100 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   Change
                 </button>
@@ -488,7 +488,7 @@ export default function GlobalSkipModal({
                             setPickedId(candidate.id);
                             setChangingCustomer(false);
                           }}
-                          className={`flex w-full items-center justify-between gap-2 border-b border-gray-100 px-3.5 py-2.5 text-left last:border-b-0 transition-colors ${isPicked ? 'bg-amber-50' : 'bg-white hover:bg-gray-50'
+                          className={`flex w-full items-center justify-between gap-2 border-b border-gray-100 px-3.5 py-2.5 text-left last:border-b-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isPicked ? 'bg-amber-50' : 'bg-white hover:bg-gray-50'
                             }`}
                         >
                           <span className="min-w-0">
@@ -517,7 +517,7 @@ export default function GlobalSkipModal({
                       setChangingCustomer(false);
                       setQuery('');
                     }}
-                    className="text-[11.5px] font-bold text-gray-400 transition-colors hover:text-gray-600"
+                    className="h-8 px-2 inline-flex items-center rounded-xl text-xs font-bold text-gray-400 transition-all hover:bg-gray-100 hover:text-gray-600 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     Keep {target.full_name?.trim() || 'current customer'}
                   </button>
@@ -536,7 +536,7 @@ export default function GlobalSkipModal({
                   setMode('skip');
                   setError(null);
                 }}
-                className={`flex items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2.5 text-[12.5px] font-bold transition-colors ${mode === 'skip'
+                className={`flex items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2.5 text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${mode === 'skip'
                     ? 'border-amber-300 bg-amber-50 text-amber-800'
                     : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
                   }`}
@@ -549,8 +549,8 @@ export default function GlobalSkipModal({
                   setMode('pause');
                   setError(null);
                 }}
-                className={`flex items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2.5 text-[12.5px] font-bold transition-colors ${mode === 'pause'
-                    ? 'border-indigo-300 bg-indigo-50 text-indigo-800 ring-1 ring-indigo-200'
+                className={`flex items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2.5 text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${mode === 'pause'
+                    ? 'border-[#5D5FEF]/30 bg-[#5D5FEF]/10 text-[#5D5FEF] ring-1 ring-[#5D5FEF]'
                     : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
                   }`}
               >
@@ -562,7 +562,7 @@ export default function GlobalSkipModal({
                   setMode('undo');
                   setError(null);
                 }}
-                className={`flex items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2.5 text-[12.5px] font-bold transition-colors ${mode === 'undo'
+                className={`flex items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2.5 text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${mode === 'undo'
                     ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
                     : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
                   }`}
@@ -605,7 +605,7 @@ export default function GlobalSkipModal({
                 <button
                   type="button"
                   onClick={() => applyPreset(todayKey)}
-                  className={`rounded-full border px-3 py-1.5 text-[12px] font-bold transition-colors ${selected.length === 1 && selected[0] === todayKey
+                  className={`rounded-full border px-3 py-1.5 text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${selected.length === 1 && selected[0] === todayKey
                       ? 'border-amber-400 bg-amber-500 text-white'
                       : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100'
                     }`}
@@ -615,7 +615,7 @@ export default function GlobalSkipModal({
                 <button
                   type="button"
                   onClick={() => applyPreset(tomorrowKey)}
-                  className={`rounded-full border px-3 py-1.5 text-[12px] font-bold transition-colors ${selected.length === 1 && selected[0] === tomorrowKey
+                  className={`rounded-full border px-3 py-1.5 text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${selected.length === 1 && selected[0] === tomorrowKey
                       ? 'border-amber-400 bg-amber-500 text-white'
                       : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
                     }`}
@@ -626,7 +626,7 @@ export default function GlobalSkipModal({
                   <button
                     type="button"
                     onClick={clearDates}
-                    className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-gray-500 transition-colors hover:bg-gray-50"
+                    className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-bold text-gray-500 transition-all hover:bg-gray-50 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     Clear
                   </button>
@@ -670,7 +670,7 @@ export default function GlobalSkipModal({
                     type="button"
                     onClick={addRange}
                     disabled={!rangeStart || !rangeEnd}
-                    className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-[12px] font-bold text-amber-800 transition-colors hover:bg-amber-100 disabled:opacity-50"
+                    className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 transition-all hover:bg-amber-100 disabled:opacity-50 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     Add range
                   </button>
@@ -691,7 +691,7 @@ export default function GlobalSkipModal({
                         key={key}
                         type="button"
                         onClick={() => toggleDate(key)}
-                        className={`rounded-full border px-2.5 py-1 text-[11px] font-bold transition-colors ${isSelected
+                        className={`rounded-full border px-2.5 py-1 text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isSelected
                             ? 'border-amber-400 bg-amber-500 text-white'
                             : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
                           }`}
@@ -756,7 +756,7 @@ export default function GlobalSkipModal({
                     key={key}
                     type="button"
                     onClick={() => toggleDate(key)}
-                    className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-[11.5px] font-bold text-amber-800 shadow-sm"
+                    className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-amber-800 shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                     title="Remove"
                   >
                     {formatDateLabel(key)}
@@ -780,7 +780,7 @@ export default function GlobalSkipModal({
             type="button"
             onClick={onClose}
             disabled={isPending}
-            className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-[13px] font-bold text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50"
+            className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-[13px] font-bold text-gray-600 transition-all hover:bg-gray-50 disabled:opacity-50 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             Cancel
           </button>
@@ -788,11 +788,11 @@ export default function GlobalSkipModal({
             type="button"
             onClick={handleSave}
             disabled={!canSave}
-            className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-bold text-white transition-colors disabled:opacity-50 ${
+            className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-[13px] font-bold text-white transition-all disabled:opacity-50 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
               mode === 'skip'
                 ? 'bg-amber-600 hover:bg-amber-700'
                 : mode === 'pause'
-                  ? 'bg-indigo-600 hover:bg-indigo-700'
+                  ? 'bg-[#5D5FEF] hover:bg-[#4D4FD9]'
                   : 'bg-emerald-600 hover:bg-emerald-700'
             }`}
           >

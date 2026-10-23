@@ -17,7 +17,15 @@ import { revalidatePath } from 'next/cache';
 // the screens never crash on an older schema.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type RecipeCategory = 'dal' | 'sabji' | 'chicken';
+export type RecipeCategory = string;
+
+export type RecipeCategoryRecord = {
+  id: string;
+  slug: string;
+  label: string;
+  color: string;
+  sort_order: number;
+};
 
 export type RecipeIngredient = {
   id: string;
@@ -435,4 +443,68 @@ export async function toggleRecipeActive(
       message: err instanceof Error ? err.message : 'Unknown toggle error',
     };
   }
+}
+
+// ── RECIPE CATEGORIES ACTIONS ──────────────────────────────────────────────
+export async function getRecipeCategories(): Promise<RecipeCategoryRecord[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from('recipe_categories')
+    .select('*')
+    .order('sort_order', { ascending: true });
+
+  if (error || !data || data.length === 0) {
+    return [
+      { id: '1', slug: 'dal', label: 'Dal', color: 'amber', sort_order: 1 },
+      { id: '2', slug: 'sabji', label: 'Sabji', color: 'emerald', sort_order: 2 },
+      { id: '3', slug: 'chicken', label: 'Chicken', color: 'rose', sort_order: 3 },
+    ];
+  }
+
+  return data;
+}
+
+export async function upsertRecipeCategory(payload: {
+  id?: string;
+  slug: string;
+  label: string;
+  color: string;
+  sort_order?: number;
+}): Promise<{ success: boolean; message?: string }> {
+  const supabase = await createClient();
+  const slug = payload.slug.trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+  const { error } = await supabase
+    .from('recipe_categories')
+    .upsert(
+      {
+        ...(payload.id ? { id: payload.id } : {}),
+        slug,
+        label: payload.label.trim(),
+        color: payload.color || 'amber',
+        sort_order: payload.sort_order ?? 99,
+      },
+      { onConflict: 'slug' }
+    );
+
+  if (error) return { success: false, message: error.message };
+  return { success: true };
+}
+
+export async function deleteRecipeCategory(slug: string): Promise<{ success: boolean; message?: string }> {
+  const supabase = await createClient();
+
+  // Reassign existing recipes assigned to this category back to 'dal'
+  await supabase
+    .from('menu_recipes')
+    .update({ category: 'dal' })
+    .eq('category', slug);
+
+  const { error } = await supabase
+    .from('recipe_categories')
+    .delete()
+    .eq('slug', slug);
+
+  if (error) return { success: false, message: error.message };
+  return { success: true };
 }

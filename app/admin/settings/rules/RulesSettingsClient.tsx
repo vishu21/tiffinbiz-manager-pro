@@ -230,7 +230,7 @@ export default function RulesSettingsClient({
             <button
               type="button"
               onClick={() => setMatrix(savedBaseline)}
-              className="px-4 py-2 text-xs font-bold text-gray-500 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+              className="h-10 px-4 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-xl shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               Discard
             </button>
@@ -240,7 +240,7 @@ export default function RulesSettingsClient({
             type="button"
             disabled={!isDirty || isPending}
             onClick={handleSave}
-            className="px-5 py-2.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-black text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+            className="h-10 px-5 py-2 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs rounded-xl shadow-2xs border border-transparent transition-all duration-150 flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4 stroke-[3]" />}
             <span>{isPending ? 'Saving…' : 'Save Pricing Grid'}</span>

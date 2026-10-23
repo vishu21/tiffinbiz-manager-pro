@@ -64,14 +64,14 @@ export default function CustomerPlanBillingDemo() {
                   setPlanTier(plan.key);
                   setCredits(plan.credits);
                 }}
-                className={`h-11 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`h-11 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
                   planTier === plan.key
-                    ? 'bg-blue-600 border-blue-600 text-white shadow-xs'
-                    : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                    ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white shadow-2xs'
+                    : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50 shadow-2xs'
                 }`}
               >
                 <span>{plan.label}</span>
-                <span className={planTier === plan.key ? 'text-blue-100' : 'text-gray-400'}>
+                <span className={planTier === plan.key ? 'text-white/80' : 'text-gray-400'}>
                   ({plan.credits})
                 </span>
               </button>
@@ -103,7 +103,7 @@ export default function CustomerPlanBillingDemo() {
               <button
                 type="button"
                 onClick={() => setCredits((c) => Math.max(1, c - 1))}
-                className="w-10 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold border-r border-gray-200 cursor-pointer flex items-center justify-center"
+                className="w-10 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold border-r border-gray-200 transition-all duration-150 cursor-pointer flex items-center justify-center outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Minus className="w-3.5 h-3.5" />
               </button>
@@ -111,7 +111,7 @@ export default function CustomerPlanBillingDemo() {
               <button
                 type="button"
                 onClick={() => setCredits((c) => c + 1)}
-                className="w-10 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold border-l border-gray-200 cursor-pointer flex items-center justify-center"
+                className="w-10 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold border-l border-gray-200 transition-all duration-150 cursor-pointer flex items-center justify-center outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>
@@ -177,10 +177,10 @@ export default function CustomerPlanBillingDemo() {
                     key={size}
                     type="button"
                     onClick={() => setPortionSize(size)}
-                    className={`py-1.5 rounded-lg text-[10.5px] font-bold border transition-all cursor-pointer ${
+                    className={`h-8 px-2 rounded-xl text-xs font-bold border transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
                       portionSize === size
-                        ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-100'
+                        ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50 shadow-2xs'
                     }`}
                   >
                     {size}

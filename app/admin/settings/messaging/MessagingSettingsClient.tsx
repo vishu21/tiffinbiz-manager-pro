@@ -8,11 +8,11 @@ import { useToast } from '@/app/components/ToastProvider';
 
 const DEFAULT_CLIENT_PRESETS: CustomTemplate[] = [
   {
-    id: 'pricing_veg',
-    title: 'Veg Plans & Pricing',
-    tag: 'VEG-PRICING',
-    is_pinned: true,
-    template: 'Hello {customer_name}! Here are our Vegetarian Tiffin plans:\n\n{veg_pricing}\n\n_• Mon–Fri fresh delivery before 9:00 AM._\n_• Fresh rotis included daily (rice substitute optional)._\n\nWhich portion size (Regular or Large) would you like to start with?',
+    id: 'payment_receipt',
+    title: 'Payment Confirmation Receipt',
+    tag: 'RECEIPT',
+    is_pinned: false,
+    template: 'Hi {customer_name}, we have received your payment of {amount} CAD via {payment_method} for period ({cycle_dates}) covering {total_credits} meals. Your balance is now settled. Thank you for choosing {business_name}!',
   },
   {
     id: 'pricing_nonveg',
@@ -281,16 +281,18 @@ _• Fresh rotis daily (rice substitute optional)._`;
   const sampleCompile = (raw: string) => {
     return (raw || '')
       .replace(/{customer_name}/g, 'Vanshika')
+      .replace(/{payment_method}/g, 'ETRANSFER')
+      .replace(/{business_name}/g, 'TiffinBiz')
+      .replace(/{amount}/g, '250.00')
+      .replace(/{cycle_dates}/g, 'Sep 30 to Oct 28')
+      .replace(/{total_credits}/g, '20')
+      .replace(/{remaining_meals}/g, '6')
+      .replace(/{cycle_end_date}/g, '2026-10-28')
+      .replace(/{plan_tier}/g, 'Monthly')
+      .replace(/{payment_email}/g, settings.payment_email || 'payments@tiffin.ca')
       .replace(/{veg_pricing}/g, sampleVegPricing)
       .replace(/{nonveg_pricing}/g, sampleNonVegPricing)
       .replace(/{pricing_sheet}/g, samplePricingSheet)
-      .replace(/{remaining_meals}/g, '6')
-      .replace(/{total_credits}/g, '20')
-      .replace(/{cycle_end_date}/g, '2026-10-28')
-      .replace(/{cycle_dates}/g, 'Sep 30 → Oct 28')
-      .replace(/{amount}/g, '250.00')
-      .replace(/{plan_tier}/g, 'Monthly')
-      .replace(/{payment_email}/g, settings.payment_email || 'payments@tiffin.ca')
       .replace(/{address}/g, '1026 Roulston Cres');
   };
 
@@ -322,7 +324,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                 type="button"
                 disabled={isPending}
                 onClick={handleSave}
-                className="px-3.5 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+                className="px-3.5 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-40 duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 {isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5 stroke-[3]" />}
                 <span>Save</span>
@@ -333,8 +335,8 @@ _• Fresh rotis daily (rice substitute optional)._`;
               <button
                 type="button"
                 onClick={() => setActiveTab('driver')}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'driver'
-                  ? 'bg-white text-[#5D5FEF] shadow-xs'
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${activeTab === 'driver'
+                  ? 'bg-white text-[#5D5FEF] shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
                   }`}
               >
@@ -344,8 +346,8 @@ _• Fresh rotis daily (rice substitute optional)._`;
               <button
                 type="button"
                 onClick={() => setActiveTab('admin')}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeTab === 'admin'
-                  ? 'bg-white text-emerald-700 shadow-xs'
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${activeTab === 'admin'
+                  ? 'bg-white text-emerald-700 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
                   }`}
               >
@@ -366,24 +368,26 @@ _• Fresh rotis daily (rice substitute optional)._`;
             {(activeTab === 'driver'
               ? ['{customer_name}', '{address}', '{remaining_meals}', '{cycle_end_date}']
               : [
-    '{customer_name}',
-    '{veg_pricing}',
-    '{nonveg_pricing}',
-    '{pricing_sheet}',
-    '{remaining_meals}',
-    '{total_credits}',
-    '{cycle_end_date}',
-    '{cycle_dates}',
-    '{amount}',
-    '{plan_tier}',
-    '{payment_email}',
-  ]
+                  '{customer_name}',
+                  '{amount}',
+                  '{payment_method}',
+                  '{cycle_dates}',
+                  '{total_credits}',
+                  '{remaining_meals}',
+                  '{cycle_end_date}',
+                  '{plan_tier}',
+                  '{business_name}',
+                  '{payment_email}',
+                  '{veg_pricing}',
+                  '{nonveg_pricing}',
+                  '{pricing_sheet}',
+                ]
             ).map((tag) => (
               <button
                 key={tag}
                 type="button"
                 onClick={() => copyTag(tag)}
-                className="px-2.5 py-1 bg-white border border-gray-300 hover:border-[#5D5FEF] hover:bg-[#5D5FEF] hover:text-white rounded-lg text-xs font-mono font-bold text-gray-800 cursor-pointer transition-all shadow-2xs flex items-center gap-1"
+                className="px-2.5 py-1 bg-white border border-gray-300 hover:border-[#5D5FEF] hover:bg-[#5D5FEF] hover:text-white rounded-xl text-xs font-mono font-bold text-gray-800 cursor-pointer transition-all shadow-2xs flex items-center gap-1 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 <span>{tag}</span>
                 {copiedTag === tag && <Check className="w-3 h-3 text-emerald-500 stroke-[3]" />}
@@ -471,7 +475,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                 <button
                   type="button"
                   onClick={handleAddDriverTemplate}
-                  className="px-3.5 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                  className="px-3.5 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Preset</span>
@@ -496,7 +500,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                         <button
                           type="button"
                           onClick={() => handleRemoveDriverTemplate(item.id)}
-                          className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-rose-50 text-gray-400 hover:text-rose-600 border border-gray-200 flex items-center justify-center transition-colors cursor-pointer"
+                          className="w-7 h-7 rounded-xl bg-gray-50 hover:bg-rose-50 text-gray-400 hover:text-rose-600 border border-gray-200 flex items-center justify-center transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -558,7 +562,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
               <button
                 type="button"
                 onClick={handleAddCustomerPreset}
-                className="px-3.5 py-2 bg-[#00D1B2] hover:bg-[#00c4a7] text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                className="px-3.5 py-2 bg-[#00D1B2] hover:bg-[#00c4a7] text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 <Plus className="w-4 h-4 stroke-[2.5]" />
                 <span>Add Customer Preset</span>
@@ -612,7 +616,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                             type="button"
                             onClick={() => handleTogglePin(preset)}
                             title={preset.is_pinned ? 'Pinned to Top 3 Quick Bar (Click to unpin)' : 'Pin to Top 3 Quick Bar'}
-                            className={`px-2 py-0.5 rounded text-[10.5px] font-bold border flex items-center gap-1 transition-all cursor-pointer ${preset.is_pinned
+                            className={`px-2 py-0.5 rounded-xl text-xs font-bold border flex items-center gap-1 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${preset.is_pinned
                                 ? 'bg-amber-50 text-amber-900 border-amber-300'
                                 : 'bg-slate-50 text-slate-400 border-slate-200 hover:text-slate-600'
                               }`}
@@ -632,7 +636,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                             type="button"
                             onClick={() => handleRemoveCustomerPreset(preset.id)}
                             title="Delete Preset"
-                            className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-rose-50 text-gray-400 hover:text-rose-600 border border-gray-200 flex items-center justify-center transition-colors cursor-pointer"
+                            className="w-7 h-7 rounded-xl bg-gray-50 hover:bg-rose-50 text-gray-400 hover:text-rose-600 border border-gray-200 flex items-center justify-center transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -690,7 +694,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                 <button
                   type="button"
                   onClick={() => setSettings(savedBaseline)}
-                  className="px-4 py-2 rounded-xl text-xs font-bold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors cursor-pointer"
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   Discard
                 </button>
@@ -700,7 +704,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                 type="button"
                 disabled={isPending || !isDirty}
                 onClick={handleSave}
-                className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs ${
+                className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
                   isDirty
                     ? 'bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white cursor-pointer ring-2 ring-[#5D5FEF]/20'
                     : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200/70'
@@ -748,7 +752,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                       setShowExitModal(false);
                       setPendingNavigationUrl(null);
                     }}
-                    className="px-4 py-2 border border-gray-200 text-gray-700 font-bold rounded-xl text-xs hover:bg-gray-50 transition-colors cursor-pointer"
+                    className="px-4 py-2 border border-gray-200 text-gray-700 font-bold rounded-xl text-xs hover:bg-gray-50 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     Stay &amp; Keep Editing
                   </button>
@@ -761,7 +765,7 @@ _• Fresh rotis daily (rice substitute optional)._`;
                         window.location.href = pendingNavigationUrl;
                       }
                     }}
-                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs shadow-xs transition-colors cursor-pointer"
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs shadow-2xs transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     Discard &amp; Leave
                   </button>

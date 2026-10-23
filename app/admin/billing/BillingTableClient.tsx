@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Search, MessageSquare, CreditCard } from 'lucide-react';
 import RecordPaymentModal from '@/app/components/RecordPaymentModal';
 import CustomerMessageModal, { type CustomerMessageTarget } from '@/app/components/CustomerMessageModal';
@@ -10,6 +10,7 @@ import {
   resolveDeliveryDayNumbers,
   computeCustomerPeriods,
   formatShortDate,
+  getCustomerLiveMetrics,
   type PlanPricingMatrix,
 } from '@/app/utils/subscriptionCycle';
 import { cleanPhoneNumberForWhatsApp } from '@/app/utils/mealEngine';
@@ -28,10 +29,47 @@ export default function BillingTableClient({
   pricingMatrix?: PlanPricingMatrix | null;
 }) {
   const router = useRouter();
-  const [searchTerm, setSearchTerm] = useState('');
+  const searchParams = useSearchParams();
+  const urlSearch = searchParams.get('search') || searchParams.get('q') || '';
+  const urlCustomerId = searchParams.get('id') || '';
+
+  const [searchTerm, setSearchTerm] = useState(urlSearch);
   const [statusFilter, setStatusFilter] = useState<'all' | 'due' | 'overdue' | 'paid'>('all');
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
   const [messagingTarget, setMessagingTarget] = useState<CustomerMessageTarget | null>(null);
+
+  // Deep-link sync: Auto-filter & open Log Payment modal when navigating from Global Search
+  useEffect(() => {
+    setSearchTerm(urlSearch);
+
+    if (urlCustomerId) {
+      const match = initialCustomers.find(c => c.id === urlCustomerId);
+      if (match) {
+        setSelectedCustomer(match);
+      }
+    } else if (urlSearch) {
+      const match = initialCustomers.find(
+        c => (c.full_name || '').toLowerCase() === urlSearch.toLowerCase()
+      );
+      if (match) {
+        setSelectedCustomer(match);
+      }
+    }
+  }, [urlSearch, urlCustomerId, initialCustomers]);
+
+  const handleSearchChange = (val: string) => {
+    setSearchTerm(val);
+    const params = new URLSearchParams(window.location.search);
+    if (val.trim()) {
+      params.set('search', val.trim());
+    } else {
+      params.delete('search');
+      params.delete('q');
+      params.delete('id');
+    }
+    const nextQuery = params.toString();
+    router.replace(`/admin/billing${nextQuery ? `?${nextQuery}` : ''}`, { scroll: false });
+  };
 
   const closuresSet = useMemo(() => new Set(initialClosures), [initialClosures]);
   const skipsMap = useMemo(() => {
@@ -47,23 +85,8 @@ export default function BillingTableClient({
   const enrichedCustomers = useMemo(() => {
     return initialCustomers.map(c => {
       const custSkips = skipsMap.get(c.id);
-      const deliveryDays = resolveDeliveryDayNumbers(c.delivery_schedule);
-      const credits = c.total_tiffin_credits ?? 20;
 
-      // 1. Calculate the real holiday/skip-aware target end date
-      const endResult = c.start_date
-        ? calculateCycleTargetLastDay({
-            startDate: c.start_date,
-            totalMeals: credits,
-            deliveryDays,
-            closureDates: closuresSet,
-            customerSkips: custSkips,
-          })
-        : null;
-
-      const dynamicEndDate = endResult?.dateKey || (c.cycle_end_date ? c.cycle_end_date.slice(0, 10) : null);
-
-      // 2. Check the 4-period tracker status for the current active cycle
+      // Check current cycle payment from periods tracker
       const periods = computeCustomerPeriods({
         customer: c,
         payments: recentPayments.filter(p => p.customer_id === c.id),
@@ -75,18 +98,25 @@ export default function BillingTableClient({
       const currentPeriod = periods.find(p => p.index === 0);
       const isCurrentCyclePaid = currentPeriod?.isPaid ?? false;
 
-      const used = c.used_credits ?? 0;
-      const isOverdue = !isCurrentCyclePaid && used > credits;
-      const calculatedStatus = isCurrentCyclePaid ? 'paid' : isOverdue ? 'overdue' : 'due';
+      // Use Master Single Source of Truth
+      const live = getCustomerLiveMetrics({
+        customer: c,
+        closuresSet,
+        skipsSet: custSkips,
+        isPaid: isCurrentCyclePaid,
+      });
 
       return {
         ...c,
-        dynamicEndDate,
-        calculatedStatus,
+        dynamicEndDate: live.effectiveEndDate,
+        calculatedStatus: live.status,
+        deliveredMeals: live.deliveredMeals,
+        remainingMeals: live.remainingMeals,
+        totalMeals: live.totalMeals,
         currentPeriod,
       };
     });
-  }, [initialCustomers, recentPayments, closuresSet, skipsMap]);
+  }, [initialCustomers, recentPayments, closuresSet, skipsMap, pricingMatrix]);
 
   const filtered = enrichedCustomers.filter(c => {
     const q = searchTerm.toLowerCase();
@@ -109,7 +139,7 @@ export default function BillingTableClient({
             type="text"
             placeholder="Search billing records..."
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             className="w-full text-xs font-semibold pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] focus:bg-white text-gray-900 transition-all"
           />
         </div>
@@ -120,11 +150,10 @@ export default function BillingTableClient({
               key={tab}
               type="button"
               onClick={() => setStatusFilter(tab)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-all cursor-pointer ${
-                statusFilter === tab
+              className={`h-8 px-3 rounded-xl text-xs font-bold uppercase transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${statusFilter === tab
                   ? 'bg-white text-[#5D5FEF] shadow-2xs'
                   : 'text-gray-500 hover:text-gray-900'
-              }`}
+                }`}
             >
               {tab}
             </button>
@@ -188,13 +217,12 @@ export default function BillingTableClient({
 
                     <td className="py-3">
                       <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${
-                          c.calculatedStatus === 'paid'
+                        className={`px-2 py-0.5 rounded text-[10px] font-black uppercase border ${c.calculatedStatus === 'paid'
                             ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                             : c.calculatedStatus === 'overdue'
                               ? 'bg-rose-50 text-rose-700 border-rose-200'
                               : 'bg-amber-50 text-amber-700 border-amber-200'
-                        }`}
+                          }`}
                       >
                         {c.calculatedStatus}
                       </span>
@@ -210,8 +238,8 @@ export default function BillingTableClient({
                                 id: c.id,
                                 full_name: c.full_name,
                                 phone_number: c.phone_number,
-                                remaining_meals: Math.max(0, total - used),
-                                total_credits: total,
+                                remaining_meals: c.remainingMeals,
+                                total_credits: c.totalMeals,
                                 cycle_end_date: c.dynamicEndDate,
                                 cycle_dates: c.currentPeriod
                                   ? `${formatShortDate(c.currentPeriod.startDate)} → ${formatShortDate(c.currentPeriod.endDate)}`
@@ -221,7 +249,7 @@ export default function BillingTableClient({
                               })
                             }
                             title="Edit & Send Billing Notice"
-                            className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors cursor-pointer"
+                            className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 shadow-2xs transition-all duration-150 flex items-center justify-center cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
                           </button>
@@ -229,7 +257,7 @@ export default function BillingTableClient({
                         <button
                           type="button"
                           onClick={() => setSelectedCustomer(c)}
-                          className="px-2.5 py-1 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white rounded-lg font-bold text-xs transition-colors flex items-center gap-1 cursor-pointer"
+                          className="h-8 px-3 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white rounded-xl font-bold text-xs shadow-2xs border border-transparent transition-all duration-150 flex items-center gap-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                           <CreditCard className="w-3 h-3" />
                           <span>Log Payment</span>

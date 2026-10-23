@@ -104,7 +104,7 @@ export default function PrepDatePicker({
           setIsOpen((prev) => !prev);
         }}
         title="Open calendar picker"
-        className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors cursor-pointer text-sm ${
+        className={`w-8 h-8 flex items-center justify-center rounded-xl transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50 ${
           isOpen ? 'bg-[#5D5FEF] text-white' : 'hover:bg-gray-200/80 text-gray-600'
         }`}
       >
@@ -126,14 +126,14 @@ export default function PrepDatePicker({
               <button
                 type="button"
                 onClick={prevMonth}
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600 font-bold cursor-pointer"
+                className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-600 font-bold transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 ‹
               </button>
               <button
                 type="button"
                 onClick={nextMonth}
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600 font-bold cursor-pointer"
+                className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-600 font-bold transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 ›
               </button>
@@ -162,11 +162,10 @@ export default function PrepDatePicker({
                   key={currentStr}
                   type="button"
                   onClick={() => handleSelectDate(currentStr)}
-                  className={`h-8 w-8 mx-auto flex flex-col items-center justify-center font-semibold rounded-full transition-all relative cursor-pointer
-                    ${isSelected ? '!bg-[#5D5FEF] !text-white font-extrabold shadow-xs' : ''}
+                  className={`h-8 w-8 mx-auto flex flex-col items-center justify-center font-bold rounded-full transition-all relative cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isSelected ? '!bg-[#5D5FEF] !text-white font-bold shadow-2xs' : ''}
                     ${!isSelected && isClosed ? 'bg-amber-100 text-amber-900 font-bold hover:bg-amber-200' : ''}
                     ${!isSelected && !isClosed ? 'hover:bg-gray-100 text-gray-700' : ''}
-                    ${isToday && !isSelected ? 'border border-[#5D5FEF] text-[#5D5FEF] font-black' : ''}
+                    ${isToday && !isSelected ? 'border border-[#5D5FEF] text-[#5D5FEF] font-bold' : ''}
                   `}
                 >
                   <span className="leading-none">{day}</span>
@@ -195,7 +194,7 @@ export default function PrepDatePicker({
             <button
               type="button"
               onClick={jumpToToday}
-              className="text-[#5D5FEF] font-bold hover:underline cursor-pointer"
+              className="text-[#5D5FEF] text-xs font-bold hover:underline transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
             >
               Today
             </button>

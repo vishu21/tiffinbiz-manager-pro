@@ -1641,23 +1641,41 @@ export async function renewCustomerSubscription({
         customerSkips,
       });
     } else {
-      nextStartDate = existingStart as string;
-      nextCredits = totalCredits + credits;
-      nextUsed = used;
-      nextEnd =
-        shiftCycleEndByDeliveryDays(
-          effectiveEnd || nextStartDate,
-          credits,
-          deliveryDays,
-          closureDates
-        ) ||
-        computeCycleEndDate({
+      // If planTier is provided or credits matches a full cycle tier (e.g. 20 for monthly),
+      // treat as a cycle reset rather than compounding on top of existing credits.
+      const isFullCycleTier = credits === 20 || credits === 5 || Boolean(planTier);
+
+      if (isFullCycleTier) {
+        nextStartDate = cycleIsOver || !existingStart ? requestedStart : (existingStart as string);
+        nextCredits = credits; // Set strictly to 20 or 5, never accumulate to 40
+        nextUsed = 0;
+        nextEnd = computeCycleEndDate({
           startDate: nextStartDate,
           totalMeals: nextCredits,
           deliveryDays,
           closureDates,
           customerSkips,
         });
+      } else {
+        // True mid-cycle top-up (e.g. adding +1 or +2 extra meals)
+        nextStartDate = existingStart as string;
+        nextCredits = totalCredits + credits;
+        nextUsed = used;
+        nextEnd =
+          shiftCycleEndByDeliveryDays(
+            effectiveEnd || nextStartDate,
+            credits,
+            deliveryDays,
+            closureDates
+          ) ||
+          computeCycleEndDate({
+            startDate: nextStartDate,
+            totalMeals: nextCredits,
+            deliveryDays,
+            closureDates,
+            customerSkips,
+          });
+      }
     }
 
     const nextTier = planTier || resolvePlanTierForCredits(nextCredits);

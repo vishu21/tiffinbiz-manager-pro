@@ -351,19 +351,18 @@ export default function ClosuresClient({
                                 title={isAlreadyClosed ? `Already closed: ${closureReason}` : undefined}
                                 onClick={() => !isAlreadyClosed && handleDateClick(currentStr)}
                                 onMouseEnter={() => !endDate && !isAlreadyClosed && setHoverDate(currentStr)}
-                                className={`h-9 w-9 flex flex-col items-center justify-center font-medium transition-all relative
-                  ${isAlreadyClosed ? 'bg-amber-100/70 text-amber-900 border border-amber-300/80 rounded-md cursor-not-allowed opacity-80' : 'cursor-pointer'}
-                  ${isInRange && !isAlreadyClosed ? 'bg-indigo-50 text-indigo-900 rounded-none' : ''}
-                  ${isStart ? '!bg-blue-600 !text-white font-bold rounded-l-full shadow-xs z-10' : ''}
-                  ${isEnd && (endDate || hoverDate) ? '!bg-blue-600 !text-white font-bold rounded-r-full shadow-xs z-10' : ''}
+                                className={`h-9 w-9 flex flex-col items-center justify-center font-bold transition-all relative duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isAlreadyClosed ? 'bg-amber-100/70 text-amber-900 border border-amber-300/80 rounded-xl cursor-not-allowed opacity-80' : 'cursor-pointer'}
+                  ${isInRange && !isAlreadyClosed ? 'bg-[#5D5FEF]/10 text-[#5D5FEF] rounded-none' : ''}
+                  ${isStart ? '!bg-[#5D5FEF] !text-white font-bold rounded-l-full shadow-2xs z-10' : ''}
+                  ${isEnd && (endDate || hoverDate) ? '!bg-[#5D5FEF] !text-white font-bold rounded-r-full shadow-2xs z-10' : ''}
                   ${isStart && isEnd ? '!rounded-full' : ''}
                   ${!isStart && !isEnd && !isInRange && !isAlreadyClosed ? 'hover:bg-gray-100 rounded-full text-gray-700' : ''}
-                  ${isToday && !isStart && !isEnd && !isAlreadyClosed ? 'border border-blue-500 font-extrabold text-blue-600' : ''}
+                  ${isToday && !isStart && !isEnd && !isAlreadyClosed ? 'border border-[#5D5FEF] font-bold text-[#5D5FEF]' : ''}
                 `}
                             >
                                 <span>{day}</span>
                                 {isToday && !isStart && !isEnd && !isAlreadyClosed && (
-                                    <span className="w-1 h-1 rounded-full bg-blue-600 mt-0.5" />
+                                    <span className="w-1 h-1 rounded-full bg-[#5D5FEF] mt-0.5" />
                                 )}
                                 {isAlreadyClosed && (
                                     <span className="w-1 h-1 rounded-full bg-amber-600 mt-0.5" />
@@ -401,7 +400,7 @@ export default function ClosuresClient({
                         </div>
                         <button
                             onClick={() => setToast(null)}
-                            className="text-gray-400 hover:text-gray-600 font-bold ml-1 text-xs cursor-pointer"
+                            className="w-7 h-7 flex items-center justify-center rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 font-bold text-xs cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                             <X className="w-4 h-4" />
                         </button>
@@ -431,7 +430,7 @@ export default function ClosuresClient({
                 <div className="flex items-center gap-2 shrink-0 flex-wrap">
                     <button
                         onClick={() => setActiveTab('closures')}
-                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${activeTab === 'closures'
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${activeTab === 'closures'
                             ? 'bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white border-[#5D5FEF] shadow-2xs'
                             : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-200 shadow-2xs'
                             }`}
@@ -440,7 +439,7 @@ export default function ClosuresClient({
                     </button>
                     <button
                         onClick={() => setActiveTab('ledger')}
-                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${activeTab === 'ledger'
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${activeTab === 'ledger'
                             ? 'bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white border-[#5D5FEF] shadow-2xs'
                             : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-200 shadow-2xs'
                             }`}
@@ -522,14 +521,14 @@ export default function ClosuresClient({
                                             <button
                                                 type="button"
                                                 onClick={prevMonth}
-                                                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600 font-bold cursor-pointer"
+                                                className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-600 font-bold cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                             >
                                                 ‹
                                             </button>
                                             <button
                                                 type="button"
                                                 onClick={nextMonth}
-                                                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-600 font-bold cursor-pointer"
+                                                className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-600 font-bold cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                             >
                                                 ›
                                             </button>
@@ -547,7 +546,7 @@ export default function ClosuresClient({
                                     <div className="mt-4 pt-3 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-500">
                                         <div className="flex items-center gap-3">
                                             <span className="flex items-center gap-1">
-                                                <span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block" /> Selected
+                                                <span className="w-2.5 h-2.5 rounded-full bg-[#5D5FEF] inline-block" /> Selected
                                             </span>
                                             <span className="flex items-center gap-1">
                                                 <span className="w-2.5 h-2.5 rounded-md bg-amber-100 border border-amber-400 inline-block" /> Closed / Holiday
@@ -570,7 +569,7 @@ export default function ClosuresClient({
                                                     setEndDate('');
                                                     setSimulation(null);
                                                 }}
-                                                className="text-rose-600 font-bold hover:underline cursor-pointer"
+                                                className="text-rose-600 font-bold hover:underline cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                             >
                                                 Clear Dates
                                             </button>
@@ -599,7 +598,7 @@ export default function ClosuresClient({
                             type="button"
                             onClick={handleResetForm}
                             disabled={!startDate && reason === 'Public Holiday'}
-                            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-gray-200 bg-white hover:bg-rose-50 hover:border-rose-200 hover:text-rose-700 text-gray-700 font-bold text-xs shadow-xs transition-all disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-gray-400 disabled:hover:border-gray-200 cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-gray-200 bg-white hover:bg-rose-50 hover:border-rose-200 hover:text-rose-700 text-gray-700 font-bold text-xs shadow-2xs transition-all disabled:opacity-40 disabled:hover:bg-white disabled:hover:text-gray-400 disabled:hover:border-gray-200 cursor-pointer duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                             <span>↺</span> Reset
                         </button>
@@ -609,7 +608,7 @@ export default function ClosuresClient({
                             type="button"
                             onClick={handleOpenScheduleModal}
                             disabled={isSimulating || !startDate}
-                            className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#5D5FEF] hover:bg-[#4D4FD7] text-white font-bold text-xs shadow-sm transition-all disabled:opacity-40 cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-[#5D5FEF] hover:bg-[#4D4FD7] text-white font-bold text-xs shadow-2xs transition-all disabled:opacity-40 cursor-pointer duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                             {isSimulating ? 'Calculating…' : 'Schedule Closure →'}
                         </button>
@@ -665,7 +664,7 @@ export default function ClosuresClient({
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => toggleGroupExpand(group.key)}
-                                                                            className="w-5 h-5 flex items-center justify-center rounded hover:bg-gray-200 text-gray-500 font-mono text-xs cursor-pointer"
+                                                                            className="w-5 h-5 flex items-center justify-center rounded-xl hover:bg-gray-200 text-gray-500 font-mono text-xs cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                                                             title="Expand individual days"
                                                                         >
                                                                             {isExpanded ? '▼' : '▶'}
@@ -715,7 +714,7 @@ export default function ClosuresClient({
                                                                         })
                                                                     }
                                                                     disabled={isSubmitting}
-                                                                    className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                                                                    className="px-3.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition-all disabled:opacity-50 cursor-pointer duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                                                 >
                                                                     {isMultiDay ? `Reopen Full Block (${group.count} days)` : 'Reopen Kitchen'}
                                                                 </button>
@@ -742,7 +741,7 @@ export default function ClosuresClient({
                                                                                 })
                                                                             }
                                                                             disabled={isSubmitting}
-                                                                            className="px-2.5 py-1 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-md text-[11px] font-bold cursor-pointer"
+                                                                            className="px-2.5 py-1 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                                                         >
                                                                             Reopen Just This Day
                                                                         </button>
@@ -859,7 +858,7 @@ export default function ClosuresClient({
                                 type="button"
                                 onClick={() => setIsConfirmModalOpen(false)}
                                 disabled={isSubmitting}
-                                className="px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-100 rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                className="px-4 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100 rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                             >
                                 Dismiss
                             </button>
@@ -891,7 +890,7 @@ export default function ClosuresClient({
                                 type="button"
                                 onClick={() => setReopenTarget(null)}
                                 disabled={isSubmitting}
-                                className="px-3.5 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-100 rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                className="px-3.5 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100 rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                             >
                                 Cancel
                             </button>

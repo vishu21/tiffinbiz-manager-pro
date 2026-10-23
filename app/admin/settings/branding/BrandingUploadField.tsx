@@ -129,7 +129,7 @@ export default function BrandingUploadField({
           onClick={() => fileInputRef.current?.click()}
           disabled={isUploading}
           aria-busy={isUploading}
-          className="shrink-0 min-w-[7.5rem] inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 text-xs font-bold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+          className="shrink-0 min-w-[7.5rem] h-10 inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 rounded-xl shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
         >
           {isUploading ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -162,7 +162,7 @@ export default function BrandingUploadField({
               onClick={handleClear}
               aria-label={`Clear ${assetName.toLowerCase()}`}
               title={`Clear ${assetName.toLowerCase()}`}
-              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-gray-900 text-white flex items-center justify-center shadow-md hover:bg-rose-600 transition-colors cursor-pointer"
+              className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-xl bg-gray-900 text-white flex items-center justify-center shadow-2xs hover:bg-rose-600 transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <X className="w-2.5 h-2.5 stroke-[3]" />
             </button>

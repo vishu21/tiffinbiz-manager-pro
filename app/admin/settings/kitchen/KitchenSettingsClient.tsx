@@ -112,7 +112,7 @@ export default function KitchenSettingsClient({
                   type="button"
                   onClick={handleLookupCoordinates}
                   disabled={isGeocoding}
-                  className="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 rounded-xl text-xs font-bold text-gray-700 flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer disabled:opacity-50"
+                  className="h-10 px-4 py-2 bg-white hover:bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 shadow-2xs flex items-center gap-1.5 shrink-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   {isGeocoding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
                   <span>Lookup GPS</span>
@@ -124,7 +124,7 @@ export default function KitchenSettingsClient({
               <button
                 type="button"
                 onClick={() => setShowAdvancedGps(prev => !prev)}
-                className="inline-flex items-center gap-1 text-[11.5px] font-bold text-gray-400 hover:text-gray-700 cursor-pointer"
+                className="h-7 px-2 inline-flex items-center gap-1 text-xs font-bold text-gray-500 hover:text-gray-800 hover:bg-gray-100 transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <span>{showAdvancedGps ? 'Hide GPS Coordinates' : 'Show Advanced GPS Coordinates'}</span>
                 {showAdvancedGps ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -189,7 +189,7 @@ export default function KitchenSettingsClient({
               href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(settings.kitchen_address || '')}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full h-8 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-2xs"
+              className="w-full h-8 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-gray-700 text-xs font-bold flex items-center justify-center gap-1.5 transition-all duration-150 shadow-2xs cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               <ExternalLink className="w-3 h-3 text-gray-400" />
               <span>Preview in Google Maps</span>
@@ -208,7 +208,7 @@ export default function KitchenSettingsClient({
               <button
                 type="button"
                 onClick={() => setSettings(savedBaseline)}
-                className="px-4 py-2 rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-100 transition-colors cursor-pointer"
+                className="h-10 px-4 py-2 rounded-xl text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 Discard
               </button>
@@ -218,7 +218,7 @@ export default function KitchenSettingsClient({
               type="button"
               disabled={isPending || !isDirty}
               onClick={handleSave}
-              className="px-5 py-2.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+              className="h-10 px-5 py-2 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs rounded-xl shadow-2xs border border-transparent transition-all duration-150 flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4 stroke-[3]" />}
               <span>{isPending ? 'Saving…' : 'Save Changes'}</span>

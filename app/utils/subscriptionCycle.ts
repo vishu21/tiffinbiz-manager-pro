@@ -393,6 +393,7 @@ export function computeCustomerPeriods(params: {
 
   let prevEnd = stepDate(curStart, -1);
   const daysSet = deliveryDays instanceof Set ? deliveryDays : new Set(DEFAULT_DELIVERY_DAY_NUMBERS);
+  const customerJoinDate = curStart; // Customer's registration start date
 
   for (let i = 1; i <= 3; i++) {
     let count = 0;
@@ -409,6 +410,20 @@ export function computeCustomerPeriods(params: {
         periodStart = toLocalDateKey(cursor);
       }
       cursor.setDate(cursor.getDate() - 1);
+    }
+
+    // STOP generating older historical cycles if the period started before the customer joined,
+    // UNLESS there is already an explicit payment recorded in the ledger for this timeframe.
+    if (periodStart < customerJoinDate) {
+      const hasRecordedPayment = payments.some(pmt => {
+        if (!pmt.billing_cycle_start) return false;
+        const pmtStart = pmt.billing_cycle_start.slice(0, 10);
+        return pmtStart >= periodStart && pmtStart <= prevEnd;
+      });
+
+      if (!hasRecordedPayment) {
+        break; // Stop loop so older unassociated periods are not shown
+      }
     }
 
     periodsData.push({
@@ -444,4 +459,213 @@ export function computeCustomerPeriods(params: {
       paidAt: match?.paid_at || null,
     };
   });
+}
+/**
+ * Resolves the next delivery day for a customer after today,
+ * skipping weekends, off-schedule days, kitchen closures, and customer skips.
+ */
+export function getNextServiceDate({
+  fromDateStr,
+  deliverySchedule,
+  closureDates,
+  customerSkips,
+}: {
+  fromDateStr: string; // YYYY-MM-DD
+  deliverySchedule?: string | null;
+  closureDates?: Set<string>;
+  customerSkips?: Set<string>;
+}): { dateKey: string; formatted: string } | null {
+  const deliveryDays = resolveDeliveryDayNumbers(deliverySchedule);
+  const start = new Date(`${fromDateStr}T12:00:00`);
+  if (isNaN(start.getTime())) return null;
+
+  // Search forward up to 30 days
+  const cursor = new Date(start);
+  for (let i = 1; i <= 30; i++) {
+    cursor.setDate(cursor.getDate() + 1);
+    const dayOfWeek = cursor.getDay();
+    const dateKey = cursor.toISOString().slice(0, 10);
+
+    // 1. Is it on the customer's delivery schedule?
+    if (deliveryDays.size > 0 && !deliveryDays.has(dayOfWeek)) continue;
+
+    // 2. Is kitchen closed on this day?
+    if (closureDates && closureDates.has(dateKey)) continue;
+
+    // 3. Has the customer logged a skip for this day?
+    if (customerSkips && customerSkips.has(dateKey)) continue;
+
+    // Calculate readable label
+    const diffDays = Math.round((cursor.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    const dayName = cursor.toLocaleDateString('en-US', { weekday: 'long' });
+    const monthDay = cursor.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    let formatted = '';
+    if (diffDays === 1) {
+      formatted = `tomorrow (${dayName})`;
+    } else if (diffDays <= 7) {
+      formatted = `this ${dayName} (${monthDay})`;
+    } else {
+      formatted = `${dayName}, ${monthDay}`;
+    }
+
+    return { dateKey, formatted };
+  }
+
+  return null;
+}
+
+// ============================================================================
+// SINGLE SOURCE OF TRUTH: LIVE CYCLE METRICS & ELAPSED DAYS
+// ============================================================================
+
+/**
+ * Counts the actual elapsed delivery days between `startDate` and `asOfDateKey`
+ * (excluding non-schedule weekdays, kitchen closures, and customer skips).
+ * Capped at `totalMeals` so delivered count never exceeds the plan credits.
+ */
+export function calculateElapsedDeliveryDays(
+  startDateStr: string | null | undefined,
+  closureDates?: ClosureSource,
+  totalMeals: number = 20,
+  customerSkips?: Set<string> | null,
+  deliveryDays?: Set<number> | null,
+  asOfDateKey: string = toLocalDateKey(new Date())
+): number {
+  const normalizedStart = normalizeDateKey(startDateStr);
+  if (!normalizedStart) return 0;
+  if (normalizedStart > asOfDateKey) return 0;
+
+  const days =
+    deliveryDays && deliveryDays.size > 0
+      ? deliveryDays
+      : new Set(DEFAULT_DELIVERY_DAY_NUMBERS);
+
+  const cursor = new Date(`${normalizedStart}T00:00:00`);
+  const target = new Date(`${asOfDateKey}T00:00:00`);
+  if (Number.isNaN(cursor.getTime()) || Number.isNaN(target.getTime())) return 0;
+
+  let delivered = 0;
+  let guard = 0;
+
+  while (cursor <= target && guard < 1000) {
+    guard++;
+    const dayNum = cursor.getDay();
+
+    if (days.has(dayNum)) {
+      const isClosed = isClosedOn(cursor, closureDates);
+      const isSkip = isCustomerSkipOn(cursor, customerSkips);
+
+      if (!isClosed && !isSkip) {
+        delivered++;
+        if (delivered >= totalMeals) {
+          return totalMeals;
+        }
+      }
+    }
+
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return delivered;
+}
+
+export type CustomerLiveMetrics = {
+  totalMeals: number;
+  deliveredMeals: number;
+  remainingMeals: number;
+  graceMeals: number;
+  effectiveEndDate: string | null;
+  status: 'active' | 'due' | 'overdue' | 'paid' | 'lapsed';
+  isLastDay: boolean;
+};
+
+/**
+ * MASTER SINGLE SOURCE OF TRUTH FOR ALL CUSTOMER CYCLE METRICS.
+ * Call this function anywhere in the app to get guaranteed-consistent numbers.
+ */
+export function getCustomerLiveMetrics({
+  customer,
+  closuresSet,
+  skipsSet,
+  isPaid = false,
+  todayDateKey = toLocalDateKey(new Date()),
+}: {
+  customer: {
+    id: string;
+    start_date?: string | null;
+    cycle_end_date?: string | null;
+    plan_tier?: string | null;
+    total_tiffin_credits?: number | null;
+    total_credits?: number | null;
+    delivery_schedule?: string | null;
+    subscription_status?: string | null;
+    used_credits?: number | null;
+  };
+  closuresSet?: ClosureSource;
+  skipsSet?: Set<string> | null;
+  isPaid?: boolean;
+  todayDateKey?: string;
+}): CustomerLiveMetrics {
+  const tier = (customer.plan_tier || '').toLowerCase();
+
+  // 1. Resolve Total Credits (fallback to canonical plan defaults)
+  let totalMeals = customer.total_tiffin_credits ?? customer.total_credits;
+  if (typeof totalMeals !== 'number' || totalMeals <= 0) {
+    if (tier === 'trial') totalMeals = 1;
+    else if (tier === 'weekly') totalMeals = 5;
+    else totalMeals = 20;
+  }
+
+  // 2. Resolve Schedule & Elapsed Delivery Days
+  const deliveryDays = resolveDeliveryDayNumbers(customer.delivery_schedule);
+  const deliveredMeals = customer.start_date
+    ? calculateElapsedDeliveryDays(
+        customer.start_date,
+        closuresSet,
+        totalMeals,
+        skipsSet,
+        deliveryDays,
+        todayDateKey
+      )
+    : 0;
+
+  // 3. Compute Remaining & Grace
+  const remainingMeals = Math.max(0, totalMeals - deliveredMeals);
+  const graceMeals = Math.max(0, deliveredMeals - totalMeals);
+
+  // 4. Calculate Holiday- and Skip-Compensated End Date
+  const targetEndResult = customer.start_date
+    ? calculateCycleTargetLastDay({
+        startDate: customer.start_date,
+        totalMeals,
+        deliveryDays,
+        closureDates: closuresSet,
+        customerSkips: skipsSet,
+      })
+    : null;
+
+  const effectiveEndDate =
+    targetEndResult?.dateKey ||
+    (customer.cycle_end_date ? customer.cycle_end_date.slice(0, 10) : null);
+
+  // 5. Unified Cycle Status
+  const isOverdue = !isPaid && deliveredMeals >= totalMeals;
+  const status: CustomerLiveMetrics['status'] = isPaid
+    ? 'paid'
+    : isOverdue
+      ? 'overdue'
+      : 'due';
+
+  const isLastDay = Boolean(effectiveEndDate && effectiveEndDate === todayDateKey);
+
+  return {
+    totalMeals,
+    deliveredMeals,
+    remainingMeals,
+    graceMeals,
+    effectiveEndDate,
+    status,
+    isLastDay,
+  };
 }

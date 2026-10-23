@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useBranding } from '@/app/components/ThemeProvider';
 import { 
+  LayoutDashboard,
   Utensils, 
   Users, 
   ChefHat, 
@@ -23,6 +24,7 @@ import { useGlobalSkip } from '@/app/components/GlobalSkipProvider';
 import { toLocalDateKey } from '@/app/utils/subscriptionCycle';
 
 const navItems = [
+  { href: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/admin/customers', label: 'Customers', icon: Users },
   { href: '/admin/recipes', label: 'Recipes', icon: ChefHat },
   { href: '/admin/deliveries', label: 'Deliveries', icon: Truck },
@@ -88,17 +90,32 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
 
         {/* Navigation Links */}
         <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto">
+          {/* Quick Search Button */}
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
+            className="w-full flex items-center justify-between px-3.5 py-2 mb-2 bg-[color:var(--brand-sidebar-hover)] hover:bg-[color:var(--brand-sidebar-active)] border border-[color:var(--brand-sidebar-border)] rounded-xl text-xs font-semibold text-[rgb(var(--brand-sidebar-fg-soft))] hover:text-[rgb(var(--brand-sidebar-fg))] transition-all shadow-2xs cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-[rgb(var(--brand-sidebar-fg-muted))]">🔍</span>
+              <span>Search anything...</span>
+            </div>
+            <kbd className="text-[10px] px-1.5 py-0.5 rounded bg-black/20 border border-white/10 text-[rgb(var(--brand-sidebar-fg-muted))] font-mono">
+              ⌘K
+            </kbd>
+          </button>
+
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = pathname.startsWith(item.href);
+            const isActive = pathname === item.href || (item.href !== '/admin/dashboard' && pathname.startsWith(item.href));
 
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 group ${
+                className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-150 group cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
                   isActive
-                    ? 'bg-brand text-white shadow-lg shadow-brand/20'
+                    ? 'bg-brand text-white shadow-2xs shadow-brand/20'
                     : 'text-[rgb(var(--brand-sidebar-fg-soft))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                 }`}
                 onClick={onClose}
@@ -124,7 +141,7 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
               onClose();
               openSkipModal(undefined, toLocalDateKey(new Date()));
             }}
-            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 group text-[rgb(var(--brand-sidebar-fg-soft))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]"
+            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-150 group text-[rgb(var(--brand-sidebar-fg-soft))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)] cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-white/40 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Ban
               className="w-[18px] h-[18px] shrink-0 text-[rgb(var(--brand-sidebar-fg-muted))] group-hover:text-[rgb(var(--brand-sidebar-fg))]"
@@ -138,7 +155,7 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
             <button
               type="button"
               onClick={() => setSettingsOpen(prev => !prev)}
-              className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 group cursor-pointer ${
+              className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-150 group cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-white/40 disabled:cursor-not-allowed disabled:opacity-50 ${
                 isSettingsActive
                   ? 'bg-[color:var(--brand-sidebar-active)] text-[rgb(var(--brand-sidebar-fg))]'
                   : 'text-[rgb(var(--brand-sidebar-fg-soft))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
@@ -168,9 +185,9 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                 <Link
                   href="/admin/settings/kitchen"
                   onClick={onClose}
-                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
                     pathname === '/admin/settings/kitchen'
-                      ? 'bg-brand text-white shadow-md shadow-brand/20'
+                      ? 'bg-brand text-white shadow-2xs shadow-brand/20'
                       : 'text-[rgb(var(--brand-sidebar-fg-muted))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                   }`}
                 >
@@ -181,9 +198,9 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                 <Link
                   href="/admin/settings/messaging"
                   onClick={onClose}
-                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
                     pathname === '/admin/settings/messaging'
-                      ? 'bg-brand text-white shadow-md shadow-brand/20'
+                      ? 'bg-brand text-white shadow-2xs shadow-brand/20'
                       : 'text-[rgb(var(--brand-sidebar-fg-muted))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                   }`}
                 >
@@ -194,9 +211,9 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                 <Link
                   href="/admin/settings/rules"
                   onClick={onClose}
-                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
                     pathname === '/admin/settings/rules'
-                      ? 'bg-brand text-white shadow-md shadow-brand/20'
+                      ? 'bg-brand text-white shadow-2xs shadow-brand/20'
                       : 'text-[rgb(var(--brand-sidebar-fg-muted))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                   }`}
                 >
@@ -207,9 +224,9 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                 <Link
                   href="/admin/settings/branding"
                   onClick={onClose}
-                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-white/40 ${
                     pathname === '/admin/settings/branding'
-                      ? 'bg-brand text-white shadow-md shadow-brand/20'
+                      ? 'bg-brand text-white shadow-2xs shadow-brand/20'
                       : 'text-[rgb(var(--brand-sidebar-fg-muted))] hover:text-[rgb(var(--brand-sidebar-fg))] hover:bg-[color:var(--brand-sidebar-hover)]'
                   }`}
                 >

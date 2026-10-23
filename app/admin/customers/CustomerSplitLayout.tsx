@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useTransition, useEffect, useRef, useMemo, useSyncExternalStore } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { MapPin, Users, CreditCard, Pause, Play, Trash2, AlertTriangle, Handshake, FolderOpen, UtensilsCrossed, Wheat, Calendar, ShoppingBag, ClipboardList, Ban, Circle, User, X, Undo2, History, Clock, ChevronDown, ChevronUp } from 'lucide-react';
 import {
   createCustomer, updateCustomer, deleteCustomer, pauseCustomer, cancelCustomer,
@@ -25,6 +25,7 @@ import {
   resolveDeliveryDayNumbers,
   calculateStandardPlanPrice,
   computeCustomerPeriods,
+  getCustomerLiveMetrics,
   type BillingPeriodInfo,
 } from '@/app/utils/subscriptionCycle';
 import { useToast } from '@/app/components/ToastProvider';
@@ -556,12 +557,36 @@ const dedupeRedundantNote = (customText: string | null, note: string): string | 
 };
 
 export default function CustomerSplitLayout({ initialCustomers }: { initialCustomers: Customer[] }) {
-  const [searchTerm, setSearchTerm] = useState('');
+  const searchParams = useSearchParams();
+  const urlSearch = searchParams.get('search') || searchParams.get('q') || '';
+  const urlCustomerId = searchParams.get('id') || '';
+
+  const [searchTerm, setSearchTerm] = useState(urlSearch);
   const isMounted = useSyncExternalStore(
     noopSubscribe,
     () => true,
     () => false
   );
+
+  // Sync state whenever URL query changes (e.g. from Global Search navigation)
+  useEffect(() => {
+    if (urlSearch) {
+      setSearchTerm(urlSearch);
+    }
+    if (urlCustomerId) {
+      const match = initialCustomers.find(c => c.id === urlCustomerId);
+      if (match) {
+        handleRowClick(match);
+      }
+    } else if (urlSearch) {
+      const match = initialCustomers.find(
+        c => c.full_name.toLowerCase() === urlSearch.toLowerCase()
+      );
+      if (match) {
+        handleRowClick(match);
+      }
+    }
+  }, [urlSearch, urlCustomerId, initialCustomers]);
   const [activeTab, setActiveTab] = useState<'all' | 'veg' | 'non-veg'>('all');
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
@@ -622,6 +647,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
   const [isSlideInActive, setIsSlideInActive] = useState(false);
   const [isAccordionExpanded, setIsAccordionExpanded] = useState(false);
   const [isBillingExpanded, setIsBillingExpanded] = useState(false);
+  const [isPlanCycleExpanded, setIsPlanCycleExpanded] = useState(false);
+  const [isPricingExpanded, setIsPricingExpanded] = useState(false);
   const [isEditingParams, setIsEditingParams] = useState(false);
 
   const [addressSuggestions, setAddressSuggestions] = useState<string[]>([]);
@@ -1180,6 +1207,23 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
   const handleMealTypeChange = (newType: string) => {
     setMealType(newType);
+    const isNv = newType.toLowerCase().includes('non');
+
+    setWeeklyMatrix(prev => {
+      const next = { ...prev };
+      MATRIX_DAYS.forEach(day => {
+        const isChickenDay = isNv && (day === 'Monday' || day === 'Wednesday' || day === 'Friday');
+        if (next[day]) {
+          next[day] = {
+            ...next[day],
+            dal: isChickenDay ? 0 : 1,
+            chicken: isChickenDay ? 1 : 0,
+          };
+        }
+      });
+      return next;
+    });
+
     const activePortion = portionSize ? normalizePortionToken(portionSize) : PORTION_RG;
     if (!portionSize) setPortionSize(PORTION_RG);
     applyMealDefaults(newType, activePortion);
@@ -1224,6 +1268,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       setIsPanelRendered(true);
       setIsAccordionExpanded(false);
       setIsBillingExpanded(false);
+      setIsPlanCycleExpanded(false);
+      setIsPricingExpanded(false);
       setIsEditingParams(false);
       setAddressSuggestions([]);
       setIsReferralMenuOpen(false);
@@ -2040,16 +2086,19 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
       }
     } else {
       setIsCustomWeekly(false);
+      const isCustomerNonVeg = (customer.meal_type || '').toLowerCase().includes('non');
+
       setWeeklyMatrix(() => {
         const init: Record<string, DayMealPlan> = {};
         MATRIX_DAYS.forEach(d => {
+          const isChickenDay = isCustomerNonVeg && (d === 'Monday' || d === 'Wednesday' || d === 'Friday');
           init[d] = {
             roti: customer.roti_count ?? 6,
             pronthi: customer.pronthi_count ?? 0,
             rice: customer.rice_count || 'None',
-            dal: 1,
+            dal: isChickenDay ? 0 : 1,
             sabji: 1,
-            chicken: 0,
+            chicken: isChickenDay ? 1 : 0,
             gravy: 0,
             salad: 0,
             dessert: 0,
@@ -2753,7 +2802,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 e.stopPropagation();
                 openCancellationDetails(customer);
               }}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm hover:text-slate-700 hover:bg-slate-100 transition-colors"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-2xs hover:text-slate-700 hover:bg-slate-100 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               <svg
                 className="w-3.5 h-3.5 stroke-[1.75]"
@@ -2774,7 +2823,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 e.stopPropagation();
                 handleReactivate(customer);
               }}
-              className="px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors disabled:opacity-50"
+              className="px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl hover:bg-emerald-100 transition-all disabled:opacity-50 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               Reactivate
             </button>
@@ -2843,7 +2892,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             onClick={handleSync}
             disabled={isSyncing}
             title="Sync with latest database records and closures"
-            className="h-8 sm:h-9 px-2.5 sm:px-3.5 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 shadow-2xs transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+            className="h-8 sm:h-9 px-2.5 sm:px-3.5 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 shadow-2xs transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1.5 duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             <svg
               className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-[#5D5FEF]' : ''}`}
@@ -2864,7 +2913,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             aria-pressed={kitchenMode}
             onClick={toggleKitchenMode}
             title="Kitchen Dispatch / Packing Order: Non-Veg first → Large → Regular → Small → A–Z"
-            className={`h-8 sm:h-9 px-2.5 sm:px-3.5 text-xs font-bold rounded-xl border transition-colors cursor-pointer shadow-2xs flex items-center gap-1.5 ${kitchenMode
+            className={`h-8 sm:h-9 px-2.5 sm:px-3.5 text-xs font-bold rounded-xl border transition-all cursor-pointer shadow-2xs flex items-center gap-1.5 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${kitchenMode
               ? 'bg-[#5D5FEF] border-[#5D5FEF] text-white'
               : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
               }`}
@@ -2876,7 +2925,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           <button
             type="button"
             onClick={handleOpenAddForm}
-            className="h-8 sm:h-9 px-3 sm:px-4 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-xl shadow-2xs transition-colors cursor-pointer flex items-center gap-1"
+            className="h-8 sm:h-9 px-3 sm:px-4 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-xl shadow-2xs transition-all cursor-pointer flex items-center gap-1 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             <span>+ Add</span>
             <span className="hidden sm:inline">Customer</span>
@@ -2908,7 +2957,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               <button
                 type="button"
                 onClick={() => setSearchTerm('')}
-                className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-gray-400 hover:text-gray-600 cursor-pointer"
+                className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-gray-400 hover:text-gray-600 cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -2933,7 +2982,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     key={tab}
                     type="button"
                     onClick={() => setActiveTab(tab)}
-                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${isSelected
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isSelected
                         ? activeStyle
                         : 'border border-transparent text-gray-500 hover:text-gray-900'
                       }`}
@@ -2971,7 +3020,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     key={status}
                     type="button"
                     onClick={() => setStatusFilter(status)}
-                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-lg text-[10.5px] sm:text-xs font-bold transition-all cursor-pointer whitespace-nowrap capitalize ${isSelected
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap capitalize duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isSelected
                         ? activeStyle
                         : 'border border-transparent text-gray-500 hover:text-gray-900'
                       }`}
@@ -3138,7 +3187,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             e.stopPropagation();
                             handleEditCustomer(customer);
                           }}
-                          className="text-[#5D5FEF] font-bold px-2 py-0.5 rounded hover:bg-[#F4F4FE] shrink-0"
+                          className="text-[#5D5FEF] font-bold px-2 py-0.5 rounded-xl hover:bg-[#F4F4FE] shrink-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                           Edit →
                         </button>
@@ -3204,7 +3253,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           <Users className="w-6 h-6 text-[#5D5FEF]" />
                           <h3 className="text-gray-700 font-bold text-[14px]">No customers found matching search</h3>
                           <p className="text-gray-400 text-xs max-w-xs leading-normal">Verify credentials or spin up a fresh active profile record instantly below.</p>
-                          <button onClick={handleOpenAddForm} className="mt-1 px-4 py-1.5 bg-[#5D5FEF] text-white text-xs font-bold rounded-lg shadow-sm">
+                          <button onClick={handleOpenAddForm} className="mt-1 px-4 py-1.5 bg-[#5D5FEF] text-white text-xs font-bold rounded-xl shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1">
                             + Add Fresh Record
                           </button>
                         </div>
@@ -3294,7 +3343,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                         title="Open in Google Maps"
                                         aria-label="Open in Google Maps"
                                         onClick={(e) => e.stopPropagation()}
-                                        className="ml-1 p-0.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors inline-flex items-center"
+                                        className="ml-1 w-6 h-6 rounded-xl text-gray-400 hover:text-[#5D5FEF] hover:bg-[#EFEEFC] inline-flex items-center justify-center transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >
                                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
@@ -3501,7 +3550,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   e.stopPropagation();
                                   handleEditCustomer(customer);
                                 }}
-                                className="px-2.5 py-1 text-xs font-semibold text-gray-700 hover:text-indigo-600 hover:bg-gray-100 rounded-md transition-colors"
+                                className="px-2.5 py-1 text-xs font-bold text-gray-700 hover:text-[#5D5FEF] hover:bg-gray-100 rounded-xl transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >
                                 Edit
                               </button>
@@ -3513,7 +3562,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               >
                                 <button
                                   type="button"
-                                  className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all shrink-0 cursor-pointer shadow-xs"
+                                  className="w-7 h-7 flex items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all shrink-0 cursor-pointer shadow-2xs duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                   title="More options"
                                   aria-label="More actions"
                                   onClick={(e) => {
@@ -3540,7 +3589,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                         e.stopPropagation();
                                         handleDuplicateCustomer(customer);
                                       }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      className="w-full px-3.5 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                     >
                                       <ClipboardList className="w-4 h-4" />
                                       <span className="whitespace-nowrap">Duplicate Customer</span>
@@ -3555,7 +3604,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                             e.stopPropagation();
                                             openRenewModal(customer);
                                           }}
-                                          className="w-full px-3.5 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                          className="w-full px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                         >
                                           <span className="text-sm shrink-0"><CreditCard className="w-4 h-4" /></span>
                                           <span className="whitespace-nowrap">Log Payment / Renew Cycle</span>
@@ -3569,7 +3618,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                           e.stopPropagation();
                                           openUpgradeModal(customer);
                                         }}
-                                        className="w-full px-3.5 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                        className="w-full px-3.5 py-2 text-xs font-bold text-[#5D5FEF] hover:bg-[#5D5FEF]/10 flex items-center gap-2.5 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >
                                         <span className="text-sm shrink-0">⭐</span>
                                         <span className="whitespace-nowrap">Upgrade Plan</span>
@@ -3586,7 +3635,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                           setActiveMenuId(null);
                                           setMessagingCustomer(customer);
                                         }}
-                                        className="w-full px-3.5 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                        className="w-full px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >
                                         <MessageSquare className="w-4 h-4 text-emerald-600 shrink-0" />
                                         <span className="whitespace-nowrap">Send Message / Inquiry</span>
@@ -3600,7 +3649,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                         setActiveMenuId(null);
                                         openSkipModal({ id: customer.id, name: customer.full_name });
                                       }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-amber-800 hover:bg-amber-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      className="w-full px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-50 flex items-center gap-2.5 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                     >
                                       <span className="text-amber-600">⚡</span>
                                       <span className="whitespace-nowrap">Log Skip / Vacation</span>
@@ -3617,7 +3666,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                           openConfirmModalForCustomer(customer, 'pause');
                                         }
                                       }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-amber-800 hover:bg-amber-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      className="w-full px-3.5 py-2 text-xs font-bold text-amber-800 hover:bg-amber-50/80 flex items-center gap-2.5 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                     >
                                       <span className="text-sm shrink-0">
                                         {(customer.subscription_status || 'active') === 'paused' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
@@ -3634,7 +3683,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                         setActiveMenuId(null);
                                         openConfirmModalForCustomer(customer, 'cancel');
                                       }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50/80 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      className="w-full px-3.5 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50/80 flex items-center gap-2.5 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                     >
                                       <Ban className="w-4 h-4" />
                                       <span className="whitespace-nowrap">Cancel Service</span>
@@ -3649,7 +3698,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                         setActiveMenuId(null);
                                         openConfirmModalForCustomer(customer, 'delete');
                                       }}
-                                      className="w-full px-3.5 py-2 text-xs font-medium text-red-600 hover:bg-red-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      className="w-full px-3.5 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 flex items-center gap-2.5 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                     >
                                       <Trash2 className="w-4 h-4" />
                                       <span className="whitespace-nowrap">Delete Customer</span>
@@ -3732,13 +3781,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   </div>
 
                   <div className="flex items-center gap-1.5 sm:space-x-2 shrink-0">
-                    <button type="button" onClick={closePanelGracefully} className="px-2.5 sm:px-3 py-1.5 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50">
+                    <button type="button" onClick={closePanelGracefully} className="px-2.5 sm:px-3 py-1.5 border border-[#E0E0E0] text-[#7A7C87] font-bold rounded-xl text-xs hover:bg-gray-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1">
                       Cancel
                     </button>
                     <button
                       type="submit"
                       disabled={isPending || aiLoading}
-                      className="px-3 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FDF] text-white font-semibold rounded-lg text-xs shadow-sm transition-all disabled:opacity-50"
+                      className="px-3 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold rounded-xl text-xs shadow-2xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                     >
                       {isPending ? 'Saving...' : 'Save Customer'}
                     </button>
@@ -3760,7 +3809,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       key={tab.key}
                       type="button"
                       onClick={() => setActiveDrawerTab(tab.key)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 border border-b-0 rounded-b-none shrink-0 ${activeDrawerTab === tab.key
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 border border-b-0 rounded-b-none shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${activeDrawerTab === tab.key
                         ? 'bg-[#EFEEFC] text-[#5D5FEF] border-[#5D5FEF]/30'
                         : 'bg-white text-[#7A7C87] border-transparent hover:bg-gray-50 hover:text-[#11142D]'
                         }`}
@@ -3806,7 +3855,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             <button
                               type="button"
                               onClick={() => setMessagingCustomer(selectedCustomer)}
-                              className="text-[10.5px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-md flex items-center gap-1 transition-colors cursor-pointer"
+                              className="text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-xl flex items-center gap-1 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               title="Send quick status, remaining meals, or end date update"
                             >
                               <MessageSquare className="w-3 h-3 text-emerald-600" />
@@ -3859,8 +3908,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 setReferredBy(pill);
                                 setIsReferralMenuOpen(false);
                               }}
-                              className={`h-10 px-3 rounded-lg text-xs font-semibold transition-colors cursor-pointer border ${isPillActive
-                                ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-sm'
+                              className={`h-10 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer border duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isPillActive
+                                ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
                                 : 'bg-[#EFEEFC] text-[#5D5FEF] border-[#5D5FEF]/25 hover:bg-[#E3E2FB]'
                                 }`}
                             >
@@ -3895,7 +3944,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                     setReferredBy(suggestion);
                                     setIsReferralMenuOpen(false);
                                   }}
-                                  className="w-full min-h-[40px] px-3 py-2 flex items-center gap-1.5 text-left text-[13px] font-medium text-gray-600 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer transition-colors"
+                                  className="w-full min-h-[40px] px-3 py-2 flex items-center gap-1.5 text-left text-[13px] font-bold text-gray-600 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                 >
                                   <span className="text-[11px] opacity-80 shrink-0">🤝</span>
                                   <span className="truncate">{suggestion}</span>
@@ -3998,7 +4047,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             }
                             if (formErrors.deliveryAddress) setFormErrors(prev => ({ ...prev, deliveryAddress: undefined }));
                           }}
-                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#5D5FEF] ${allDaysArePickup ? 'bg-[#5D5FEF]' : 'bg-gray-300'
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus:ring-[#5D5FEF] duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${allDaysArePickup ? 'bg-[#5D5FEF]' : 'bg-gray-300'
                             }`}
                         >
                           <span
@@ -4021,12 +4070,12 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 type="button"
                                 onClick={() => toggleScheduleDay(d.full)}
                                 aria-pressed={isDayActive}
-                                className={`w-full h-12 sm:h-11 px-2 sm:px-3 rounded-xl text-xs sm:text-sm border transition-all flex items-center justify-center cursor-pointer touch-manipulation ${isDayActive
-                                  ? '!bg-blue-600 !border-blue-600 shadow-sm'
+                                className={`w-full h-12 sm:h-11 px-2 sm:px-3 rounded-xl text-xs sm:text-sm border transition-all flex items-center justify-center cursor-pointer touch-manipulation duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isDayActive
+                                  ? '!bg-[#5D5FEF] !border-[#5D5FEF] shadow-2xs'
                                   : 'bg-white border-gray-300 hover:bg-gray-50'
                                   }`}
                               >
-                                <span className={isDayActive ? '!text-white font-bold' : 'text-gray-800 font-semibold'}>
+                                <span className={isDayActive ? '!text-white font-bold' : 'text-gray-800 font-bold'}>
                                   {d.short}
                                 </span>
                               </button>
@@ -4040,8 +4089,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                       ? `${d.full}: customer picks up from the kitchen`
                                       : `${d.full}: deliver to the customer's address`
                                   }
-                                  className={`w-full h-6 px-1 rounded-md border text-[9px] sm:text-[10px] font-bold transition-all flex items-center justify-center cursor-pointer touch-manipulation whitespace-nowrap ${isPickupDay
-                                    ? 'bg-purple-50 border-purple-300 text-purple-700'
+                                  className={`w-full h-6 px-1 rounded-xl border text-xs font-bold transition-all flex items-center justify-center cursor-pointer touch-manipulation whitespace-nowrap duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isPickupDay
+                                    ? 'bg-[#5D5FEF]/10 border-[#5D5FEF]/30 text-[#5D5FEF]'
                                     : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
                                     }`}
                                 >
@@ -4064,308 +4113,348 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
 
                 {activeDrawerTab === 'plan' && (
                   <div data-section="edit-subscription-plan" className="w-full space-y-4 pt-2">
-                    {/* 1. Subscription Plan selector */}
-                    <div>
-                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
-                        Subscription Plan
-                      </label>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-3 w-full">
-                        {PLAN_OPTIONS.map((plan) => {
-                          const isSelected = planTier === plan.key;
-                          return (
-                            <button
-                              key={plan.key}
-                              type="button"
-                              onClick={() => {
-                                setPlanTier(plan.key);
-                                setTotalTiffinCredits(plan.credits);
-                              }}
-                              className={`w-full h-12 sm:h-11 px-3 rounded-xl text-sm border transition-all flex items-center justify-center gap-1.5 cursor-pointer touch-manipulation ${isSelected
-                                ? '!bg-blue-600 !border-blue-600 shadow-sm'
-                                : 'bg-white border-gray-300 hover:bg-gray-50'
-                                }`}
-                            >
-                              <span className={isSelected ? '!text-white font-bold' : 'text-gray-800 font-semibold'}>
-                                {plan.label}
-                              </span>
-                              <span className={isSelected ? '!text-blue-100 text-xs' : 'text-gray-500 text-xs'}>
-                                ({plan.credits})
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* 2. Dates and Credits */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full">
-                      <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                          Start Date
-                        </label>
-                        <input
-                          type="date"
-                          value={startDate || ''}
-                          onChange={(e) => setStartDate(e.target.value)}
-                          className="w-full h-12 px-3 text-sm font-semibold border border-gray-300 rounded-xl text-gray-800 focus:outline-none focus:border-blue-500 bg-white"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                          Credits (Meals)
-                        </label>
-                        <div className="flex items-center border border-gray-300 rounded-xl overflow-hidden h-12 bg-white">
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateCredits((Number(totalTiffinCredits) || 1) - 1)}
-                            className="w-10 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-r border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center"
-                          >
-                            −
-                          </button>
-                          <span className="flex-1 text-center text-sm font-bold text-gray-900">
-                            {totalTiffinCredits ?? 20}
+                    {/* ── CARD 1: SUBSCRIPTION PLAN & CYCLE DATES (COLLAPSIBLE) ── */}
+                    <div className="bg-white border border-gray-200 rounded-2xl shadow-2xs overflow-hidden transition-all">
+                      <div
+                        onClick={() => setIsPlanCycleExpanded(prev => !prev)}
+                        className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50/70 transition-colors select-none"
+                      >
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
+                            Subscription Plan &amp; Cycle
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateCredits((Number(totalTiffinCredits) || 0) + 1)}
-                            className="w-10 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-l border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">
-                            End Date
-                          </label>
-                          <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 uppercase">
-                            AUTO ({selectedDays.map(d => d.slice(0, 3)).join(', ')})
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-100">
+                            {planTier || 'monthly'} ({totalTiffinCredits ?? 20} meals)
                           </span>
-                        </div>
-                        <div className="w-full h-12 px-3 border border-gray-200 rounded-xl bg-gray-50/80 flex items-center justify-between text-sm font-bold text-gray-800">
-                          <span>
-                            {computedEndDate ? formatShortLastDay(computedEndDate) : '—'}
-                          </span>
-                          <span className="text-xs text-gray-400 font-normal">
-                            {computedEndDate ? `(${computedEndDate})` : 'Set start date'}
-                          </span>
-                        </div>
-
-                        {computedEndResult && (computedEndResult.holidayDaysSkipped > 0 || computedEndResult.customerDaysSkipped > 0) && (
-                          <p className="mt-1.5 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1 flex items-center gap-1.5">
-                            <span>📅</span>
-                            <span>
-                              Extended by <strong>+{computedEndResult.holidayDaysSkipped + computedEndResult.customerDaysSkipped} days</strong>
-                              {computedEndResult.customerDaysSkipped > 0 && ` (${computedEndResult.customerDaysSkipped} skip${computedEndResult.customerDaysSkipped > 1 ? 's' : ''})`}
-                              {computedEndResult.holidayDaysSkipped > 0 && ` (${computedEndResult.holidayDaysSkipped} holiday${computedEndResult.holidayDaysSkipped > 1 ? 's' : ''})`}.
+                          {!isPlanCycleExpanded && computedEndDate && (
+                            <span className="text-[11px] font-semibold text-gray-500">
+                              • {formatShortDate(startDate)} → {formatShortDate(computedEndDate)} ({usedCredits}/{totalTiffinCredits ?? 20} delivered)
                             </span>
-                          </p>
-                        )}
+                          )}
+                        </div>
+
+                        <div className="w-7 h-7 rounded-lg bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-800 transition-colors">
+                          {isPlanCycleExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </div>
                       </div>
+
+                      {isPlanCycleExpanded && (
+                        <div className="p-4 pt-0 space-y-4 border-t border-gray-100 mt-1">
+                          {/* 1. Subscription Plan selector */}
+                          <div className="pt-3">
+                            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+                              Subscription Plan
+                            </label>
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-3 w-full">
+                              {PLAN_OPTIONS.map((plan) => {
+                                const isSelected = planTier === plan.key;
+                                return (
+                                  <button
+                                    key={plan.key}
+                                    type="button"
+                                    onClick={() => {
+                                      setPlanTier(plan.key);
+                                      setTotalTiffinCredits(plan.credits);
+                                    }}
+                                    className={`w-full h-12 sm:h-11 px-3 rounded-xl text-sm border transition-all flex items-center justify-center gap-1.5 cursor-pointer touch-manipulation duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isSelected
+                                      ? '!bg-[#5D5FEF] !border-[#5D5FEF] shadow-2xs'
+                                      : 'bg-white border-gray-300 hover:bg-gray-50'
+                                      }`}
+                                  >
+                                    <span className={isSelected ? '!text-white font-bold' : 'text-gray-800 font-semibold'}>
+                                      {plan.label}
+                                    </span>
+                                    <span className={isSelected ? '!text-blue-100 text-xs' : 'text-gray-500 text-xs'}>
+                                      ({plan.credits})
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* 2. Dates and Credits */}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full">
+                            <div>
+                              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                                Start Date
+                              </label>
+                              <input
+                                type="date"
+                                value={startDate || ''}
+                                onChange={(e) => setStartDate(e.target.value)}
+                                className="w-full h-12 px-3 text-sm font-semibold border border-gray-300 rounded-xl text-gray-800 focus:outline-none focus:border-blue-500 bg-white"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                                Credits (Meals)
+                              </label>
+                              <div className="flex items-center border border-gray-300 rounded-xl overflow-hidden h-12 bg-white">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateCredits((Number(totalTiffinCredits) || 1) - 1)}
+                                  className="w-10 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-r border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                >
+                                  −
+                                </button>
+                                <span className="flex-1 text-center text-sm font-bold text-gray-900">
+                                  {totalTiffinCredits ?? 20}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateCredits((Number(totalTiffinCredits) || 0) + 1)}
+                                  className="w-10 h-full bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold text-lg border-l border-gray-200 touch-manipulation cursor-pointer flex items-center justify-center transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="flex items-center justify-between mb-1.5">
+                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider">
+                                  End Date
+                                </label>
+                                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100 uppercase">
+                                  AUTO ({selectedDays.map(d => d.slice(0, 3)).join(', ')})
+                                </span>
+                              </div>
+                              <div className="w-full h-12 px-3 border border-gray-200 rounded-xl bg-gray-50/80 flex items-center justify-between text-sm font-bold text-gray-800">
+                                <span>
+                                  {computedEndDate ? formatShortLastDay(computedEndDate) : '—'}
+                                </span>
+                                <span className="text-xs text-gray-400 font-normal">
+                                  {computedEndDate ? `(${computedEndDate})` : 'Set start date'}
+                                </span>
+                              </div>
+
+                              {computedEndResult && (computedEndResult.holidayDaysSkipped > 0 || computedEndResult.customerDaysSkipped > 0) && (
+                                <p className="mt-1.5 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1 flex items-center gap-1.5">
+                                  <span>📅</span>
+                                  <span>
+                                    Extended by <strong>+{computedEndResult.holidayDaysSkipped + computedEndResult.customerDaysSkipped} days</strong>
+                                    {computedEndResult.customerDaysSkipped > 0 && ` (${computedEndResult.customerDaysSkipped} skip${computedEndResult.customerDaysSkipped > 1 ? 's' : ''})`}
+                                    {computedEndResult.holidayDaysSkipped > 0 && ` (${computedEndResult.holidayDaysSkipped} holiday${computedEndResult.holidayDaysSkipped > 1 ? 's' : ''})`}.
+                                  </span>
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* 3. Cycle Delivery Progress */}
+                          <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center justify-between text-xs">
+                            <div>
+                              <span className="text-gray-700 font-bold block">Cycle Delivery Progress</span>
+                              <span className="text-[11px] text-gray-500">
+                                {Math.max(0, (totalTiffinCredits ?? 20) - usedCredits)} meals remaining
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 bg-white border border-gray-300 rounded-xl p-1 shadow-2xs">
+                              <button
+                                type="button"
+                                onClick={() => setUsedCredits(prev => Math.max(0, prev - 1))}
+                                className="w-7 h-7 rounded-xl bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold flex items-center justify-center border border-gray-200 cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                              >
+                                −
+                              </button>
+                              <span className="px-2 font-black text-gray-900 text-xs whitespace-nowrap">
+                                {usedCredits} / {totalTiffinCredits ?? 20} delivered
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setUsedCredits(prev => prev + 1)}
+                                className="w-7 h-7 rounded-xl bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold flex items-center justify-center border border-gray-200 cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
-                    {/* 3. Cycle Delivery Progress */}
-                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center justify-between text-xs">
-                      <div>
-                        <span className="text-gray-700 font-bold block">Cycle Delivery Progress</span>
-                        <span className="text-[11px] text-gray-500">
-                          {Math.max(0, (totalTiffinCredits ?? 20) - usedCredits)} meals remaining
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 bg-white border border-gray-300 rounded-xl p-1 shadow-2xs">
-                        <button
-                          type="button"
-                          onClick={() => setUsedCredits(prev => Math.max(0, prev - 1))}
-                          className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold flex items-center justify-center border border-gray-200 cursor-pointer"
-                        >
-                          −
-                        </button>
-                        <span className="px-2 font-black text-gray-900 text-xs whitespace-nowrap">
-                          {usedCredits} / {totalTiffinCredits ?? 20} delivered
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => setUsedCredits(prev => prev + 1)}
-                          className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-700 font-bold flex items-center justify-center border border-gray-200 cursor-pointer"
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* ── 4. PLAN RATE, CYCLE CHARGE & DISCOUNT SECTION ── */}
-                    <div className="p-4 bg-white border border-gray-200 rounded-2xl shadow-2xs space-y-3.5">
-                      <div className="flex items-center justify-between pb-2 border-b border-gray-100 flex-wrap gap-2">
-                        <div>
-                          <span className="text-xs font-black text-gray-900 uppercase tracking-wide">
+                    {/* ── CARD 2: PLAN RATE, CHARGE & DISCOUNT (COLLAPSIBLE) ── */}
+                    <div className="bg-white border border-gray-200 rounded-2xl shadow-2xs overflow-hidden transition-all">
+                      <div
+                        onClick={() => setIsPricingExpanded(prev => !prev)}
+                        className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50/70 transition-colors select-none"
+                      >
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
                             Plan Rate &amp; Charge Amount
                           </span>
-                          <p className="text-[11px] text-gray-400 font-medium mt-0.5">
-                            Amount charged for this customer&apos;s subscription cycle.
-                          </p>
-                        </div>
+                          {(() => {
+                            const autoBase = customerBillingPeriods[0]?.expectedAmount ?? (planTier === 'trial' ? 14 : planTier === 'weekly' ? 65 : 250);
+                            const effectiveRate = customPlanPrice !== '' ? Number(customPlanPrice) : autoBase;
 
-                        {/* Live Total Badge */}
-                        {(() => {
-                          const autoBase = customerBillingPeriods[0]?.expectedAmount ?? (planTier === 'trial' ? 14 : planTier === 'weekly' ? 65 : 250);
-                          const effectiveRate = customPlanPrice !== '' ? Number(customPlanPrice) : autoBase;
-
-                          return (
-                            <div className="px-3 py-1 bg-emerald-50 border border-emerald-200 rounded-xl text-right">
-                              <span className="text-[9.5px] uppercase font-bold text-emerald-700 block">Charging Customer</span>
-                              <span className="text-sm font-black text-emerald-950">${effectiveRate.toFixed(2)} CAD</span>
-                            </div>
-                          );
-                        })()}
-                      </div>
-
-                      {/* Daily Recurring Surcharges (Distance / Extra Sides) */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pb-2 border-b border-gray-100">
-                        <div>
-                          <div className="flex items-center justify-between mb-1">
-                            <label className="block text-[11px] font-bold text-gray-600 uppercase">
-                              🚗 Delivery Surcharge ($/day)
-                            </label>
-                            {Number(deliveryFeePerDay) > 0 && (
-                              <span className="text-[10.5px] font-bold text-emerald-700">
-                                +${(Number(deliveryFeePerDay) * (totalTiffinCredits ?? 20)).toFixed(2)} / cycle
+                            return (
+                              <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                ${effectiveRate.toFixed(2)} CAD
                               </span>
-                            )}
-                          </div>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">$</span>
-                            <input
-                              type="number"
-                              step="0.25"
-                              min="0"
-                              value={deliveryFeePerDay}
-                              onChange={(e) => setDeliveryFeePerDay(e.target.value)}
-                              placeholder="0.00"
-                              className="w-full h-10 pl-7 pr-3 text-xs font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex items-center justify-between mb-1">
-                            <label className="block text-[11px] font-bold text-gray-600 uppercase">
-                              🥗 Add-on Surcharge ($/day)
-                            </label>
-                            {Number(addonFeePerDay) > 0 && (
-                              <span className="text-[10.5px] font-bold text-emerald-700">
-                                +${(Number(addonFeePerDay) * (totalTiffinCredits ?? 20)).toFixed(2)} / cycle
-                              </span>
-                            )}
-                          </div>
-                          <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">$</span>
-                            <input
-                              type="number"
-                              step="0.25"
-                              min="0"
-                              value={addonFeePerDay}
-                              onChange={(e) => setAddonFeePerDay(e.target.value)}
-                              placeholder="0.00"
-                              className="w-full h-10 pl-7 pr-3 text-xs font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900"
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                        {/* Custom Price Field */}
-                        <div>
-                          <div className="flex items-center justify-between mb-1.5">
-                            <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
-                              Manual Override ($ CAD)
-                            </label>
-                            {customPlanPrice !== '' && (
-                              <button
-                                type="button"
-                                onClick={() => setCustomPlanPrice('')}
-                                className="text-[10px] font-bold text-indigo-600 hover:underline"
-                              >
-                                Reset to Auto
-                              </button>
-                            )}
-                          </div>
-                          <div className="relative">
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              value={customPlanPrice}
-                              onChange={(e) => setCustomPlanPrice(e.target.value)}
-                              placeholder={`Auto ($${customerBillingPeriods[0]?.expectedAmount ?? 250})`}
-                              className="w-full h-11 px-3 text-sm font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900 placeholder:font-normal placeholder:text-gray-400"
-                            />
-                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400 pointer-events-none">
-                              CAD
+                            );
+                          })()}
+                          {!isPricingExpanded && discountType !== 'none' && (
+                            <span className="text-[11px] font-semibold text-emerald-700">
+                              • Discount: {discountType === 'flat' ? `-$${discountValue}` : `-${discountValue}%`}
                             </span>
-                          </div>
+                          )}
                         </div>
 
-                        {/* Discount Mode Selector */}
-                        <div>
-                          <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-1.5">
-                            Discount Type
-                          </label>
-                          <div className="grid grid-cols-3 gap-1.5 h-11">
-                            {([
-                              { key: 'none', label: 'None' },
-                              { key: 'flat', label: '$ Flat' },
-                              { key: 'percent', label: '% Off' },
-                            ] as const).map(opt => (
-                              <button
-                                key={opt.key}
-                                type="button"
-                                onClick={() => setDiscountType(opt.key)}
-                                className={`rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                                  discountType === opt.key
-                                    ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
-                                    : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                                }`}
-                              >
-                                {opt.label}
-                              </button>
-                            ))}
-                          </div>
+                        <div className="w-7 h-7 rounded-lg bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 hover:text-gray-800 transition-colors">
+                          {isPricingExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                         </div>
                       </div>
 
-                      {/* Expanded Discount Inputs */}
-                      {discountType !== 'none' && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                          <div>
-                            <label className="block text-[10.5px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                              {discountType === 'flat' ? 'Flat Deduction ($)' : 'Percentage Off (%)'}
-                            </label>
-                            <input
-                              type="number"
-                              min={0}
-                              step={discountType === 'percent' ? '1' : '0.01'}
-                              value={discountValue}
-                              onChange={(e) => setDiscountValue(e.target.value)}
-                              placeholder={discountType === 'flat' ? 'e.g. 15.00' : 'e.g. 10'}
-                              className="w-full h-10 px-3 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-xs font-bold text-gray-800"
-                            />
+                      {isPricingExpanded && (
+                        <div className="p-4 pt-0 space-y-3.5 border-t border-gray-100 mt-1">
+                          {/* Daily Recurring Surcharges (Distance / Extra Sides) */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-3 pb-2 border-b border-gray-100">
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <label className="block text-[11px] font-bold text-gray-600 uppercase">
+                                  🚗 Delivery Surcharge ($/day)
+                                </label>
+                                {Number(deliveryFeePerDay) > 0 && (
+                                  <span className="text-[10.5px] font-bold text-emerald-700">
+                                    +${(Number(deliveryFeePerDay) * (totalTiffinCredits ?? 20)).toFixed(2)} / cycle
+                                  </span>
+                                )}
+                              </div>
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">$</span>
+                                <input
+                                  type="number"
+                                  step="0.25"
+                                  min="0"
+                                  value={deliveryFeePerDay}
+                                  onChange={(e) => setDeliveryFeePerDay(e.target.value)}
+                                  placeholder="0.00"
+                                  className="w-full h-10 pl-7 pr-3 text-xs font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900"
+                                />
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <label className="block text-[11px] font-bold text-gray-600 uppercase">
+                                  🥗 Add-on Surcharge ($/day)
+                                </label>
+                                {Number(addonFeePerDay) > 0 && (
+                                  <span className="text-[10.5px] font-bold text-emerald-700">
+                                    +${(Number(addonFeePerDay) * (totalTiffinCredits ?? 20)).toFixed(2)} / cycle
+                                  </span>
+                                )}
+                              </div>
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">$</span>
+                                <input
+                                  type="number"
+                                  step="0.25"
+                                  min="0"
+                                  value={addonFeePerDay}
+                                  onChange={(e) => setAddonFeePerDay(e.target.value)}
+                                  placeholder="0.00"
+                                  className="w-full h-10 pl-7 pr-3 text-xs font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900"
+                                />
+                              </div>
+                            </div>
                           </div>
-                          <div>
-                            <label className="block text-[10.5px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                              Promo Note / Reason
-                            </label>
-                            <input
-                              type="text"
-                              value={discountNote}
-                              onChange={(e) => setDiscountNote(e.target.value)}
-                              placeholder="e.g. Referral discount, promo..."
-                              className="w-full h-10 px-3 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-xs font-semibold text-gray-800"
-                            />
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                            {/* Custom Price Field */}
+                            <div>
+                              <div className="flex items-center justify-between mb-1.5">
+                                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
+                                  Manual Override ($ CAD)
+                                </label>
+                                {customPlanPrice !== '' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setCustomPlanPrice('')}
+                                    className="text-xs font-bold text-[#5D5FEF] hover:underline transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                  >
+                                    Reset to Auto
+                                  </button>
+                                )}
+                              </div>
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={customPlanPrice}
+                                  onChange={(e) => setCustomPlanPrice(e.target.value)}
+                                  placeholder={`Auto ($${customerBillingPeriods[0]?.expectedAmount ?? 250})`}
+                                  className="w-full h-11 px-3 text-sm font-bold border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900 placeholder:font-normal placeholder:text-gray-400"
+                                />
+                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400 pointer-events-none">
+                                  CAD
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Discount Mode Selector */}
+                            <div>
+                              <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-1.5">
+                                Discount Type
+                              </label>
+                              <div className="grid grid-cols-3 gap-1.5 h-11">
+                                {([
+                                  { key: 'none', label: 'None' },
+                                  { key: 'flat', label: '$ Flat' },
+                                  { key: 'percent', label: '% Off' },
+                                ] as const).map(opt => (
+                                  <button
+                                    key={opt.key}
+                                    type="button"
+                                    onClick={() => setDiscountType(opt.key)}
+                                    className={`h-8 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
+                                      discountType === opt.key
+                                        ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
+                                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                                    }`}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                           </div>
+
+                          {/* Expanded Discount Inputs */}
+                          {discountType !== 'none' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                              <div>
+                                <label className="block text-[10.5px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                                  {discountType === 'flat' ? 'Flat Deduction ($)' : 'Percentage Off (%)'}
+                                </label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={discountType === 'percent' ? '1' : '0.01'}
+                                  value={discountValue}
+                                  onChange={(e) => setDiscountValue(e.target.value)}
+                                  placeholder={discountType === 'flat' ? 'e.g. 15.00' : 'e.g. 10'}
+                                  className="w-full h-10 px-3 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-xs font-bold text-gray-800"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[10.5px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                                  Promo Note / Reason
+                                </label>
+                                <input
+                                  type="text"
+                                  value={discountNote}
+                                  onChange={(e) => setDiscountNote(e.target.value)}
+                                  placeholder="e.g. Referral discount, promo..."
+                                  className="w-full h-10 px-3 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-xs font-semibold text-gray-800"
+                                />
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -4418,7 +4507,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 e.stopPropagation();
                                 setShowLogPaymentModal(true);
                               }}
-                              className="px-3 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                              className="px-3.5 py-1.5 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                             >
                               <CreditCard className="w-3.5 h-3.5" />
                               <span>Log Payment</span>
@@ -4430,174 +4519,179 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           </div>
                         </div>
 
-                        {/* Collapsible Content */}
+                        {/* Collapsible Content — Unified Billing & Payment Ledger */}
                         {isBillingExpanded && (
                           <div className="px-4 pb-4 space-y-3 pt-3 border-t border-[#5D5FEF]/15">
-                            {/* ── BILLING PERIODS & PAYMENT STATUS TRACKER ── */}
-                            <div className="space-y-2 pt-1 pb-1">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[11px] font-black text-gray-500 uppercase tracking-wider block">
-                                  Cycle History &amp; Payment Status ({customerBillingPeriods.length} Periods)
-                                </span>
-                                <span className="text-[10px] text-gray-400 font-medium">1-Tap Status Toggle</span>
-                              </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10.5px] font-black text-gray-400 uppercase tracking-wider block">
+                                Billing Cycles &amp; Ledger ({customerBillingPeriods.length})
+                              </span>
+                            </div>
 
-                              <div className="space-y-2">
-                                {customerBillingPeriods.map(period => {
-                                  const cleanPhone = cleanPhoneNumberForWhatsApp(phoneNumber);
-                                  const reminderMsg = `Hi ${fullName || 'there'}, this is a reminder regarding your tiffin payment of $${period.expectedAmount.toFixed(2)} CAD for the cycle ${formatShortDate(period.startDate)} to ${formatShortDate(period.endDate)} (${period.credits} meals). Please send the e-transfer at your convenience. Thank you!`;
+                            <div className="space-y-2.5">
+                              {customerBillingPeriods.map(period => {
+                                const cleanPhone = cleanPhoneNumberForWhatsApp(phoneNumber);
+                                const reminderMsg = `Hi ${fullName || 'there'}, this is a reminder regarding your tiffin payment of $${period.expectedAmount.toFixed(2)} CAD for the cycle ${formatShortDate(period.startDate)} to ${formatShortDate(period.endDate)} (${period.credits} meals). Please send the e-transfer at your convenience. Thank you!`;
 
-                                  return (
-                                    <div
-                                      key={period.startDate}
-                                      className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 transition-all ${
-                                        period.isPaid
-                                          ? 'bg-emerald-50/40 border-emerald-200/80 text-emerald-950'
-                                          : 'bg-rose-50/50 border-rose-200/80 text-rose-950'
-                                      }`}
-                                    >
+                                // Match this period's attached payment record in the ledger (if any)
+                                const attachedPayment = customerPaymentsList.find(p => p.id === period.paymentId);
+
+                                return (
+                                  <div
+                                    key={period.startDate}
+                                    className={`p-3.5 rounded-2xl border transition-all ${
+                                      period.isPaid
+                                        ? 'bg-emerald-50/40 border-emerald-200/90 text-emerald-950'
+                                        : 'bg-white border-amber-200/90 shadow-2xs text-gray-900'
+                                    }`}
+                                  >
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                      {/* Left Side: Cycle Name, Status, Date & Amount */}
                                       <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-2">
-                                          <span className="text-xs font-black tracking-tight">{period.label}</span>
-                                          <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase border ${
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <span className="text-xs font-black tracking-tight text-gray-900">{period.label}</span>
+                                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md uppercase border ${
                                             period.isPaid
                                               ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                              : 'bg-rose-100 text-rose-800 border-rose-300'
+                                              : 'bg-amber-50 text-amber-800 border-amber-200'
                                           }`}>
                                             {period.isPaid ? 'PAID' : 'DUE'}
                                           </span>
-                                        </div>
-                                        <div className="text-[11.5px] font-semibold text-gray-600 mt-0.5">
-                                          <span>{formatShortDate(period.startDate)} → {formatShortDate(period.endDate)}</span>
-                                          <span className="mx-1.5 text-gray-300">·</span>
-                                          <strong className="text-gray-900">${period.expectedAmount} CAD</strong>
-                                          <span className="text-gray-400 font-normal"> ({period.credits} meals)</span>
-                                        </div>
-                                      </div>
 
-                                      <div className="flex items-center gap-1.5 shrink-0">
-                                        {!period.isPaid && cleanPhone && (
-                                          <a
-                                            href={`https://wa.me/${cleanPhone}?text=${encodeURIComponent(reminderMsg)}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            title="Send WhatsApp payment reminder"
-                                            className="h-8 px-2.5 bg-[#25D366] hover:bg-[#20bd5a] text-white rounded-lg text-xs font-bold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
-                                          >
-                                            <MessageSquare className="w-3.5 h-3.5" />
-                                            <span>Reminder</span>
-                                          </a>
-                                        )}
-
-                                        <button
-                                          type="button"
-                                          disabled={togglingPeriodIdx === period.index}
-                                          onClick={() => handleTogglePeriodPayment(period)}
-                                          className={`h-8 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs border ${
-                                            period.isPaid
-                                              ? 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
-                                              : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
-                                          }`}
-                                        >
-                                          {togglingPeriodIdx === period.index
-                                            ? 'Saving...'
-                                            : period.isPaid
-                                              ? 'Mark Unpaid'
-                                              : 'Mark Paid'}
-                                        </button>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-
-                            {/* Recent Payment Ledger */}
-                            <div className="space-y-1.5 pt-2 border-t border-gray-200/60">
-                              <span className="text-[11px] font-semibold text-gray-400 block uppercase">
-                                Payment Ledger ({customerPaymentsList.length})
-                              </span>
-                              {customerPaymentsList.length === 0 ? (
-                                <div className="p-3 bg-white border border-gray-100 rounded-xl text-center text-xs text-gray-400 italic">
-                                  No payments recorded for this customer yet.
-                                </div>
-                              ) : (
-                                <div className="max-h-36 overflow-y-auto space-y-1.5 divide-y divide-gray-50 bg-white border border-gray-200/80 rounded-xl p-2.5">
-                                  {customerPaymentsList.map((pmt) => (
-                                    <div key={pmt.id} className="flex items-center justify-between text-xs py-2 px-1 hover:bg-gray-50/80 rounded-lg transition-colors group">
-                                      <div className="min-w-0 pr-2">
-                                        <div className="flex items-center gap-1.5 font-bold text-gray-800">
-                                          <span>${Number(pmt.amount).toFixed(2)} CAD</span>
-                                          <span className="text-[9.5px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600 font-bold uppercase">
-                                            {pmt.payment_method}
-                                          </span>
-                                          {pmt.credits_added && (
-                                            <span className="text-[9.5px] px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded font-semibold">
-                                              {pmt.credits_added} meals
+                                          {/* Payment method pill if paid */}
+                                          {attachedPayment && (
+                                            <span className="text-[9.5px] font-bold px-1.5 py-0.5 bg-gray-100 rounded text-gray-600 uppercase">
+                                              {attachedPayment.payment_method || 'ETRANSFER'}
                                             </span>
                                           )}
                                         </div>
-                                        {pmt.reference_note && (
-                                          <span className="text-[11px] text-gray-400 block truncate mt-0.5">
-                                            {pmt.reference_note}
-                                          </span>
-                                        )}
+
+                                        <div className="text-[11.5px] font-semibold text-gray-600 mt-1 flex items-center gap-1.5 flex-wrap">
+                                          <span>{formatShortDate(period.startDate)} → {formatShortDate(period.endDate)}</span>
+                                          <span className="text-gray-300">·</span>
+                                          <strong className="text-gray-900">${period.expectedAmount} CAD</strong>
+                                          <span className="text-gray-400 font-normal">({period.credits} meals)</span>
+
+                                          {/* If paid, show the date money was received */}
+                                          {attachedPayment && (
+                                            <>
+                                              <span className="text-gray-300">·</span>
+                                              <span className="text-[10.5px] font-medium text-gray-500">
+                                                Paid {new Date(
+                                                  attachedPayment.paid_at ? `${attachedPayment.paid_at.slice(0, 10)}T12:00:00` : attachedPayment.recorded_at
+                                                ).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                              </span>
+                                            </>
+                                          )}
+                                        </div>
                                       </div>
 
+                                      {/* Right Side Actions */}
                                       <div className="flex items-center gap-1.5 shrink-0">
-                                        <span className="text-[10.5px] font-medium text-gray-400 mr-1">
-                                          {new Date(pmt.recorded_at).toLocaleDateString('en-US', {
-                                            month: 'short',
-                                            day: 'numeric',
-                                          })}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          title="Edit payment entry"
-                                          onClick={() => {
-                                            setEditingPayment(pmt);
-                                            setEditPaymentAmount(String(pmt.amount));
-                                            setEditPaymentMethod(pmt.payment_method || 'etransfer');
-                                            setEditPaymentCredits(pmt.credits_added || 20);
-                                            setEditPaymentCycleAction(pmt.cycle_action || 'settle_current');
-                                            setEditPaymentCycleStart(
-                                              pmt.billing_cycle_start
-                                                ? pmt.billing_cycle_start.slice(0, 10)
-                                                : (startDate || toLocalDateKey(new Date()))
-                                            );
-                                            setEditPaymentRefNote(pmt.reference_note || '');
-                                            setEditSendWhatsAppReceipt(false);
-                                          }}
-                                          className="p-1 rounded-md text-gray-400 hover:text-[#5D5FEF] hover:bg-indigo-50 transition-colors cursor-pointer"
-                                        >
-                                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                          </svg>
-                                        </button>
-                                        <button
-                                          type="button"
-                                          title="Delete payment entry"
-                                          onClick={async () => {
-                                            if (confirm(`Delete $${pmt.amount} payment record?`)) {
-                                              try {
-                                                await deleteCustomerPayment(pmt.id, selectedCustomer.id);
-                                                setCustomerPaymentsList(prev => prev.filter(p => p.id !== pmt.id));
-                                                showToast('Payment entry removed');
-                                              } catch (err: any) {
-                                                showToast(err.message || 'Failed to delete payment', 'error');
-                                              }
-                                            }
-                                          }}
-                                          className="p-1 rounded-md text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
-                                        >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
+                                        {/* Unpaid Actions: WhatsApp Reminder + Mark Paid */}
+                                        {!period.isPaid ? (
+                                          <>
+                                            {cleanPhone && (
+                                              <a
+                                                href={`https://wa.me/${cleanPhone}?text=${encodeURIComponent(reminderMsg)}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                title="Send WhatsApp payment reminder"
+                                                className="h-8 px-2.5 bg-[#25D366] hover:bg-[#20bd5a] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                              >
+                                                <MessageSquare className="w-3.5 h-3.5" />
+                                                <span>Reminder</span>
+                                              </a>
+                                            )}
+
+                                            {period.isPaid ? (
+                                          <button
+                                            type="button"
+                                            disabled={togglingPeriodIdx === period.index}
+                                            onClick={() => handleTogglePeriodPayment(period)}
+                                            className="h-8 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs border bg-white hover:bg-gray-100 text-gray-700 border-gray-300 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                          >
+                                            {togglingPeriodIdx === period.index ? 'Saving...' : 'Mark Unpaid'}
+                                          </button>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setEditingPayment({
+                                                amount: period.expectedAmount,
+                                                credits_added: period.credits,
+                                                billing_cycle_start: period.startDate,
+                                                billing_cycle_end: period.endDate,
+                                                cycle_action: period.label.toLowerCase().includes('current')
+                                                  ? 'settle_current'
+                                                  : 'historical',
+                                                payment_method: 'etransfer',
+                                                reference_note: `Payment for ${period.label}`,
+                                              });
+                                              setShowLogPaymentModal(true);
+                                            }}
+                                            className="h-8 px-3.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs border bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                          >
+                                            Mark Paid
+                                          </button>
+                                        )}
+                                          </>
+                                        ) : (
+                                          /* Paid Actions: Edit, Delete, & Mark Unpaid */
+                                          <>
+                                            {attachedPayment && (
+                                              <div className="flex items-center gap-1 mr-1">
+                                                <button
+                                                  type="button"
+                                                  title="Edit payment entry"
+                                                  onClick={() => {
+                                                    setEditingPayment(attachedPayment);
+                                                    setShowLogPaymentModal(true);
+                                                  }}
+                                                  className="w-7 h-7 flex items-center justify-center rounded-xl text-gray-400 hover:text-[#5D5FEF] hover:bg-white border border-transparent hover:border-gray-200 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                                >
+                                                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                                                  </svg>
+                                                </button>
+
+                                                <button
+                                                  type="button"
+                                                  title="Delete payment entry"
+                                                  onClick={async () => {
+                                                    if (confirm(`Delete $${attachedPayment.amount} payment record?`)) {
+                                                      try {
+                                                        await deleteCustomerPayment(attachedPayment.id, selectedCustomer.id);
+                                                        setCustomerPaymentsList(prev => prev.filter(p => p.id !== attachedPayment.id));
+                                                        showToast('Payment entry removed');
+                                                      } catch (err: any) {
+                                                        showToast(err.message || 'Failed to delete payment', 'error');
+                                                      }
+                                                    }
+                                                  }}
+                                                  className="w-7 h-7 flex items-center justify-center rounded-xl text-gray-400 hover:text-rose-600 hover:bg-white border border-transparent hover:border-gray-200 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                                >
+                                                  <Trash2 className="w-3.5 h-3.5" />
+                                                </button>
+                                              </div>
+                                            )}
+
+                                            <button
+                                              type="button"
+                                              disabled={togglingPeriodIdx === period.index}
+                                              onClick={() => handleTogglePeriodPayment(period)}
+                                              className="h-8 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs border bg-white hover:bg-gray-100 text-gray-700 border-gray-300 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                            >
+                                              {togglingPeriodIdx === period.index ? 'Saving...' : 'Mark Unpaid'}
+                                            </button>
+                                          </>
+                                        )}
                                       </div>
                                     </div>
-                                  ))}
-                                </div>
-                              )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         )}
@@ -4625,8 +4719,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 key={option}
                                 type="button"
                                 onClick={() => handleMealTypeChange(option)}
-                                className={`flex-1 h-10 px-3 rounded-lg text-xs font-semibold border transition-all ${mealType === option
-                                  ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                className={`flex-1 h-10 px-3 rounded-xl text-xs font-bold border transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${mealType === option
+                                  ? 'bg-[#5D5FEF]/10 border-[#5D5FEF] text-[#5D5FEF]'
                                   : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
                                   }`}
                               >
@@ -4650,8 +4744,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 type="button"
                                 title={opt.title}
                                 onClick={() => handlePortionChange(opt.value)}
-                                className={`flex-1 h-9 px-2 rounded-lg text-xs font-semibold border transition-all ${portionSize === opt.value
-                                  ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                className={`flex-1 h-9 px-2 rounded-xl text-xs font-bold border transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${portionSize === opt.value
+                                  ? 'bg-[#5D5FEF]/10 border-[#5D5FEF] text-[#5D5FEF]'
                                   : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
                                   }`}
                               >
@@ -4677,7 +4771,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                           role="switch"
                           aria-checked={isCustomWeekly}
                           onClick={() => setIsCustomWeekly(prev => !prev)}
-                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer ${isCustomWeekly ? 'bg-[#5D5FEF]' : 'bg-gray-300'
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isCustomWeekly ? 'bg-[#5D5FEF]' : 'bg-gray-300'
                             }`}
                         >
                           <span
@@ -4697,7 +4791,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   key={day}
                                   type="button"
                                   onClick={() => setActiveMatrixDay(day)}
-                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${activeMatrixDay === day
+                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${activeMatrixDay === day
                                       ? 'bg-[#5D5FEF] text-white shadow-2xs'
                                       : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
                                     }`}
@@ -4709,7 +4803,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             <button
                               type="button"
                               onClick={copyMatrixDayToAll}
-                              className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 bg-white border border-indigo-200 px-2.5 py-1 rounded-lg cursor-pointer transition-colors"
+                              className="text-xs font-bold text-[#5D5FEF] hover:text-[#5D5FEF] bg-white border border-[#5D5FEF]/30 px-2.5 py-1 rounded-xl cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                             >
                               Copy {activeMatrixDay.slice(0, 3)} to All Days
                             </button>
@@ -4732,13 +4826,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                       <button
                                         type="button"
                                         onClick={() => updateMatrixDayField(activeMatrixDay, 'roti', Math.max(0, cur.roti - 1))}
-                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold"
+                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >−</button>
                                       <span className="flex-1 text-center font-bold text-xs text-gray-900">{cur.roti}</span>
                                       <button
                                         type="button"
                                         onClick={() => updateMatrixDayField(activeMatrixDay, 'roti', cur.roti + 1)}
-                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold"
+                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >+</button>
                                     </div>
                                   </div>
@@ -4749,13 +4843,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                       <button
                                         type="button"
                                         onClick={() => updateMatrixDayField(activeMatrixDay, 'pronthi', Math.max(0, cur.pronthi - 1))}
-                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold"
+                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >−</button>
                                       <span className="flex-1 text-center font-bold text-xs text-gray-900">{cur.pronthi}</span>
                                       <button
                                         type="button"
                                         onClick={() => updateMatrixDayField(activeMatrixDay, 'pronthi', cur.pronthi + 1)}
-                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold"
+                                        className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >+</button>
                                     </div>
                                   </div>
@@ -4793,13 +4887,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                         <button
                                           type="button"
                                           onClick={() => updateMatrixDayField(activeMatrixDay, item.key, Math.max(0, cur[item.key] - 1))}
-                                          className="w-6 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs"
+                                          className="w-6 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                         >−</button>
                                         <span className="flex-1 text-center font-bold text-xs text-gray-900">{cur[item.key]}</span>
                                         <button
                                           type="button"
                                           onClick={() => updateMatrixDayField(activeMatrixDay, item.key, cur[item.key] + 1)}
-                                          className="w-6 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs"
+                                          className="w-6 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                         >+</button>
                                       </div>
                                     </div>
@@ -4818,13 +4912,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                         <button
                                           type="button"
                                           onClick={() => updateMatrixDayField(activeMatrixDay, item.key, Math.max(0, cur[item.key] - 1))}
-                                          className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs"
+                                          className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                         >−</button>
                                         <span className="flex-1 text-center font-bold text-xs text-gray-900">{cur[item.key]}</span>
                                         <button
                                           type="button"
                                           onClick={() => updateMatrixDayField(activeMatrixDay, item.key, cur[item.key] + 1)}
-                                          className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs"
+                                          className="w-7 h-full bg-gray-50 hover:bg-gray-100 text-gray-700 font-bold text-xs transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                         >+</button>
                                       </div>
                                     </div>
@@ -4849,7 +4943,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   setIsRotiCountCustom(true);
                                   setRotiCount(Math.max(0, (rotiCount === '' ? 0 : Number(rotiCount)) - 1));
                                 }}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >−</button>
                               <input
                                 type="number"
@@ -4867,7 +4961,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                   setIsRotiCountCustom(true);
                                   setRotiCount((rotiCount === '' ? 0 : Number(rotiCount)) + 1);
                                 }}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >+</button>
                             </div>
                             {showRotiStandardHint && (
@@ -4876,7 +4970,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 <button
                                   type="button"
                                   onClick={handleSetRotiToStandard}
-                                  className="inline p-0 border-0 bg-transparent text-blue-600 font-semibold hover:underline cursor-pointer align-baseline"
+                                  className="inline p-0 border-0 bg-transparent text-[#5D5FEF] font-bold hover:underline cursor-pointer align-baseline transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                 >
                                   [Set to standard]
                                 </button>
@@ -4890,7 +4984,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               <button
                                 type="button"
                                 onClick={() => setPronthiCount(Math.max(0, (pronthiCount === '' ? 0 : Number(pronthiCount)) - 1))}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >−</button>
                               <input
                                 type="number"
@@ -4902,7 +4996,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               <button
                                 type="button"
                                 onClick={() => setPronthiCount((pronthiCount === '' ? 0 : Number(pronthiCount)) + 1)}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >+</button>
                             </div>
                           </div>
@@ -4947,8 +5041,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                           setGravyCount(preset.gravy || 0);
                                           setMwfSideMode(opt.key);
                                         }}
-                                        className={`px-2.5 py-1.5 rounded-lg text-[10.5px] font-semibold border transition-all ${mwfSideMode === opt.key
-                                          ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                        className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${mwfSideMode === opt.key
+                                          ? 'bg-[#5D5FEF]/10 border-[#5D5FEF] text-[#5D5FEF]'
                                           : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
                                           }`}
                                       >
@@ -4971,13 +5065,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                               type="button"
                                               onClick={() => item.set(Math.max(0, item.count - 1))}
                                               disabled={item.count === 0}
-                                              className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
+                                              className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                             >−</button>
                                             <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
                                             <button
                                               type="button"
                                               onClick={() => item.set(item.count + 1)}
-                                              className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 text-sm flex items-center justify-center shrink-0"
+                                              className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 text-sm flex items-center justify-center shrink-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                             >+</button>
                                           </div>
                                         </div>
@@ -5012,8 +5106,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                           setTthGravy(preset.gravy || 0);
                                           setVegDaySideMode(opt.key);
                                         }}
-                                        className={`px-2.5 py-1.5 rounded-lg text-[10.5px] font-semibold border transition-all ${vegDaySideMode === opt.key
-                                          ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                        className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${vegDaySideMode === opt.key
+                                          ? 'bg-[#5D5FEF]/10 border-[#5D5FEF] text-[#5D5FEF]'
                                           : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
                                           }`}
                                       >
@@ -5034,13 +5128,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                               type="button"
                                               onClick={() => item.set(Math.max(0, item.count - 1))}
                                               disabled={item.count === 0}
-                                              className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
+                                              className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                             >−</button>
                                             <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
                                             <button
                                               type="button"
                                               onClick={() => item.set(item.count + 1)}
-                                              className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 text-sm flex items-center justify-center shrink-0"
+                                              className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 text-sm flex items-center justify-center shrink-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                             >+</button>
                                           </div>
                                         </div>
@@ -5064,14 +5158,14 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                         type="button"
                                         onClick={() => { if (item.count > 0) applySideCountChange(item.key, item.count - 1); }}
                                         disabled={item.count === 0}
-                                        className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
+                                        className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >−</button>
                                       <span className="w-7 text-center font-semibold text-sm text-gray-700">{item.count}</span>
                                       <button
                                         type="button"
                                         onClick={() => { if (totalCurryCount < curryContainerLimit) applySideCountChange(item.key, item.count + 1); }}
                                         disabled={totalCurryCount >= curryContainerLimit}
-                                        className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0"
+                                        className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 disabled:opacity-30 text-sm flex items-center justify-center shrink-0 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                       >+</button>
                                     </div>
                                   </div>
@@ -5098,8 +5192,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                       setChickenCount(item.key === 'chicken' ? 1 : 0);
                                       setGravyCount(item.key === 'gravy' ? 1 : 0);
                                     }}
-                                    className={`h-9 px-3 rounded-lg text-xs font-semibold border transition-all ${item.active
-                                      ? 'bg-blue-50 border-blue-500 text-blue-700'
+                                    className={`h-9 px-3 rounded-xl text-xs font-bold border transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${item.active
+                                      ? 'bg-[#5D5FEF]/10 border-[#5D5FEF] text-[#5D5FEF]'
                                       : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
                                       }`}
                                   >1 {item.label}</button>
@@ -5134,7 +5228,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 type="button"
                                 onClick={() => setSaladCount(Math.max(0, saladCount - 1))}
                                 disabled={saladCount === 0}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
+                                className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >−</button>
                               <input
                                 type="number"
@@ -5146,7 +5240,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               <button
                                 type="button"
                                 onClick={() => setSaladCount(saladCount + 1)}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >+</button>
                             </div>
                           </div>
@@ -5157,7 +5251,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 type="button"
                                 onClick={() => setDessertCount(Math.max(0, dessertCount - 1))}
                                 disabled={dessertCount === 0}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-colors shrink-0"
+                                className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 disabled:opacity-30 flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >−</button>
                               <input
                                 type="number"
@@ -5169,7 +5263,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               <button
                                 type="button"
                                 onClick={() => setDessertCount(dessertCount + 1)}
-                                className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 flex items-center justify-center transition-colors shrink-0"
+                                className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                               >+</button>
                             </div>
                           </div>
@@ -5195,13 +5289,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 <button
                                   type="button"
                                   onClick={() => rice.set(Math.max(0, rice.val - 1))}
-                                  className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
+                                  className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                 >−</button>
                                 <span className="w-8 text-center font-semibold text-sm text-gray-700">{rice.val}</span>
                                 <button
                                   type="button"
                                   onClick={() => rice.set(rice.val + 1)}
-                                  className="w-8 h-8 rounded-md border border-gray-200 bg-white text-gray-500 font-semibold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-colors shrink-0"
+                                  className="w-8 h-8 rounded-xl border border-gray-200 bg-white text-gray-500 font-bold hover:bg-gray-100 active:bg-gray-200 text-sm flex items-center justify-center transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                 >+</button>
                               </div>
                             </div>
@@ -5235,7 +5329,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 <button
                                   type="button"
                                   onClick={() => removeDislikedDish(dish)}
-                                  className="hover:text-rose-600"
+                                  className="hover:text-rose-600 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                   title={`Remove ${dish}`}
                                 >
                                   ×
@@ -5260,8 +5354,8 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 }
                                 aria-pressed={isActive}
                                 title={isActive ? `Remove ${dish} from exclusions` : `Exclude ${dish}`}
-                                className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors cursor-pointer ${isActive
-                                  ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-xs'
+                                className={`px-3 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isActive
+                                  ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
                                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 hover:border-gray-300'
                                   }`}
                               >
@@ -5340,7 +5434,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         <button
                           type="button"
                           onClick={() => setIsAddingLog(prev => !prev)}
-                          className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] rounded-lg transition-colors cursor-pointer"
+                          className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#EFEEFC] rounded-xl transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                           {isAddingLog ? 'Cancel' : '+ Add Log'}
                         </button>
@@ -5356,7 +5450,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 key={tag}
                                 type="button"
                                 onClick={() => setNewLogType(tag)}
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${newLogType === tag
+                                className={`px-2 py-0.5 rounded-xl text-xs font-bold border transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${newLogType === tag
                                   ? 'bg-[#5D5FEF] text-white border-[#5D5FEF]'
                                   : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-100'
                                   }`}
@@ -5392,7 +5486,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                               setIsAddingLog(false);
                               setNewLogSummary('');
                             }}
-                            className="px-3 py-1 text-xs text-gray-500 font-semibold hover:bg-gray-200/60 rounded-lg transition-colors cursor-pointer"
+                            className="px-3 py-1 text-xs text-gray-500 font-bold hover:bg-gray-200/60 rounded-xl transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           >
                             Cancel
                           </button>
@@ -5400,7 +5494,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                             type="button"
                             disabled={isSavingLog || !newLogSummary.trim()}
                             onClick={handleCreateManualLog}
-                            className="px-3.5 py-1 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg disabled:opacity-50 transition-colors shadow-2xs cursor-pointer"
+                            className="px-3.5 py-1 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-xl disabled:opacity-50 transition-all shadow-2xs cursor-pointer duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           >
                             {isSavingLog ? 'Saving…' : 'Save Entry'}
                           </button>
@@ -5508,7 +5602,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 showToast(err instanceof Error ? err.message : 'Failed to clear the scheduled cancellation', 'error');
                               }
                             })}
-                            className="w-full mt-0.5 px-3 py-2 bg-white text-amber-800 border border-amber-400 rounded-lg text-[11px] font-bold hover:bg-amber-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
+                            className="w-full mt-0.5 px-3 py-2 bg-white text-amber-800 border border-amber-400 rounded-xl text-xs font-bold hover:bg-amber-100 transition-all disabled:opacity-50 disabled:cursor-wait duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           >
                             {isPending ? 'Clearing…' : <span className="flex items-center justify-center gap-1"><Undo2 className="w-3.5 h-3.5" /> Undo Cancellation & Keep Active</span>}
                           </button>
@@ -5528,7 +5622,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 setIsIndefinitePause(false);
                                 setShowPauseModal(true);
                               }}
-                              className="h-10 px-3 flex items-center justify-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-xs font-bold hover:bg-amber-100 transition-colors"
+                              className="h-10 px-3 flex items-center justify-center gap-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-xl text-xs font-bold hover:bg-amber-100 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                             >
                               <Pause className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
                               <span>Pause Service</span>
@@ -5541,7 +5635,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 setCancelDate(toLocalDateKey(new Date()));
                                 setShowCancelModal(true);
                               }}
-                              className="h-10 px-3 flex items-center justify-center gap-1.5 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold hover:bg-red-100 transition-colors"
+                              className="h-10 px-3 flex items-center justify-center gap-1.5 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl text-xs font-bold hover:bg-rose-100 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                             >
                               <Ban className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
                               <span>Cancel Service</span>
@@ -5558,7 +5652,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 setSelectedCustomer({ ...selectedCustomer, subscription_status: 'active', pause_start_date: null, pause_end_date: null });
                                 closePanelGracefully();
                               })}
-                              className="h-10 px-3 bg-green-50 text-green-700 border border-green-200 rounded-xl text-xs font-bold hover:bg-green-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                              className="h-10 px-3 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                             >
                               <Play className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
                               <span>{isPending ? 'Resuming...' : 'Resume Service'}</span>
@@ -5570,7 +5664,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 setCancelDate(toLocalDateKey(new Date()));
                                 setShowCancelModal(true);
                               }}
-                              className="h-10 px-3 flex items-center justify-center gap-1.5 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs rounded-xl transition-colors"
+                              className="h-10 px-3 flex items-center justify-center gap-1.5 border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 font-bold text-xs rounded-xl transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                             >
                               <Ban className="w-3.5 h-3.5 hidden sm:inline-block shrink-0" />
                               <span>Cancel Service</span>
@@ -5590,7 +5684,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                                 showToast(err instanceof Error ? err.message : 'Failed to reactivate customer', 'error');
                               }
                             })}
-                            className="col-span-2 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-bold hover:bg-emerald-100 transition-colors disabled:opacity-50"
+                            className="col-span-2 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-all disabled:opacity-50 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           >
                             {isPending ? 'Reactivating...' : '✔ Reactivate Service'}
                           </button>
@@ -5601,7 +5695,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 )}
 
                 {selectedCustomer && (
-                  <button type="button" disabled={isPending} onClick={() => { if (confirm(`Delete record?`)) startTransition(async () => { await deleteCustomer(selectedCustomer.id); closePanelGracefully(); }); }} className="w-full text-center text-xs text-red-500 py-2 border border-dashed border-red-200 bg-red-50/20 rounded-lg mt-2">
+                  <button type="button" disabled={isPending} onClick={() => { if (confirm(`Delete record?`)) startTransition(async () => { await deleteCustomer(selectedCustomer.id); closePanelGracefully(); }); }} className="w-full h-10 px-3 inline-flex items-center justify-center text-center text-xs font-bold text-rose-600 hover:bg-rose-50 border border-dashed border-rose-300 bg-white rounded-xl mt-2 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1">
                     {isPending ? 'Removing...' : 'Delete Customer Record'}
                   </button>
                 )}
@@ -5666,7 +5760,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 <button
                   type="button"
                   onClick={() => { setShowPauseModal(false); setConfirmCustomer(null); }}
-                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-bold rounded-xl text-xs hover:bg-gray-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   Cancel
                 </button>
@@ -5713,7 +5807,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       showToast(err instanceof Error ? err.message : 'Failed to pause customer', 'error');
                     }
                   })}
-                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs shadow-2xs disabled:opacity-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   {isPending ? 'Pausing...' : 'Confirm Pause'}
                 </button>
@@ -5766,7 +5860,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 <button
                   type="button"
                   onClick={() => { setShowCancelModal(false); setConfirmCustomer(null); }}
-                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-bold rounded-xl text-xs hover:bg-gray-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   Keep Active
                 </button>
@@ -5813,7 +5907,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       showToast(err instanceof Error ? err.message : 'Failed to cancel customer', 'error');
                     }
                   })}
-                  className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                  className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl text-xs shadow-2xs disabled:opacity-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   {isPending ? 'Cancelling...' : 'Confirm Cancellation'}
                 </button>
@@ -5854,7 +5948,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     <button
                       type="button"
                       onClick={() => { setShowRenewModal(false); setConfirmCustomer(null); }}
-                      className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                      className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-bold rounded-xl text-xs hover:bg-gray-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                     >
                       Cancel
                     </button>
@@ -5862,7 +5956,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                       type="button"
                       disabled={isPending}
                       onClick={confirmRenewCycle}
-                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-xs shadow-2xs disabled:opacity-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                     >
                       {isPending ? 'Renewing…' : 'Confirm & Renew'}
                     </button>
@@ -5901,7 +5995,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                         type="button"
                         disabled={isPending}
                         onClick={opt.key === 'weekly' ? confirmUpgradeToWeekly : confirmUpgradeToMonthly}
-                        className="w-full px-4 py-2.5 rounded-lg text-[13px] font-semibold border bg-indigo-50/60 border-indigo-200 text-indigo-700 hover:bg-indigo-100 flex items-center justify-between disabled:opacity-50 transition-colors"
+                        className="w-full px-4 py-2.5 rounded-xl text-[13px] font-bold border bg-[#5D5FEF]/10 border-[#5D5FEF]/30 text-[#5D5FEF] hover:bg-[#5D5FEF]/10 flex items-center justify-between disabled:opacity-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                       >
                         <span>Upgrade to {opt.label} ({opt.credits})</span>
                         <span>→</span>
@@ -5912,7 +6006,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     <button
                       type="button"
                       onClick={() => { setShowUpgradeModal(false); setConfirmCustomer(null); }}
-                      className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                      className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-bold rounded-xl text-xs hover:bg-gray-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                     >
                       Cancel
                     </button>
@@ -5937,7 +6031,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                 <button
                   type="button"
                   onClick={() => { setShowDeleteModal(false); setConfirmCustomer(null); }}
-                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                  className="px-4 py-2 border border-[#E0E0E0] text-[#7A7C87] font-bold rounded-xl text-xs hover:bg-gray-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   Keep Record
                 </button>
@@ -5950,7 +6044,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     setConfirmCustomer(null);
                     handleDeleteCustomer(customerId);
                   }}
-                  className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg text-xs shadow-sm disabled:opacity-50"
+                  className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-xl text-xs shadow-2xs disabled:opacity-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   {isPending ? 'Deleting...' : 'Delete Customer'}
                 </button>
@@ -6017,7 +6111,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   type="button"
                   disabled={isPending}
                   onClick={handleModalReactivate}
-                  className="px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors disabled:opacity-50"
+                  className="px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl hover:bg-emerald-100 transition-all disabled:opacity-50 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   Reactivate Customer
                 </button>
@@ -6025,7 +6119,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                   <button
                     type="button"
                     onClick={closeCancellationDetails}
-                    className="px-3 py-2 border border-[#E0E0E0] text-[#7A7C87] font-semibold rounded-lg text-xs hover:bg-gray-50"
+                    className="px-3 py-2 border border-[#E0E0E0] text-[#7A7C87] font-bold rounded-xl text-xs hover:bg-gray-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     Close
                   </button>
@@ -6033,7 +6127,7 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
                     type="button"
                     disabled={isPending}
                     onClick={handleSaveCancellationDetails}
-                    className="px-4 py-2 bg-[#5D5FEF] text-white text-xs font-semibold rounded-lg hover:opacity-90 shadow-sm disabled:opacity-50"
+                    className="px-4 py-2 bg-[#5D5FEF] text-white text-xs font-bold rounded-xl hover:opacity-90 shadow-2xs disabled:opacity-50 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     {isPending ? 'Saving...' : 'Save Changes'}
                   </button>
@@ -6060,276 +6154,32 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
             delivery_schedule: serializeSchedule(selectedDays),
             cycle_end_date: computedEndDate || selectedCustomer.cycle_end_date,
           }}
-          onClose={() => setShowLogPaymentModal(false)}
+          initialPayment={editingPayment}
+          onClose={() => {
+            setShowLogPaymentModal(false);
+            setEditingPayment(null);
+          }}
           onSuccess={(payment) => {
-            setCustomerPaymentsList((prev) => [payment, ...prev]);
+            setCustomerPaymentsList((prev) => {
+              const exists = prev.some((p) => p.id === payment.id);
+              return exists
+                ? prev.map((p) => (p.id === payment.id ? payment : p))
+                : [payment, ...prev];
+            });
             setSelectedCustomer({
               ...selectedCustomer,
               payment_status: 'paid',
             });
-            showToast(`Logged $${payment.amount} payment for ${selectedCustomer.full_name}`);
+            showToast(
+              editingPayment
+                ? `Updated payment for ${selectedCustomer.full_name}`
+                : `Logged $${payment.amount} payment for ${selectedCustomer.full_name}`
+            );
+            setEditingPayment(null);
           }}
           closuresSet={closuresSet}
           skipsMap={skipsMap}
         />
-      )}
-      {/* ── ADVANCED EDIT PAYMENT RECORD MODAL ── */}
-      {editingPayment && selectedCustomer && (
-        <>
-          <div
-            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs"
-            onClick={() => setEditingPayment(null)}
-          />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-            <div
-              className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-lg pointer-events-auto p-5 sm:p-6 space-y-4 max-h-[92vh] overflow-y-auto"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-start justify-between pb-3 border-b border-gray-100">
-                <div>
-                  <h3 className="text-base font-black text-gray-900 tracking-tight">
-                    Edit Payment Record
-                  </h3>
-                  <div className="flex items-center gap-1.5 text-xs text-gray-500 font-medium mt-0.5">
-                    <span className="font-bold text-gray-800 capitalize">{selectedCustomer.full_name}</span>
-                    <span>•</span>
-                    <span className="uppercase text-indigo-600 font-bold">{selectedCustomer.plan_tier || 'Monthly'}</span>
-                    <span>•</span>
-                    <span>{usedCredits}/{totalTiffinCredits ?? 20} Delivered</span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setEditingPayment(null)}
-                  className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="space-y-3.5">
-                {/* 1. Payment Scope */}
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                    Payment Applies To
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { key: 'settle_current', label: 'Current Cycle', desc: 'Settle balance' },
-                      { key: 'renew_next', label: 'Next Cycle', desc: 'Renew & reset' },
-                      { key: 'topup', label: 'Top-Up Only', desc: 'Add credits' },
-                    ].map((act) => (
-                      <button
-                        key={act.key}
-                        type="button"
-                        onClick={() => setEditPaymentCycleAction(act.key as any)}
-                        className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${editPaymentCycleAction === act.key
-                            ? 'bg-indigo-50/80 border-[#5D5FEF] text-indigo-900 shadow-2xs'
-                            : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                          }`}
-                      >
-                        <span className="block text-xs font-bold leading-tight">{act.label}</span>
-                        <span className="block text-[10px] text-gray-400 mt-0.5">{act.desc}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 2. Amount & Credits */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                      Amount ($ CAD)
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="1"
-                      value={editPaymentAmount}
-                      onChange={(e) => setEditPaymentAmount(e.target.value)}
-                      placeholder="e.g. 220.00"
-                      className="w-full text-base font-bold px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                      Credits / Meals Covered
-                    </label>
-                    <div className="flex items-center border border-gray-200 rounded-xl overflow-hidden h-10 bg-white">
-                      <button
-                        type="button"
-                        onClick={() => setEditPaymentCredits((p) => Math.max(1, p - 1))}
-                        className="w-8 h-full bg-gray-50 hover:bg-gray-100 font-bold border-r border-gray-200 text-gray-600 cursor-pointer"
-                      >
-                        −
-                      </button>
-                      <input
-                        type="number"
-                        min="1"
-                        value={editPaymentCredits}
-                        onChange={(e) => setEditPaymentCredits(Math.max(1, parseInt(e.target.value) || 1))}
-                        className="w-full text-center font-bold text-sm text-gray-900 outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setEditPaymentCredits((p) => p + 1)}
-                        className="w-8 h-full bg-gray-50 hover:bg-gray-100 font-bold border-l border-gray-200 text-gray-600 cursor-pointer"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 3. Cycle Start & Projected End (Skip & Holiday-aware) */}
-                <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-2.5">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider mb-1">
-                        Cycle Start Date
-                      </label>
-                      <input
-                        type="date"
-                        value={editPaymentCycleStart}
-                        onChange={(e) => setEditPaymentCycleStart(e.target.value)}
-                        className="w-full text-xs font-bold px-3 py-2 bg-white border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-800 shadow-2xs"
-                      />
-                    </div>
-
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
-                          Projected End
-                        </label>
-                        <span className="text-[9.5px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-100 uppercase">
-                          Auto
-                        </span>
-                      </div>
-                      <div className="w-full h-9 px-3 bg-white border border-gray-200 rounded-xl flex items-center justify-between text-xs font-bold text-gray-800 shadow-2xs">
-                        <span>{editComputedEndDate ? formatShortLastDay(editComputedEndDate) : '—'}</span>
-                        <span className="text-[10.5px] text-gray-400 font-semibold">{editComputedEndDate || 'Set start date'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {editComputedEndResult && (editComputedEndResult.holidayDaysSkipped > 0 || editComputedEndResult.customerDaysSkipped > 0) && (
-                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
-                      <span>📅</span>
-                      <span>
-                        Extended by <strong>+{editComputedEndResult.holidayDaysSkipped + editComputedEndResult.customerDaysSkipped} days</strong>
-                        {editComputedEndResult.customerDaysSkipped > 0 && ` (${editComputedEndResult.customerDaysSkipped} customer skip${editComputedEndResult.customerDaysSkipped > 1 ? 's' : ''})`}
-                        {editComputedEndResult.holidayDaysSkipped > 0 && ` (${editComputedEndResult.holidayDaysSkipped} holiday closure${editComputedEndResult.holidayDaysSkipped > 1 ? 's' : ''})`}.
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                {/* 4. Payment Method */}
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                    Payment Method
-                  </label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {(['etransfer', 'cash', 'card', 'other'] as const).map((method) => (
-                      <button
-                        key={method}
-                        type="button"
-                        onClick={() => setEditPaymentMethod(method)}
-                        className={`py-2 rounded-xl text-xs font-bold border transition-all uppercase cursor-pointer ${editPaymentMethod === method
-                            ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-xs'
-                            : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                          }`}
-                      >
-                        {method}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 5. Reference Note */}
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                    Reference / Confirmation Note (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={editPaymentRefNote}
-                    onChange={(e) => setEditPaymentRefNote(e.target.value)}
-                    placeholder="e.g. Interac Ref #391823, Cash collected by driver"
-                    className="w-full text-xs font-semibold px-3 py-2 border border-gray-200 rounded-xl outline-none focus:border-[#5D5FEF] text-gray-800"
-                  />
-                </div>
-
-                {/* 6. WhatsApp Receipt Toggle */}
-                {phoneNumber && (
-                  <label className="flex items-center gap-2.5 p-2.5 rounded-xl border border-emerald-100 bg-emerald-50/50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editSendWhatsAppReceipt}
-                      onChange={(e) => setEditSendWhatsAppReceipt(e.target.checked)}
-                      className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <div className="text-xs">
-                      <span className="font-bold text-emerald-900 block">Open Updated WhatsApp Receipt on Save</span>
-                      <span className="text-emerald-700 text-[10.5px]">Pre-fills an updated payment text to {phoneNumber}</span>
-                    </div>
-                  </label>
-                )}
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => setEditingPayment(null)}
-                  className="px-4 py-2 border border-gray-200 text-gray-600 font-bold rounded-xl text-xs hover:bg-gray-50 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={isUpdatingPayment || !editPaymentAmount}
-                  onClick={async () => {
-                    setIsUpdatingPayment(true);
-                    try {
-                      const res = await updateCustomerPayment(editingPayment.id, {
-                        amount: Number(editPaymentAmount),
-                        paymentMethod: editPaymentMethod,
-                        creditsAdded: editPaymentCredits,
-                        cycleAction: editPaymentCycleAction,
-                        billingCycleStart: editPaymentCycleStart || null,
-                        billingCycleEnd: editComputedEndDate || null,
-                        referenceNote: editPaymentRefNote.trim() || null,
-                      });
-
-                      if (res.success && res.payment) {
-                        setCustomerPaymentsList((prev) =>
-                          prev.map((p) => (p.id === editingPayment.id ? res.payment : p))
-                        );
-                        showToast('Payment record updated');
-                        setEditingPayment(null);
-
-                        if (editSendWhatsAppReceipt && phoneNumber) {
-                          const cleanDigits = phoneNumber.replace(/[^0-9]/g, '');
-                          const cycleDatesStr = editPaymentCycleStart && editComputedEndDate ? ` for period (${editPaymentCycleStart} to ${editComputedEndDate})` : '';
-                          const message = `Hi ${selectedCustomer.full_name}, your payment record has been updated: $${Number(editPaymentAmount).toFixed(2)} CAD via ${editPaymentMethod.toUpperCase()}${cycleDatesStr} covering ${editPaymentCredits} meals. Thank you!`;
-                          window.open(`https://wa.me/${cleanDigits}?text=${encodeURIComponent(message)}`, '_blank');
-                        }
-                      }
-                    } catch (err: any) {
-                      showToast(err.message || 'Failed to update payment', 'error');
-                    } finally {
-                      setIsUpdatingPayment(false);
-                    }
-                  }}
-                  className="px-5 py-2 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold rounded-xl text-xs shadow-xs transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  {isUpdatingPayment ? 'Saving...' : 'Save Changes'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
       )}
 
       {/* ── ON-DEMAND CUSTOMER INQUIRY / MESSAGING MODAL ── */}
@@ -6348,6 +6198,13 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
           ? Number((messagingCustomer as any).custom_plan_price)
           : computedDiscounted;
 
+        // Single source of truth calculation for delivered/remaining meals and end date
+        const live = getCustomerLiveMetrics({
+          customer: messagingCustomer,
+          closuresSet,
+          skipsSet: skipsMap.get(messagingCustomer.id),
+        });
+
         return (
           <CustomerMessageModal
             open={Boolean(messagingCustomer)}
@@ -6357,14 +6214,9 @@ export default function CustomerSplitLayout({ initialCustomers }: { initialCusto
               full_name: messagingCustomer.full_name,
               phone_number: messagingCustomer.phone_number,
               start_date: messagingCustomer.start_date || null,
-              remaining_meals: Math.max(
-                0,
-                (messagingCustomer.total_tiffin_credits ?? 20) - (messagingCustomer.used_credits ?? 0)
-              ),
-              cycle_end_date: messagingCustomer.cycle_end_date
-                ? messagingCustomer.cycle_end_date.slice(0, 10)
-                : null,
-              total_credits: messagingCustomer.total_tiffin_credits ?? 20,
+              remaining_meals: live.remainingMeals,
+              cycle_end_date: live.effectiveEndDate,
+              total_credits: live.totalMeals,
               amount: finalCharge,
               plan_tier: messagingCustomer.plan_tier || 'Monthly',
             }}

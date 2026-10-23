@@ -1049,26 +1049,41 @@ export async function recordCustomerPayment(payload: RecordPaymentPayload) {
   if (payload.cycleAction === 'renew_next') {
     const { data: cust } = await supabase
       .from('customers')
-      .select('used_credits, total_tiffin_credits')
+      .select('used_credits, total_tiffin_credits, plan_tier')
       .eq('id', payload.customerId)
       .single();
 
+    const tierCredits = TIER_CREDITS[cust?.plan_tier || 'monthly'] || 20;
     const used = cust?.used_credits || 0;
-    const total = cust?.total_tiffin_credits || 20;
+    const total = cust?.total_tiffin_credits || tierCredits;
     const graceUsed = Math.max(0, used - total);
 
     customerUpdates.used_credits = graceUsed;
-    customerUpdates.total_tiffin_credits = payload.creditsAdded;
+    // Set strictly to the new cycle credits (e.g. 20 for monthly), never stack
+    customerUpdates.total_tiffin_credits = payload.creditsAdded || tierCredits;
+    if (payload.billingCycleStart) customerUpdates.start_date = payload.billingCycleStart;
+    if (payload.billingCycleEnd) customerUpdates.cycle_end_date = payload.billingCycleEnd;
+  } else if (payload.cycleAction === 'settle_current') {
+    // When settling the current cycle, ensure total_tiffin_credits is capped to the active cycle tier
+    const { data: cust } = await supabase
+      .from('customers')
+      .select('plan_tier')
+      .eq('id', payload.customerId)
+      .single();
+
+    const tierCredits = TIER_CREDITS[cust?.plan_tier || 'monthly'] || 20;
+    customerUpdates.total_tiffin_credits = payload.creditsAdded || tierCredits;
     if (payload.billingCycleStart) customerUpdates.start_date = payload.billingCycleStart;
     if (payload.billingCycleEnd) customerUpdates.cycle_end_date = payload.billingCycleEnd;
   } else if (payload.cycleAction === 'topup') {
     const { data: cust } = await supabase
       .from('customers')
-      .select('total_tiffin_credits')
+      .select('total_tiffin_credits, plan_tier')
       .eq('id', payload.customerId)
       .single();
 
-    customerUpdates.total_tiffin_credits = (cust?.total_tiffin_credits || 0) + payload.creditsAdded;
+    const currentTotal = cust?.total_tiffin_credits || TIER_CREDITS[cust?.plan_tier || 'monthly'] || 20;
+    customerUpdates.total_tiffin_credits = currentTotal + payload.creditsAdded;
   }
 
   const { error: custError } = await supabase
@@ -1099,6 +1114,7 @@ export async function updateCustomerPayment(
   payload: {
     amount: number;
     paymentMethod: 'etransfer' | 'cash' | 'card' | 'other';
+    paidAt?: string | null; // <--- 1. Added paidAt parameter here
     creditsAdded?: number;
     // Keep in sync with RecordPaymentPayload below and the ledger editor UI
     // (CustomerSplitLayout) — 'historical' back-fills pre-existing payments.
@@ -1110,17 +1126,24 @@ export async function updateCustomerPayment(
 ) {
   const supabase = await createClient();
 
+  const updateData: Record<string, any> = {
+    amount: payload.amount,
+    payment_method: payload.paymentMethod,
+    credits_added: payload.creditsAdded ?? 20,
+    cycle_action: payload.cycleAction ?? 'settle_current',
+    billing_cycle_start: payload.billingCycleStart ?? null,
+    billing_cycle_end: payload.billingCycleEnd ?? null,
+    reference_note: payload.referenceNote ?? null,
+  };
+
+  // <--- 2. Conditionally update paid_at if provided
+  if (payload.paidAt) {
+    updateData.paid_at = payload.paidAt;
+  }
+
   const { data: updated, error } = await supabase
     .from('customer_payments')
-    .update({
-      amount: payload.amount,
-      payment_method: payload.paymentMethod,
-      credits_added: payload.creditsAdded ?? 20,
-      cycle_action: payload.cycleAction ?? 'settle_current',
-      billing_cycle_start: payload.billingCycleStart ?? null,
-      billing_cycle_end: payload.billingCycleEnd ?? null,
-      reference_note: payload.referenceNote ?? null,
-    })
+    .update(updateData)
     .eq('id', paymentId)
     .select()
     .single();
@@ -1816,4 +1839,103 @@ export async function togglePeriodPayment(payload: {
   revalidatePath('/admin/customers');
   revalidatePath('/admin/billing');
   return { success: true };
+}
+// ── GLOBAL SEARCH PALETTE ACTION ─────────────────────────────────────────────
+export type SearchResultGroup = {
+  customers: Array<{
+    id: string;
+    fullName: string;
+    address: string;
+    phone: string | null;
+    tier: string | null;
+    status: string;
+  }>;
+  recipes: Array<{
+    id: string;
+    name: string;
+    category: string;
+  }>;
+  actions: Array<{
+    label: string;
+    description: string;
+    href: string;
+  }>;
+};
+
+const STATIC_ACTIONS = [
+  { label: 'Command Dashboard', description: 'Real-time kitchen & logistics operations', href: '/admin/dashboard' },
+  { label: 'Customer Directory', description: 'Manage subscriber plans & dietary settings', href: '/admin/customers' },
+  { label: 'Deliveries & Routing', description: 'Driver sequence & live dispatch stops', href: '/admin/deliveries' },
+  { label: 'Kitchen Prep', description: 'Cooking targets, pot weights & packaging manifest', href: '/prep' },
+  { label: 'Billing & Ledger', description: 'Payment records & outstanding collections', href: '/admin/billing' },
+  { label: 'Holiday Closures', description: 'Scheduled kitchen closure dates', href: '/admin/closures' },
+  { label: 'Recipe Catalog', description: 'Manage Dal and Sabji dish library', href: '/admin/recipes' },
+  { label: 'Kitchen Settings', description: 'Base origin address & driver defaults', href: '/admin/settings/kitchen' },
+  { label: 'Notification Templates', description: 'WhatsApp & SMS driver messaging rules', href: '/admin/settings/messaging' },
+  { label: 'Branding & Theme', description: 'White-label identity & appearance', href: '/admin/settings/branding' },
+];
+
+export async function searchGlobal(rawQuery: string): Promise<SearchResultGroup> {
+  const query = (rawQuery || '').trim();
+  if (!query) {
+    return { customers: [], recipes: [], actions: STATIC_ACTIONS.slice(0, 6) };
+  }
+
+  const supabase = await createClient();
+  const q = `%${query}%`;
+
+  const [customersRes, recipesRes] = await Promise.all([
+    supabase
+      .from('customers')
+      .select('id, full_name, delivery_address, phone_number, plan_tier, subscription_status')
+      .or(`full_name.ilike.${q},delivery_address.ilike.${q},phone_number.ilike.${q}`)
+      .limit(15),
+    supabase
+      .from('menu_recipes')
+      .select('id, name, category')
+      .ilike('name', q)
+      .limit(5),
+  ]);
+
+  const matchedActions = STATIC_ACTIONS.filter(
+    a => a.label.toLowerCase().includes(query.toLowerCase()) || a.description.toLowerCase().includes(query.toLowerCase())
+  );
+
+  const statusPriority: Record<string, number> = {
+    active: 1,
+    paused: 2,
+    cancelled: 3,
+  };
+
+  const customers = (customersRes.data || [])
+    .map((c: any) => {
+      const rawStatus = (c.subscription_status || 'active').toLowerCase();
+      const status = rawStatus === 'paused' || rawStatus === 'cancelled' ? rawStatus : 'active';
+
+      return {
+        id: c.id,
+        fullName: c.full_name || 'Unnamed',
+        address: c.delivery_address || 'Kitchen Pickup',
+        phone: c.phone_number || null,
+        tier: (c.plan_tier || 'monthly').toUpperCase(),
+        status,
+      };
+    })
+    .sort((a, b) => {
+      // Primary: Active accounts come first, paused second, cancelled last
+      const priorityDiff = (statusPriority[a.status] || 99) - (statusPriority[b.status] || 99);
+      if (priorityDiff !== 0) return priorityDiff;
+      // Secondary: Alphabetical by name
+      return a.fullName.localeCompare(b.fullName);
+    });
+
+  return {
+    customers,
+    recipes: (recipesRes.data || []).map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      category: r.category,
+    })),
+    actions: matchedActions.slice(0, 4),
+  };
 }

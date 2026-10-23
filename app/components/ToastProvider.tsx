@@ -76,7 +76,7 @@ const KIND_SKINS: Record<ToastKind, { surface: string; Icon: typeof Check; label
   success: { surface: 'bg-emerald-600', Icon: Check, label: 'Success' },
   error: { surface: 'bg-rose-600', Icon: AlertTriangle, label: 'Error' },
   warning: { surface: 'bg-amber-600', Icon: AlertCircle, label: 'Warning' },
-  info: { surface: 'bg-indigo-600', Icon: Info, label: 'Information' },
+  info: { surface: 'bg-[#5D5FEF]', Icon: Info, label: 'Information' },
 };
 
 const ToastContext = createContext<ToastContextValue | null>(null);

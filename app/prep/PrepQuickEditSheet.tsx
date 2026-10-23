@@ -932,7 +932,7 @@ export default function PrepQuickEditSheet({
             type="button"
             onClick={onClose}
             aria-label="Close quick edit"
-            className="shrink-0 w-11 h-11 flex items-center justify-center rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 active:bg-gray-200 transition-colors text-2xl leading-none font-bold"
+            className="shrink-0 w-11 h-11 flex items-center justify-center rounded-xl text-gray-400 hover:text-gray-600 hover:bg-gray-100 active:bg-gray-200 transition-all text-2xl leading-none font-bold duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             ×
           </button>
@@ -969,8 +969,8 @@ export default function PrepQuickEditSheet({
                 <button
                   type="button"
                   onClick={() => setDaysToAdd(5)}
-                  className={`h-10 rounded-lg font-bold text-[12px] flex flex-col items-center justify-center transition-all border ${daysToAdd === 5
-                    ? 'bg-amber-600 text-white border-amber-700 shadow-sm'
+                  className={`h-10 rounded-xl font-bold text-xs flex flex-col items-center justify-center transition-all border duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${daysToAdd === 5
+                    ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
                     : 'bg-white border-amber-300 text-amber-950 hover:bg-amber-100'
                     }`}
                 >
@@ -980,8 +980,8 @@ export default function PrepQuickEditSheet({
                 <button
                   type="button"
                   onClick={() => setDaysToAdd(20)}
-                  className={`h-10 rounded-lg font-bold text-[12px] flex flex-col items-center justify-center transition-all border ${daysToAdd === 20
-                    ? 'bg-amber-600 text-white border-amber-700 shadow-sm'
+                  className={`h-10 rounded-xl font-bold text-xs flex flex-col items-center justify-center transition-all border duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${daysToAdd === 20
+                    ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
                     : 'bg-white border-amber-300 text-amber-950 hover:bg-amber-100'
                     }`}
                 >
@@ -991,8 +991,8 @@ export default function PrepQuickEditSheet({
                 <button
                   type="button"
                   onClick={() => setDaysToAdd(1)}
-                  className={`h-10 rounded-lg font-bold text-[12px] flex flex-col items-center justify-center transition-all border ${daysToAdd === 1
-                    ? 'bg-amber-600 text-white border-amber-700 shadow-sm'
+                  className={`h-10 rounded-xl font-bold text-xs flex flex-col items-center justify-center transition-all border duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${daysToAdd === 1
+                    ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
                     : 'bg-white border-amber-300 text-amber-950 hover:bg-amber-100'
                     }`}
                 >
@@ -1011,7 +1011,7 @@ export default function PrepQuickEditSheet({
                     type="button"
                     onClick={() => setDaysToAdd(prev => Math.max(1, prev - 1))}
                     disabled={daysToAdd <= 1 || isRenewing}
-                    className="w-8 h-full bg-amber-50 hover:bg-amber-100 text-amber-900 font-black text-base flex items-center justify-center transition-colors disabled:opacity-40"
+                    className="w-8 h-full bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold text-base flex items-center justify-center transition-all disabled:opacity-40 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     −
                   </button>
@@ -1030,7 +1030,7 @@ export default function PrepQuickEditSheet({
                     type="button"
                     onClick={() => setDaysToAdd(prev => prev + 1)}
                     disabled={isRenewing}
-                    className="w-8 h-full bg-amber-50 hover:bg-amber-100 text-amber-900 font-black text-base flex items-center justify-center transition-colors disabled:opacity-40"
+                    className="w-8 h-full bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold text-base flex items-center justify-center transition-all disabled:opacity-40 duration-150 cursor-pointer disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                   >
                     +
                   </button>
@@ -1045,7 +1045,7 @@ export default function PrepQuickEditSheet({
                   const planTier = daysToAdd >= 20 ? 'monthly' : daysToAdd > 1 ? 'weekly' : 'trial';
                   handleRenewSubscription(daysToAdd, planTier);
                 }}
-                className="w-full h-10 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[13px] shadow-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-60 cursor-pointer"
+                className="w-full h-10 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-[13px] shadow-2xs flex items-center justify-center gap-2 transition-all disabled:opacity-60 cursor-pointer duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 {isRenewing ? (
                   <>
@@ -1063,7 +1063,7 @@ export default function PrepQuickEditSheet({
                   type="button"
                   disabled={isEndingSub || saving}
                   onClick={handleEndSubscription}
-                  className="w-full py-2 px-3 text-xs font-bold text-gray-600 hover:text-rose-700 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-xl transition-all cursor-pointer disabled:opacity-50"
+                  className="w-full py-2 px-3 text-xs font-bold text-gray-600 hover:text-rose-700 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-xl transition-all cursor-pointer disabled:opacity-50 duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   {isEndingSub ? 'Archiving…' : <span className="flex items-center gap-1"><X className="w-3.5 h-3.5" /> Customer Not Renewing? End Subscription & Archive</span>}
                 </button>
@@ -1086,7 +1086,7 @@ export default function PrepQuickEditSheet({
                 type="button"
                 onClick={() => onCancelVacationPause?.()}
                 disabled={vacationPending || saving}
-                className="mt-3 w-full h-10 bg-white border border-sky-300 text-sky-900 font-bold rounded-lg hover:bg-sky-100 transition-colors text-[13px] disabled:opacity-60 disabled:cursor-wait"
+                className="mt-3 w-full h-10 bg-white border border-[#5D5FEF]/30 text-[#5D5FEF] font-bold rounded-xl hover:bg-[#5D5FEF]/10 transition-all text-[13px] disabled:opacity-60 disabled:cursor-wait duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 <Undo2 className="w-4 h-4" /> Cancel Vacation &amp; Resume Meals
               </button>
@@ -1102,7 +1102,7 @@ export default function PrepQuickEditSheet({
                 onClose();
                 openSkipModal({ id: customer.id, name: customer.full_name }, overrideDate);
               }}
-              className="w-full h-11 rounded-xl font-bold transition-colors text-[13px] flex items-center justify-center gap-2 bg-white border border-gray-300 text-[#292D32] hover:bg-gray-50 cursor-pointer shadow-2xs"
+              className="w-full h-11 rounded-xl font-bold transition-all text-[13px] flex items-center justify-center gap-2 bg-white border border-gray-300 text-[#292D32] hover:bg-gray-50 cursor-pointer shadow-2xs duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               <span className="text-amber-600">⚡</span>
               <span>Skip Delivery / Vacation</span>
@@ -1146,7 +1146,7 @@ export default function PrepQuickEditSheet({
                     key={opt.key}
                     type="button"
                     onClick={() => handleMealTypeChange(opt.key)}
-                    className={`h-11 rounded-xl border text-base transition-colors ${mealType === opt.key ? opt.active : opt.inactive
+                    className={`h-11 rounded-xl border text-base transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${mealType === opt.key ? opt.active : opt.inactive
                       }`}
                   >
                     {opt.label}
@@ -1171,9 +1171,9 @@ export default function PrepQuickEditSheet({
                     key={opt.value}
                     type="button"
                     onClick={() => handlePortionChange(opt.value)}
-                    className={`h-11 rounded-xl border text-base transition-colors ${portion === opt.value
-                      ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] font-bold shadow-sm'
-                      : 'bg-white text-gray-600 border-gray-200 font-semibold'
+                    className={`h-11 rounded-xl border text-base transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${portion === opt.value
+                      ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] font-bold shadow-2xs'
+                      : 'bg-white text-gray-600 border-gray-200 font-bold'
                       }`}
                   >
                     {opt.label}
@@ -1205,8 +1205,8 @@ export default function PrepQuickEditSheet({
                         key={preset.key}
                         type="button"
                         onClick={() => handleCurryPillChange(preset.counts)}
-                        className={`h-9 px-3 rounded-xl border text-[13px] font-bold transition-colors ${active
-                          ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-sm'
+                        className={`h-9 px-3 rounded-xl border text-[13px] font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${active
+                          ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
                           : 'bg-white text-gray-600 border-gray-200'
                           }`}
                       >
@@ -1246,7 +1246,7 @@ export default function PrepQuickEditSheet({
                             prev.filter(d => d.toLowerCase() !== dish.toLowerCase())
                           )
                         }
-                        className="hover:text-rose-600"
+                        className="hover:text-rose-600 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         title={`Remove ${dish}`}
                       >
                         ×
@@ -1269,8 +1269,8 @@ export default function PrepQuickEditSheet({
                       onClick={() => toggleDislikedDish(dish)}
                       aria-pressed={isActive}
                       title={isActive ? `Remove ${dish} from exclusions` : `Exclude ${dish}`}
-                      className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors cursor-pointer ${isActive
-                        ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-xs'
+                      className={`px-3 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isActive
+                        ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
                         : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 hover:border-gray-300'
                         }`}
                     >
@@ -1316,7 +1316,7 @@ export default function PrepQuickEditSheet({
                           type="button"
                           onMouseDown={e => e.preventDefault()}
                           onClick={() => addDislikedDish(dish)}
-                          className="w-full text-left px-3 py-2 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer truncate transition-colors font-bold text-gray-600"
+                          className="w-full text-left px-3 py-2 hover:bg-[#F4F4FE] hover:text-[#5D5FEF] cursor-pointer truncate transition-all font-bold text-gray-600 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                           {dish}
                         </button>
@@ -1341,7 +1341,7 @@ export default function PrepQuickEditSheet({
                   type="button"
                   onClick={() => setRoti(prev => Math.max(0, prev - 1))}
                   aria-label="Decrease roti count"
-                  className="w-12 h-full bg-gray-100 text-gray-700 font-bold text-2xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition-colors shrink-0"
+                  className="w-12 h-full bg-gray-100 text-gray-700 font-bold text-2xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   −
                 </button>
@@ -1352,7 +1352,7 @@ export default function PrepQuickEditSheet({
                   type="button"
                   onClick={() => setRoti(prev => prev + 1)}
                   aria-label="Increase roti count"
-                  className="w-12 h-full bg-gray-100 text-gray-700 font-bold text-2xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition-colors shrink-0"
+                  className="w-12 h-full bg-gray-100 text-gray-700 font-bold text-2xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   +
                 </button>
@@ -1369,7 +1369,7 @@ export default function PrepQuickEditSheet({
                   type="button"
                   onClick={() => setPronthi(prev => Math.max(0, prev - 1))}
                   aria-label="Decrease pronthi count"
-                  className="w-12 h-full bg-gray-100 text-gray-700 font-bold text-2xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition-colors shrink-0"
+                  className="w-12 h-full bg-gray-100 text-gray-700 font-bold text-2xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   −
                 </button>
@@ -1380,7 +1380,7 @@ export default function PrepQuickEditSheet({
                   type="button"
                   onClick={() => setPronthi(prev => prev + 1)}
                   aria-label="Increase pronthi count"
-                  className="w-12 h-full bg-gray-100 text-gray-700 font-bold text-2xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition-colors shrink-0"
+                  className="w-12 h-full bg-gray-100 text-gray-700 font-bold text-2xl flex items-center justify-center hover:bg-gray-200 active:bg-gray-300 transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   +
                 </button>
@@ -1400,8 +1400,8 @@ export default function PrepQuickEditSheet({
                       key={preset.label}
                       type="button"
                       onClick={() => setRice({ ...preset.counts })}
-                      className={`h-11 px-4 rounded-xl border text-sm font-bold transition-colors ${active
-                        ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-sm'
+                      className={`h-11 px-4 rounded-xl border text-sm font-bold transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${active
+                        ? 'bg-[#5D5FEF] text-white border-[#5D5FEF] shadow-2xs'
                         : 'bg-white text-gray-600 border-gray-200'
                         }`}
                     >
@@ -1435,7 +1435,7 @@ export default function PrepQuickEditSheet({
               type="button"
               onClick={onClearOverride}
               disabled={saving}
-              className="w-full h-11 bg-white border border-rose-200 text-rose-600 font-bold rounded-xl hover:bg-rose-50 active:bg-rose-100 transition-colors text-[13px] flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+              className="w-full h-11 bg-white border border-rose-200 text-rose-600 font-bold rounded-xl hover:bg-rose-50 active:bg-rose-100 transition-all text-[13px] flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               <Trash2 className="w-4 h-4" /> Reset to Master Profile
             </button>
@@ -1459,8 +1459,8 @@ export default function PrepQuickEditSheet({
                         ? `Apply to ${overrideDateLabel} only`
                         : option.title
                     }
-                    className={`min-h-[64px] px-2 py-2 rounded-xl border text-[12px] font-bold transition-colors flex flex-col items-center justify-center gap-1 text-center ${active
-                      ? 'bg-[#5D5FEF]/10 text-[#5D5FEF] border-[#5D5FEF]/60 shadow-sm'
+                    className={`min-h-[64px] px-2 py-2 rounded-xl border text-xs font-bold transition-all flex flex-col items-center justify-center gap-1 text-center duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${active
+                      ? 'bg-[#5D5FEF]/10 text-[#5D5FEF] border-[#5D5FEF]/60 shadow-2xs'
                       : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
                       }`}
                   >
@@ -1529,7 +1529,7 @@ export default function PrepQuickEditSheet({
             type="button"
             onClick={handleSave}
             disabled={saving || (scope === 'range' && (rangeInvalid || rangeDays === 0))}
-            className="w-full h-12 bg-[#5D5FEF] hover:bg-[#4d4fd9] text-white font-bold rounded-xl shadow-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed text-base flex items-center justify-center gap-2"
+            className="w-full h-12 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold rounded-xl shadow-2xs transition-all disabled:opacity-60 disabled:cursor-not-allowed text-base flex items-center justify-center gap-2 duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
           >
             {saving ? (
               <>

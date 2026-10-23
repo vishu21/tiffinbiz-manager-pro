@@ -195,10 +195,10 @@ export default function BrandingSettingsClient({
    * grey while the form matches the baseline — mirrors the `disabled` attribute.
    */
   const saveButtonClass = [
-    'inline-flex items-center gap-1.5 px-5 py-2.5 font-bold text-xs rounded-xl transition-all',
+    'inline-flex items-center gap-1.5 h-10 px-5 py-2 font-bold text-xs rounded-xl shadow-2xs border transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1',
     isDirty
-      ? 'bg-brand hover:bg-brand-hover text-white shadow-md shadow-brand/25 ring-2 ring-brand/20 cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed'
-      : 'bg-gray-100 text-gray-400 cursor-not-allowed',
+      ? 'bg-brand hover:bg-brand-hover text-white border-transparent cursor-pointer disabled:cursor-not-allowed disabled:opacity-50'
+      : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed',
   ].join(' ');
 
   const logoUrl = (form.logo_url ?? '').trim();
@@ -392,7 +392,7 @@ export default function BrandingSettingsClient({
                 role="radio"
                 aria-checked={selected}
                 onClick={() => patch({ theme_preset: swatch.id })}
-                className={`text-left rounded-2xl border p-4 transition-all cursor-pointer ${
+                className={`text-left rounded-xl border p-4 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
                   selected
                     ? 'border-brand ring-2 ring-brand/20 bg-brand-light/50'
                     : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/70'
@@ -474,7 +474,7 @@ export default function BrandingSettingsClient({
               <button
                 type="button"
                 onClick={handleClearHex}
-                className="h-10 px-3 shrink-0 rounded-xl text-[11px] font-bold text-gray-600 bg-gray-50 hover:bg-gray-100 border border-gray-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                className="h-10 px-3 shrink-0 rounded-xl text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-200 shadow-2xs flex items-center gap-1.5 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 Use preset
@@ -530,7 +530,7 @@ export default function BrandingSettingsClient({
                 role="radio"
                 aria-checked={selected}
                 onClick={() => patch({ sidebar_style: option.id })}
-                className={`text-left rounded-2xl border p-4 transition-all cursor-pointer ${
+                className={`text-left rounded-xl border p-4 transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${
                   selected
                     ? 'border-brand ring-2 ring-brand/20 bg-brand-light/50'
                     : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/70'
@@ -643,7 +643,7 @@ export default function BrandingSettingsClient({
                 type="button"
                 disabled={isPending || !isDirty}
                 onClick={handleReset}
-                className="px-4 py-2 rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-100 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                className="px-4 py-2 rounded-xl text-xs font-bold text-gray-500 hover:bg-gray-100 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed duration-150 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 Reset
               </button>

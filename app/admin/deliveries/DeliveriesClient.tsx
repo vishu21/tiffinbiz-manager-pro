@@ -34,7 +34,7 @@ import {
 } from 'lucide-react';
 import { markDelivered, logSkip, renewPlan, undoTodayDispatchAction, saveDeliveryRouteOrder } from './actions';
 import { isPickupOnDay } from '@/app/utils/customerPickup';
-import { computeCycleEndDate, resolveDeliveryDayNumbers } from '@/app/utils/subscriptionCycle';
+import { computeCycleEndDate, resolveDeliveryDayNumbers, getNextServiceDate } from '@/app/utils/subscriptionCycle';
 import {
   DEFAULT_KITCHEN_ORIGIN,
   sanitizeAddressForUrl,
@@ -518,12 +518,18 @@ export default function DeliveriesClient({
       initialCustomers.map(c => {
         const tierKey = (c.plan_tier || 'monthly').toLowerCase();
         const standardAllowance = tierKey === 'weekly' ? 5 : tierKey === 'trial' ? 1 : 20;
+
+        // Standard plans (monthly = 20, weekly = 5, trial = 1) always display their
+        // standard cycle denominator unless a custom allowance between 1 and standardAllowance is set.
+        // This prevents double-click database accumulations (e.g. 40/20) from breaking the delivery stop counter.
         const total =
-          c.total_tiffin_credits && c.total_tiffin_credits > 0
-            ? tierKey === 'monthly' && c.total_tiffin_credits === 25
-              ? 20
-              : c.total_tiffin_credits
-            : standardAllowance;
+          tierKey === 'monthly'
+            ? 20
+            : tierKey === 'weekly'
+            ? 5
+            : tierKey === 'trial'
+            ? 1
+            : (c.total_tiffin_credits && c.total_tiffin_credits > 0 ? c.total_tiffin_credits : standardAllowance);
 
         const custSkips = skipsMap.get(c.id);
         const autoDays = calculateElapsedDeliveryDays(c.start_date, closuresSet, total, custSkips);
@@ -881,7 +887,7 @@ export default function DeliveriesClient({
               type="button"
               onClick={() => changeWeek('prev')}
               title="Previous Week"
-              className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-colors shrink-0"
+              className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-xl hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-all shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               ‹
             </button>
@@ -898,10 +904,9 @@ export default function DeliveriesClient({
                     type="button"
                     onClick={() => setSelectedDate(item.dateObj)}
                     title={isClosed ? 'Kitchen Closed' : undefined}
-                    className={`px-1.5 sm:px-2 py-0.5 sm:py-1 text-[10.5px] sm:text-xs font-bold rounded-lg transition-all cursor-pointer relative items-center gap-0.5 shrink-0
-                        ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
-                        ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-xs' : ''}
-                        ${isSelected && isClosed ? 'bg-amber-500 text-white font-black shadow-xs' : ''}
+                    className={`px-1.5 sm:px-2 py-0.5 sm:py-1 text-xs font-bold rounded-xl transition-all cursor-pointer relative items-center gap-0.5 shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${isWeekend && !isSelected ? 'hidden sm:inline-flex' : 'inline-flex'}
+                        ${isSelected && !isClosed ? 'bg-[#5D5FEF] text-white shadow-2xs' : ''}
+                        ${isSelected && isClosed ? 'bg-amber-500 text-white font-bold shadow-2xs' : ''}
                         ${!isSelected && isClosed ? 'bg-amber-100 text-amber-900 border border-amber-300' : ''}
                         ${!isSelected && !isClosed && isWeekend ? 'text-gray-400 opacity-40 hover:opacity-80 hover:bg-white' : ''}
                         ${!isSelected && !isClosed && !isWeekend ? 'text-gray-600 hover:bg-white hover:text-gray-900' : ''}
@@ -923,7 +928,7 @@ export default function DeliveriesClient({
               type="button"
               onClick={() => changeWeek('next')}
               title="Next Week"
-              className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-lg hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-colors shrink-0"
+              className="w-6 sm:w-7 h-6 sm:h-7 flex items-center justify-center rounded-xl hover:bg-gray-200/70 text-gray-600 font-bold text-xs sm:text-sm cursor-pointer transition-all shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               ›
             </button>
@@ -946,7 +951,7 @@ export default function DeliveriesClient({
             <button
               type="button"
               onClick={() => setTab('dispatch')}
-              className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${tab === 'dispatch' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500 hover:text-gray-800'
+              className={`px-3 py-1 text-xs font-bold rounded-xl transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${tab === 'dispatch' ? 'bg-white text-[#5D5FEF] shadow-2xs' : 'text-gray-500 hover:text-gray-800'
                 }`}
             >
               Dispatch ({pendingDispatchList.length})
@@ -954,7 +959,7 @@ export default function DeliveriesClient({
             <button
               type="button"
               onClick={() => setTab('ledger')}
-              className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${tab === 'ledger' ? 'bg-white text-[#5D5FEF] shadow-xs' : 'text-gray-500 hover:text-gray-800'
+              className={`px-3 py-1 text-xs font-bold rounded-xl transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${tab === 'ledger' ? 'bg-white text-[#5D5FEF] shadow-2xs' : 'text-gray-500 hover:text-gray-800'
                 }`}
             >
               Ledger
@@ -989,7 +994,7 @@ export default function DeliveriesClient({
                 <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
                 <span>{errorMsg}</span>
               </div>
-              <button type="button" onClick={() => setErrorMsg('')} className="text-rose-500 hover:text-rose-700">
+              <button type="button" onClick={() => setErrorMsg('')} className="text-rose-500 hover:text-rose-700 transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -1030,7 +1035,7 @@ export default function DeliveriesClient({
                     <button
                       type="button"
                       onClick={() => setSearchQuery('')}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
@@ -1041,7 +1046,7 @@ export default function DeliveriesClient({
                   type="button"
                   onClick={() => setShowOrderSheet(true)}
                   title={`Reorder route sequence (${pendingDispatchList.length} stops)`}
-                  className="h-9 px-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer shrink-0"
+                  className="h-9 px-2.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   <GripVertical className="w-3.5 h-3.5 text-gray-400" />
                   <span className="text-[11px] font-mono text-gray-600 font-bold">{pendingDispatchList.length}</span>
@@ -1055,7 +1060,7 @@ export default function DeliveriesClient({
                     href={activeRun.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className={`flex-1 h-11 px-3.5 rounded-xl text-xs sm:text-[13px] font-black shadow-xs transition-all flex items-center justify-between gap-2 min-w-0 cursor-pointer ${activeRun.isFinished
+                    className={`flex-1 h-11 px-3.5 rounded-xl text-xs sm:text-[13px] font-bold shadow-2xs transition-all flex items-center justify-between gap-2 min-w-0 cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 ${activeRun.isFinished
                       ? 'bg-slate-800 hover:bg-slate-900 text-white'
                       : 'bg-[#5D5FEF] hover:bg-[#4D4FD9] active:bg-[#3D3FB9] text-white'
                       }`}
@@ -1075,7 +1080,7 @@ export default function DeliveriesClient({
                     <button
                       type="button"
                       onClick={() => setShowRunsMenu(prev => !prev)}
-                      className="h-11 px-3 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                      className="h-11 px-3 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl text-xs font-bold text-gray-700 flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                     >
                       <span>Runs ({routeRuns.length})</span>
                       <span className="text-[10px] text-gray-400">▼</span>
@@ -1202,7 +1207,7 @@ export default function DeliveriesClient({
                               <a
                                 href={`tel:${dialNumber}`}
                                 title="Call customer"
-                                className="h-7 w-7 rounded-lg bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 flex items-center justify-center shadow-2xs transition-colors shrink-0"
+                                className="h-7 w-7 rounded-xl bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 flex items-center justify-center shadow-2xs transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 shrink-0"
                               >
                                 <Phone className="w-3.5 h-3.5 text-gray-600" />
                               </a>
@@ -1230,7 +1235,7 @@ export default function DeliveriesClient({
                                   href={googleMapsUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="h-8 px-2.5 rounded-lg bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-colors shrink-0"
+                                  className="h-8 px-2.5 rounded-xl bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white font-bold text-xs flex items-center gap-1 shadow-2xs transition-all shrink-0 duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                 >
                                   <Navigation className="w-3 h-3" />
                                   <span>Map</span>
@@ -1262,8 +1267,8 @@ export default function DeliveriesClient({
                         {/* Context-Aware Dynamic Notification Trigger */}
                         {(() => {
                           const isLastDay =
-                            remaining <= 1 ||
-                            (c.cycle_end_date && c.cycle_end_date.slice(0, 10) === selectedDateKey);
+                            Boolean(c.cycle_end_date && c.cycle_end_date.slice(0, 10) === selectedDateKey) ||
+                            remaining <= 0;
 
                           const isChickenDay = activeDay === 'Monday' || activeDay === 'Wednesday' || activeDay === 'Friday';
                           const dayPlan = resolveCustomerDayPlan(c, activeDay, isChickenDay);
@@ -1275,13 +1280,31 @@ export default function DeliveriesClient({
                               Boolean(c.delivery_schedule?.includes('Saturday')) ||
                               Boolean(c.delivery_schedule?.includes('Sat')));
 
-                          const rawTemplate = isLastDay
+                          // Dynamically calculate the next real working delivery day
+                          const custSkips = skipsMap.get(c.id);
+                          const nextService = getNextServiceDate({
+                            fromDateStr: selectedDateKey,
+                            deliverySchedule: c.delivery_schedule,
+                            closureDates: closuresSet,
+                            customerSkips: custSkips,
+                          });
+
+                          const nextServiceDateText = nextService ? nextService.formatted : 'your next delivery day';
+
+                          let rawTemplate = isLastDay
                             ? msgTemplates.last_day_message_template
                             : isDoublePackFriday
                               ? msgTemplates.friday_double_pack_template
                               : isFriday
                                 ? msgTemplates.friday_message_template
                                 : msgTemplates.delivery_message_template;
+
+                          // Replace any hardcoded "tomorrow" with the dynamic next service day
+                          if (rawTemplate.includes('starting tomorrow') || rawTemplate.includes('renewed tomorrow')) {
+                            rawTemplate = rawTemplate
+                              .replace('starting tomorrow', `starting ${nextServiceDateText}`)
+                              .replace('renewed tomorrow', `renewed ${nextServiceDateText}`);
+                          }
 
                           const messageText = formatDeliveryMessage(rawTemplate, {
                             customer_name: c.full_name,
@@ -1290,6 +1313,7 @@ export default function DeliveriesClient({
                             cycle_end_date: c.cycle_end_date?.slice(0, 10),
                             total_credits: total,
                             used_credits: used,
+                            next_service_date: nextServiceDateText,
                           });
 
                           const cleanPhone = cleanPhoneNumberForWhatsApp(c.phone_number);
@@ -1322,7 +1346,7 @@ export default function DeliveriesClient({
                                       href={`whatsapp://send?phone=${cleanPhone}&text=${encodeURIComponent(messageText)}`}
                                       onClick={() => handleMarkDelivered(c.id)}
                                       title="Send WhatsApp & Complete"
-                                      className="flex-1 h-10 bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da851] text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
+                                      className="flex-1 h-10 bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da851] text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-2xs border border-transparent transition-all duration-150 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1 min-w-0"
                                     >
                                       <MessageSquare className="w-4 h-4 shrink-0" />
                                       <span className="truncate">WhatsApp &amp; Complete</span>
@@ -1334,7 +1358,7 @@ export default function DeliveriesClient({
                                       href={`sms:${cleanPhone}?&body=${encodeURIComponent(messageText)}`}
                                       onClick={() => handleMarkDelivered(c.id)}
                                       title="Send SMS & Complete"
-                                      className="flex-1 h-10 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-black text-xs sm:text-[13px] rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer min-w-0"
+                                      className="flex-1 h-10 bg-[#5D5FEF] hover:bg-[#4D4FD9] text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-2xs border border-transparent transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 min-w-0"
                                     >
                                       <Phone className="w-4 h-4 shrink-0" />
                                       <span className="truncate">SMS &amp; Complete</span>
@@ -1346,7 +1370,7 @@ export default function DeliveriesClient({
                                       type="button"
                                       disabled={busyId === c.id}
                                       onClick={() => handleMarkDelivered(c.id)}
-                                      className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-[13px] rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer min-w-0"
+                                      className="flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-[13px] rounded-xl shadow-2xs transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer min-w-0 duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                     >
                                       <Check className="w-4 h-4 stroke-[3] shrink-0" />
                                       <span className="truncate">Mark Delivered</span>
@@ -1359,7 +1383,7 @@ export default function DeliveriesClient({
                                       disabled={busyId === c.id}
                                       onClick={() => handleMarkDelivered(c.id)}
                                       title="Mark delivered silently (without sending message)"
-                                      className="h-10 w-10 flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-colors cursor-pointer shrink-0"
+                                      className="h-10 w-10 flex items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 hover:border-emerald-200 transition-all cursor-pointer shrink-0 duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                     >
                                       <Check className="w-4 h-4 stroke-[2.5]" />
                                     </button>
@@ -1370,7 +1394,7 @@ export default function DeliveriesClient({
                                   type="button"
                                   disabled={busyId === c.id}
                                   onClick={() => handleLogSkip(c.id)}
-                                  className="h-10 px-3.5 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-colors border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0"
+                                  className="h-10 px-3.5 bg-gray-100 hover:bg-amber-100 text-gray-700 hover:text-amber-800 font-bold text-xs rounded-xl transition-all border border-gray-200 disabled:opacity-50 cursor-pointer shrink-0 duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                                 >
                                   Skip
                                 </button>
@@ -1412,7 +1436,7 @@ export default function DeliveriesClient({
                           type="button"
                           disabled={busyId === customerId}
                           onClick={() => handleUndo(customerId)}
-                          className="px-2.5 py-1 text-xs font-bold text-gray-500 hover:text-rose-600 bg-gray-50 hover:bg-rose-50 border border-gray-200 rounded-lg transition-colors cursor-pointer"
+                          className="px-2.5 py-1 text-xs font-bold text-gray-500 hover:text-rose-600 bg-gray-50 hover:bg-rose-50 border border-gray-200 rounded-xl transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         >
                           {busyId === customerId ? 'Undoing…' : 'Undo'}
                         </button>
@@ -1474,7 +1498,7 @@ export default function DeliveriesClient({
                             type="button"
                             disabled={busyId === c.id}
                             onClick={() => handleRenewPlan(c.id)}
-                            className="px-3 py-1.5 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-lg shadow-2xs cursor-pointer"
+                            className="px-3 py-1.5 text-xs font-bold text-white bg-[#5D5FEF] hover:bg-[#4D4FD9] rounded-xl shadow-2xs cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                           >
                             {busyId === c.id ? 'Renewing…' : 'Renew Plan'}
                           </button>
@@ -1548,14 +1572,14 @@ export default function DeliveriesClient({
                       setTimeout(() => setErrorMsg(''), 4000);
                     }
                   }}
-                  className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#5D5FEF]/30 rounded-lg transition-colors cursor-pointer"
+                  className="px-2.5 py-1 text-xs font-bold text-[#5D5FEF] bg-[#F4F4FE] hover:bg-[#5D5FEF] hover:text-white border border-[#5D5FEF]/30 rounded-xl transition-all cursor-pointer duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   ↻ Copy Prev Route
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowOrderSheet(false)}
-                  className="w-8 h-8 rounded-lg bg-gray-100 text-gray-500 hover:text-gray-800 flex items-center justify-center cursor-pointer"
+                  className="w-8 h-8 rounded-xl bg-gray-100 text-gray-500 hover:text-gray-800 flex items-center justify-center cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -1624,7 +1648,7 @@ export default function DeliveriesClient({
                         type="button"
                         disabled={i === 0}
                         onClick={() => reorderList(i, i - 1)}
-                        className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-indigo-50 active:bg-indigo-100 text-gray-600 hover:text-indigo-700 border border-gray-200 disabled:opacity-20 disabled:pointer-events-none flex items-center justify-center text-xs font-bold transition-colors cursor-pointer"
+                        className="w-7 h-7 rounded-xl bg-gray-50 hover:bg-[#5D5FEF]/10 active:bg-[#5D5FEF]/10 text-gray-600 hover:text-[#5D5FEF] border border-gray-200 disabled:opacity-20 disabled:pointer-events-none flex items-center justify-center text-xs font-bold transition-all cursor-pointer duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         title="Move Up"
                       >
                         ▲
@@ -1633,7 +1657,7 @@ export default function DeliveriesClient({
                         type="button"
                         disabled={i === pendingDispatchList.length - 1}
                         onClick={() => reorderList(i, i + 1)}
-                        className="w-7 h-7 rounded-lg bg-gray-50 hover:bg-indigo-50 active:bg-indigo-100 text-gray-600 hover:text-indigo-700 border border-gray-200 disabled:opacity-20 disabled:pointer-events-none flex items-center justify-center text-xs font-bold transition-colors cursor-pointer"
+                        className="w-7 h-7 rounded-xl bg-gray-50 hover:bg-[#5D5FEF]/10 active:bg-[#5D5FEF]/10 text-gray-600 hover:text-[#5D5FEF] border border-gray-200 disabled:opacity-20 disabled:pointer-events-none flex items-center justify-center text-xs font-bold transition-all cursor-pointer duration-150 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
                         title="Move Down"
                       >
                         ▼
@@ -1660,7 +1684,7 @@ export default function DeliveriesClient({
                     setSaveStatus('idle');
                   }
                 }}
-                className="px-5 py-2 bg-[#5D5FEF] text-white text-xs font-bold rounded-xl shadow-xs hover:bg-[#4D4FD9] cursor-pointer"
+                className="px-5 py-2 bg-[#5D5FEF] text-white text-xs font-bold rounded-xl shadow-2xs hover:bg-[#4D4FD9] cursor-pointer transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
               >
                 Done
               </button>

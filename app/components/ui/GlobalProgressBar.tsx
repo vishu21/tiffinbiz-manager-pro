@@ -64,7 +64,7 @@ export default function GlobalProgressBar() {
       className="fixed top-0 left-0 right-0 h-1 bg-transparent pointer-events-none"
     >
       <div
-        className="h-full bg-indigo-600 shadow-[0_0_12px_#4f46e5,0_0_4px_#4f46e5] transition-all duration-300 ease-out"
+        className="h-full bg-[#5D5FEF] shadow-[0_0_12px_#5D5FEF,0_0_4px_#5D5FEF] transition-all duration-300 ease-out"
         style={{
           width: `${progress}%`,
           opacity: visible ? 1 : 0,

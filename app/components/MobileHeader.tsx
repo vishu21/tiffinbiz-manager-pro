@@ -13,7 +13,12 @@ export default function MobileHeader({ onMenuClick }: MobileHeaderProps) {
 
   return (
     <div className="lg:hidden flex items-center justify-between p-4 bg-brand-sidebar text-[rgb(var(--brand-sidebar-fg))]">
-      <button onClick={onMenuClick} className="text-[rgb(var(--brand-sidebar-fg))] focus:outline-none">
+      <button
+        type="button"
+        onClick={onMenuClick}
+        aria-label="Open navigation"
+        className="w-8 h-8 rounded-xl flex items-center justify-center text-[rgb(var(--brand-sidebar-fg))] hover:bg-white/10 transition-all duration-150 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
+      >
         <svg
           className="w-6 h-6"
           fill="none"
@@ -36,7 +41,7 @@ export default function MobileHeader({ onMenuClick }: MobileHeaderProps) {
         type="button"
         onClick={() => openSkipModal(undefined, toLocalDateKey(new Date()))}
         title="Quick skip delivery for any customer"
-        className="h-8 sm:h-9 px-2.5 sm:px-3 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
+        className="h-8 px-3 text-xs font-bold rounded-xl border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 shadow-2xs transition-all duration-150 flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
       >
         <span className="text-amber-500">⚡</span>
         <span className="hidden sm:inline">Skip Delivery</span>

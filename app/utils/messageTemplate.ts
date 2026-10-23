@@ -8,6 +8,7 @@ export function formatDeliveryMessage(
     cycle_end_date?: string;
     total_credits?: number | string;
     used_credits?: number | string;
+    next_service_date?: string; // <-- 1. Added variable type definition
   }
 ): string {
   let text = template || 'Hello {customer_name}, your tiffin has been delivered!';
@@ -19,6 +20,11 @@ export function formatDeliveryMessage(
   text = text.replace(/\{cycle_end_date\}/gi, variables.cycle_end_date || '');
   text = text.replace(/\{total_credits\}/gi, String(variables.total_credits ?? ''));
   text = text.replace(/\{used_credits\}/gi, String(variables.used_credits ?? ''));
+  // <-- 2. Added replacement for {next_service_date}
+  text = text.replace(
+    /\{next_service_date\}/gi,
+    variables.next_service_date || 'your next scheduled delivery day'
+  );
 
   return text.trim();
 }

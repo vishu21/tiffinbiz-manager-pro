@@ -40,7 +40,7 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              className="flex w-full justify-center rounded-md border border-transparent bg-orange-600 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-orange-700 focus:outline-none"
+              className="flex w-full h-11 items-center justify-center rounded-xl border border-transparent bg-[#5D5FEF] px-5 text-sm font-bold text-white shadow-2xs transition-all duration-150 hover:bg-[#4D4FD9] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
             >
               Sign in
             </button>
